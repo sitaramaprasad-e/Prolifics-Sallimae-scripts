@@ -343,9 +343,15 @@ def main():
         help="Absolute project root path to filter rules by runs.json root_dir; if omitted, no run-based filtering is applied."
     )
     parser.add_argument(
+        "--no-strict-root",
+        action="store_true",
+        help="Disable strict root behavior. By default, when --root-path is provided and no matching runs/rule_ids are found, the result will be empty. Use this flag to fall back to exporting all rules."
+    )
+    parser.add_argument(
         "--trace",
         action="store_true",
-        help="Enable verbose per-item tracing of why each rule/run was accepted or rejected."
+        default=True,
+        help="Enable verbose per-item tracing of why each rule/run was accepted or rejected (ON by default)."
     )
     parser.add_argument(
         "--trace-limit",
@@ -353,16 +359,23 @@ def main():
         default=200,
         help="Maximum number of per-item trace lines to emit (default: 200)."
     )
+    parser.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="Disable verbose tracing (tracing is ON by default)."
+    )
 
     args = parser.parse_args()
     global TRACE_ENABLED, TRACE_REMAINING
-    # Disable trace output unconditionally (ignore --trace / --trace-limit flags)
-    TRACE_ENABLED = False
-    TRACE_REMAINING = 0
+    # Tracing is ON by default; --no-trace disables it
+    TRACE_ENABLED = False if args.no_trace else bool(args.trace)
+    TRACE_REMAINING = int(args.trace_limit)
 
     source_prefix = normalize_posix(args.source_path)
     rules_file = Path(args.rules_file).expanduser()
     print(f"[info] Using rules file: {rules_file}")
+    print(f"[info] Source prefix: {source_prefix} (case_insensitive={args.case_insensitive})")
+    print(f"[info] Trace: {'ON' if TRACE_ENABLED else 'OFF'} (limit={TRACE_REMAINING})")
 
     rules = load_rules(rules_file)
     print(f"[info] Loaded {len(rules)} rules")
@@ -381,7 +394,25 @@ def main():
     if args.root_path:
         runs_file = Path(args.runs_file).expanduser()
         runs = load_runs(runs_file)
+        # Diagnostics: how many runs and what roots exist
+        print(f"[info] Scanned {len(runs)} runs from {runs_file}")
+        distinct_roots = []
+        seen_roots = set()
+        for r in runs:
+            rd = r.get("root_dir") or r.get("root_path")
+            if not rd:
+                continue
+            norm_rd = normalize_fs_path(str(rd)).lower()
+            if norm_rd not in seen_roots:
+                seen_roots.add(norm_rd)
+                distinct_roots.append(rd)
+        if distinct_roots:
+            sample_roots = ", ".join(distinct_roots[:3])
+            more = "" if len(distinct_roots) <= 3 else f" (+{len(distinct_roots)-3} more)"
+            print(f"[info] runs.json distinct roots (sample): {sample_roots}{more}")
         allowed_ids = collect_rule_ids_for_root(runs, args.root_path)
+        # Show normalized root target
+        print(f"[info] Root-path filter target: {normalize_fs_path(args.root_path)}")
         if allowed_ids:
             before = len(rules)
             filtered_rules = []
@@ -398,16 +429,38 @@ def main():
             print(f"[info] Filtered by root-path: {args.root_path}")
             print(f"[info] runs.json: {runs_file}")
             print(f"[info] Allowed rule_ids: {len(allowed_ids)}; rules kept: {len(rules)} (from {before})")
+            # Print a small sample of allowed ids to help troubleshoot
+            sample_ids = ", ".join(list(sorted(allowed_ids))[:10])
+            print(f"[info] Sample of allowed rule_ids: {sample_ids if sample_ids else '(none)'}")
         else:
-            print(f"[warn] No matching runs/rule_ids found for root-path: {args.root_path}. Result may be empty.")
+            # No matching allowed IDs found for the provided root
+            msg = (
+                f"[warn] No matching runs/rule_ids found for root-path: {args.root_path}. "
+                "If you expected matches, check that runs.json has rule_ids for the desired root and that the paths match after realpath/expanduser."
+            )
+            print(msg)
+            # Strict mode is the default when --root-path is provided, unless --no-strict-root is passed
+            strict_mode = not args.no_strict_root
+            if strict_mode:
+                print("[info] Strict root (default) active: producing an empty result due to no matches. Use --no-strict-root to disable.")
+                rules = []
+            else:
+                print("[info] Proceeding without root filter (--no-strict-root was specified).")
     else:
         original_rules = rules[:]
 
     grouped = group_rules_by_file(rules, source_prefix, args.case_insensitive, args.include_archived)
     print(f"[info] Found {len(grouped)} files under {source_prefix}")
-
     total_rules = sum(len(rules) for rules in grouped.values())
     print(f"[info] Exported {total_rules} rules across {len(grouped)} files")
+    # Show a small sample of files and their rule counts to aid troubleshooting
+    if grouped:
+        preview_items = []
+        for i, (cf, items) in enumerate(grouped.items()):
+            if i >= 5:
+                break
+            preview_items.append(f"{cf} ({len(items)} rules)")
+        print(f"[info] Files preview: {', '.join(preview_items)}")
 
     if args.format == "plain":
         text = format_plain(grouped)
