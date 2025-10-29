@@ -1,0 +1,10 @@
+Domain Specific Hints
+* Code is AS400 source code.
+* It is quite OK for AS400 variables to be all uppercase.
+* Here are examples of "type" for a file (all PascalCase): SourcePhysicalFile, DisplayFile, PrintFile, MessageFile, PhysicalFile, LogicalFile
+* Here are examples of "type" for a fragment (all PascalCase): Comments, File, DataStructures, Prototypes, Indicators, ProgramLogic, Subroutines, DisplayAttributes, RecordFormat, DisplayText
+* The code contains a dynamic menu system where the menus and the options for each menu are described in data. 
+* For each menu option describes 1) menu name 2) menu option number 3) option type being either a submenu, or a command/program to call 3) option description 4) the sub-menu or command/program to call.
+* Commmand to process option indicates the flow between a menu and a submenu.
+* Inclucde menu option number when listing options as well as on navigation flows.
+* Each menu has a naming code as well as a description.

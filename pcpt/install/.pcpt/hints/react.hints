@@ -1,0 +1,8 @@
+Domain Specific Hints
+* Generate a single page application component using React, assuming there is a separate microservice that implements the backend which this component will call.
+* Use createRoot from react-dom/client instead of ReactDOM.render.
+* Keep list items in order with a key.
+* Ensure all buttons suggested by spec are shown and are functional.
+* Create an environment file to specify the port for the backend microservice as well as the names of the API properties used by the backend e.g. SHIPID instead of id.
+* Write out log statements to the browser's console
+* Follow best practices for React development.

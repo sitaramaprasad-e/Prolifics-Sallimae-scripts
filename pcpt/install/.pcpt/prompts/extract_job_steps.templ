@@ -1,0 +1,22 @@
+INPUT 1: JOB CODE
+
+@@INPUT1@@
+
+INSTRUCTIONS
+
+For the provided Talend Open Studio ETL job I want you to generate pseudo code describing in detail specifically what this job does so I can reimplement it. Generate as a set of sequenced job steps.
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting.
+* Seperate output into two main sections - section 1 - sequenced job steps, section 2 - supporting details.
+* The steps you generate must implement the logic from the original job code i.e. don't make the detail up.
+* Order the steps in the sequence that they are executed in.
+* Note any looping or conditional logic.
+* For each step there must be enough detail so that I can reimplement this job in another technology - be specific about what the step does describing the actual transformations done, actual aggregations done, names of things like files and URLs, all names, structures, rules, actual SQL, etc must be included. 
+
+Domain Hints
+* The flow and steps of a job are described in an .item file.
+* Each step is described as a node.
+* A sequence from one step to another is described as a connection with a source and target node.
+* Extract all of the details in each map task in excruciating detail.
+* tmaps transformations must be included and must provide 1) the source structure 2) the target structure 3) all transformation rules

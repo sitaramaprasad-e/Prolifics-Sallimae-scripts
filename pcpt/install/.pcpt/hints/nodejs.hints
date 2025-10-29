@@ -1,0 +1,5 @@
+Domain Specific Hints
+* Generate a microservice component using NodeJS, assuming there is a separate single page application that implements the frontend which will call this component.
+* Use CORS middleware to allow cross-origin requests.
+* For gets, updates and deletes, make sure to use a string comparison and not parseInt.
+* Follow best practices for NodeJS development.

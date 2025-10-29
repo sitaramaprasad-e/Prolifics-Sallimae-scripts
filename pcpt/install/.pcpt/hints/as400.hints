@@ -1,0 +1,5 @@
+Domain Specific Hints
+* Code is AS400 source code.
+* It is quite OK for AS400 variables to be all uppercase.
+* Here are examples of "type" for a file (all PascalCase): SourcePhysicalFile, DisplayFile, PrintFile, MessageFile, PhysicalFile, LogicalFile
+* Here are examples of "type" for a fragment (all PascalCase): Comments, File, DataStructures, Prototypes, Indicators, ProgramLogic, Subroutines, DisplayAttributes, RecordFormat, DisplayText
