@@ -25,6 +25,7 @@ You can override defaults via CLI flags; run with -h for help.
 """
 from __future__ import annotations
 
+
 import argparse
 import os
 import shutil
@@ -32,6 +33,9 @@ import subprocess
 import sys
 from datetime import datetime
 from typing import List, Optional
+
+# Resolve directory of this script (so we can locate sibling tools reliably)
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 
 # ----------------------------
 # Constants / Defaults
@@ -162,9 +166,13 @@ def main() -> None:
   root_path = os.path.realpath(os.path.abspath(os.getcwd()))
   _log(f"Detected root path: {root_path}")
 
+  # Build absolute path to the sibling exporter script so this works from any CWD
+  export_script = os.path.join(SCRIPT_DIR, "export_rules_for_markup.py")
+  _log(f"Using export script: {export_script}")
+
   export_cmd = [
       sys.executable,
-      "tools/export_rules_for_markup.py",
+      export_script,
       code_dir,
       "--root-path",
       root_path,
