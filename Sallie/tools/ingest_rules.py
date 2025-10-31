@@ -6,8 +6,31 @@ import uuid
 import glob
 import hashlib
 
+# ===== Lightweight TRACE logger (inline; no external files) =====
+import logging
+
+TRACE_LEVEL_NUM = 5
+logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
+
+def _trace(self, message, *args, **kws):
+    if self.isEnabledFor(TRACE_LEVEL_NUM):
+        self._log(TRACE_LEVEL_NUM, message, args, **kws)
+
+logging.Logger.trace = _trace
+
+def _setup_logger(verbose: bool = True):
+    level = TRACE_LEVEL_NUM if verbose else logging.INFO
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+LOG = logging.getLogger("ingest_rules")
+
 from datetime import datetime
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 
 # ===== Execution & Artifact linking (new) =====
 
@@ -25,6 +48,10 @@ def _prompt_model_home() -> str:
 
 MODEL_HOME = _prompt_model_home()
 
+# Enable TRACE logging by default and announce script start
+_setup_logger(verbose=True)
+LOG.info("[info] ingest_rules starting • MODEL_HOME=%s", MODEL_HOME)
+
 # ===== PCPT Header parsing for model/sources.json & model/runs.json (new) =====
 PCPT_PREFIX  = "[PCPTLOG:]"
 # Robust markers that ignore exact chevron counts; match by phrase
@@ -41,6 +68,50 @@ TEAMS_JSON = f"{MODEL_HOME}/.model/teams.json"
 COMPONENTS_JSON = f"{MODEL_HOME}/.model/components.json"
 PROMPT_PREFIX_FILTER = "business_rules_report"
 
+from datetime import timezone
+
+_AUDIT = []  # list of dicts
+
+def _audit_add(
+    kind: str,
+    path: str,
+    source: str,
+    decision: str,
+    reason: str,
+    tests: Optional[Dict[str, Any]] = None,
+    derived: Optional[Dict[str, Any]] = None,
+):
+    _AUDIT.append({
+        "kind": kind,
+        "path": path,
+        "source": source,
+        "decision": decision,
+        "reason": reason,
+        "tests": tests or {},
+        "derived": derived or {},
+    })
+
+def _audit_write(prefix: str) -> str:
+    try:
+        ts = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+        out_dir = os.path.join(os.getcwd(), ".audit")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"{prefix}_audit_{ts}.json")
+        meta = {
+            "script": "ingest_rules.py",
+            "model_home": MODEL_HOME,
+            "source_json": SOURCE_JSON,
+            "runs_json": RUNS_JSON,
+            "input_file": input_file if 'input_file' in globals() else "",
+            "timestamp": ts,
+        }
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"meta": meta, "entries": _AUDIT}, f, indent=2)
+        return out_path
+    except Exception as e:
+        LOG.trace("[trace] audit write failed: %s", e)
+        return ""
+
 # Log parsing patterns
 RE_OUTPUT_REPORT = re.compile(r"^\s*Output report:\s*(?P<path>.+)\s*$", re.IGNORECASE)
 RE_OUTPUT_ALSO  = re.compile(r"^\s*Output file created at:\s*(?P<path>.+)\s*$", re.IGNORECASE)
@@ -56,13 +127,176 @@ if len(sys.argv) < 2:
 
 input_file = sys.argv[1]
 
+LOG.info("[info] Input report   : %s", os.path.abspath(input_file))
+
 # Optional switch to force load (even if same name + timestamp already exists)
 FORCE_LOAD = any(arg in ("--force", "--force-load") for arg in sys.argv[2:])
 if FORCE_LOAD:
-    print("⚠️  Force-load enabled: rules will be ingested even if (rule_name, timestamp) already exists.")
+    LOG.info("[info] Force-load enabled: ingesting even if (rule_name,timestamp) already exists")
+
+# Optional mode: ingest rules from previous iterations of the same report (via PCPT logs)
+ALL_RUNS = any(arg == "--all-runs" for arg in sys.argv[2:]) or \
+           (os.environ.get("PCPT_INGEST_ALL_RUNS", "").lower() in {"1", "true", "yes"})
+if ALL_RUNS:
+    LOG.info("[info] All-runs mode: will also ingest rules from previous iterations via PCPT logs")
 
 file_mtime = os.path.getmtime(input_file)
 file_timestamp = datetime.utcfromtimestamp(file_mtime).replace(microsecond=0).isoformat() + "Z"
+
+# Helper to parse ISO timestamps safely
+def _parse_ts_safe(ts: str):
+    try:
+        t = str(ts or "").strip()
+        if not t:
+            return None
+        if t.endswith('Z'):
+            t = t[:-1]
+        return datetime.fromisoformat(t)
+    except Exception:
+        return None
+
+# Gather prior responses for the same output file using PCPT logs
+def _gather_prior_responses_for_same_output(out_path: str) -> List[Tuple[str, str]]:
+    """Return list of (timestamp, response_text) for previous runs based on a content anchor:
+    1) Anchor to the single run whose RESPONSE contains the full current report text (content match).
+    2) Then, from ALL runs, collect prior responses whose output_file tail matches the current report AND whose (root_dir, source_path, output_path) equal the anchor run's triple.
+    Results are sorted oldest-first. Returns an empty list if none are found.
+    """
+    try:
+        logs = _discover_pcpt_header_files()
+        _, runs = _build_sources_and_runs_from_logs(logs)
+    except Exception:
+        return []
+
+    def _tail2_key(p: str) -> str:
+        try:
+            n = os.path.normpath(str(p or "").strip())
+            parts = [seg for seg in n.replace("\\", "/").split("/") if seg]
+            if not parts:
+                return ""
+            if len(parts) >= 2:
+                return "/".join(parts[-2:]).casefold()
+            return parts[-1].casefold()
+        except Exception:
+            return ""
+
+    target_key = _tail2_key(out_path)
+    if not target_key:
+        return []
+    # Compute absolute path of current output and log exact match targets
+    try:
+        abs_target = os.path.abspath(out_path)
+    except Exception:
+        abs_target = ""
+    LOG.info("[match] Current output • abs='%s' • tail='%s'", abs_target, target_key)
+
+    # Establish anchor (root_dir, source_path, output_path) from a run that matches the *current report* by content.
+    anchor: Tuple[Optional[str], Optional[str], Optional[str]] = (None, None, None)
+    anchor_run: Optional[dict] = None
+
+    # Normalize current report text for content-based matching
+    doc_norm = ""
+    try:
+        with open(out_path, "r", encoding="utf-8", errors="ignore") as df:
+            doc_norm = _normalize_text(df.read())
+    except Exception:
+        doc_norm = ""
+
+    # (1) Anchor by content match only (runs are newest-first already)
+    if doc_norm:
+        for r in runs:
+            resp = _normalize_text(r.get("response_text") or "")
+            out_file_hdr = r.get("output_file")
+            if not out_file_hdr:
+                continue
+            if resp and (doc_norm in resp) and (_tail2_key(out_file_hdr) == target_key):
+                anchor = (r.get("root_dir"), r.get("source_path"), r.get("output_path"))
+                anchor_run = r
+                LOG.info("[match] Report matched to run via content • ts=%s • build=%s • provider=%s • model=%s • log=%s",
+                         r.get("timestamp"), r.get("build"), r.get("provider"), r.get("model"), r.get("log_file"))
+                break
+
+    a_root, a_src, a_outp = anchor
+    if not (a_root and a_src and a_outp):
+        LOG.info("[match] No content anchor found — the current report's text did not appear in any run's RESPONSE. Skipping prior-runs ingestion.")
+        return []
+
+    # Print the exact targets and the run we matched on for the report
+    LOG.info("[match] Targets • root_dir='%s' • source_path='%s' • output_path='%s' • output_file.tail='%s'", a_root, a_src, a_outp, target_key)
+    LOG.info("[match] Using anchor run • ts=%s • build=%s • provider=%s • model=%s • root_dir='%s' • source_path='%s' • output_path='%s' • output_file='%s' • log=%s",
+             anchor_run.get("timestamp"), anchor_run.get("build"), anchor_run.get("provider"), anchor_run.get("model"),
+             anchor_run.get("root_dir"), anchor_run.get("source_path"), anchor_run.get("output_path"),
+             anchor_run.get("output_file"), anchor_run.get("log_file"))
+
+    # Start by ingesting the run for the current report (the anchor itself)
+    anchor_ts = str(anchor_run.get("timestamp") or "")
+    anchor_resp = (anchor_run.get("response_text") or "").strip()
+    items: List[Tuple[str, str]] = []
+    if anchor_resp:
+        items.append((anchor_ts, anchor_resp))
+    tail_hits = 0
+    full_hits = 0
+    tail_only_mismatches = 0
+    tail_mismatch_samples: List[Dict[str, str]] = []
+    # Will collect earlier matches here
+    earlier_items: List[Tuple[str, str]] = []
+    for r in runs:
+        ts = r.get("timestamp") or ""
+        resp = (r.get("response_text") or "").strip()
+        if not resp:
+            continue
+
+        out_file_hdr = r.get("output_file")
+        if not out_file_hdr:
+            continue
+
+        is_tail = (_tail2_key(out_file_hdr) == target_key)
+        if is_tail:
+            tail_hits += 1
+            # Per-run concise trace of what we're matching against (only when tail matches to limit noise)
+            eq_root = (r.get("root_dir") == a_root)
+            eq_src  = (r.get("source_path") == a_src)
+            eq_outp = (r.get("output_path") == a_outp)
+            LOG.trace("[check] tail OK • run.tail='%s' == target.tail='%s' • root('%s' == '%s')=%s • src('%s' == '%s')=%s • out('%s' == '%s')=%s • log=%s",
+                      _tail2_key(out_file_hdr), target_key,
+                      r.get("root_dir"), a_root, eq_root,
+                      r.get("source_path"), a_src, eq_src,
+                      r.get("output_path"), a_outp, eq_outp,
+                      r.get("log_file"))
+        full_match = (is_tail
+                    and r.get("root_dir") == a_root
+                    and r.get("source_path") == a_src
+                    and r.get("output_path") == a_outp)
+        if full_match:
+            LOG.trace("[check] FULL MATCH • tail='%s' • root='%s' • src='%s' • out='%s' • log=%s",
+                      target_key, a_root, a_src, a_outp, r.get("log_file"))
+            full_hits += 1
+            # Only consider runs earlier than the anchor
+            if (_parse_ts_safe(ts) or datetime.min) < (_parse_ts_safe(anchor_ts) or datetime.max):
+                earlier_items.append((ts, resp))
+        elif is_tail:
+            tail_only_mismatches += 1
+            if len(tail_mismatch_samples) < 5:
+                tail_mismatch_samples.append({
+                    "run_root": str(r.get("root_dir") or ""),
+                    "run_source": str(r.get("source_path") or ""),
+                    "run_output": str(r.get("output_path") or ""),
+                    "run_outfile": str(out_file_hdr or ""),
+                    "log": str(r.get("log_file") or "")
+                })
+
+    # Sort earlier items oldest-first, then append after the anchor
+    earlier_items.sort(key=lambda t: _parse_ts_safe(t[0]) or datetime.min)
+    items.extend(earlier_items)
+    LOG.info("[info] Earlier matching runs found: %d (added after anchor)", len(earlier_items))
+    LOG.info("[info] Prior iterations summary • criteria tail='%s' • root='%s' • src='%s' • out='%s' • considered=%d • tail-matches=%d • full-matches=%d • tail-only-mismatches=%d",
+             target_key, a_root, a_src, a_outp, len(runs), tail_hits, full_hits, tail_only_mismatches)
+    for sm in tail_mismatch_samples:
+        LOG.info("[mismatch] tail matched but root/src/out differ • run_root='%s' • run_src='%s' • run_out='%s' • run_outfile='%s' • log='%s'",
+                 sm["run_root"], sm["run_source"], sm["run_output"], sm["run_outfile"], sm["log"])
+    for ts, _ in items:
+        _audit_add(kind="run", path=str(out_path), source="pcpt_logs", decision="considered", reason="prior iteration", tests={"timestamp": ts}, derived={})
+    return items
 
 # Helper for normalized deduplication key
 def _dedupe_key(rule_name, timestamp):
@@ -225,6 +459,10 @@ def _iter_pcpt_runs(text: str):
 def _build_sources_and_runs_from_logs(log_paths):
     sources = {}  # root_dir -> set(source_paths)
     runs = []
+    skipped_no_build = 0
+    skipped_old_build = 0
+    skipped_no_prompt = 0
+    skipped_prefix = 0
     for log_path in log_paths:
         try:
             with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -240,7 +478,11 @@ def _build_sources_and_runs_from_logs(log_paths):
                     build_num = int(str(build_raw).strip())
                 except Exception:
                     build_num = None
-            if build_num is None or build_num < MIN_BUILD_NUM:
+            if build_num is None:
+                skipped_no_build += 1
+                continue
+            if build_num < MIN_BUILD_NUM:
+                skipped_old_build += 1
                 continue
             root_dir = rec.get("root_dir")
             source_path = rec.get("source_path")
@@ -250,10 +492,15 @@ def _build_sources_and_runs_from_logs(log_paths):
             prompt = rec.get("prompt") or rec.get("prompt_template")
             # Filter: only keep runs whose prompt starts with the required prefix
             _p_txt = (str(prompt).strip() if prompt is not None else "")
+            if not _p_txt:
+                skipped_no_prompt += 1
+                continue
             if not _p_txt.startswith(PROMPT_PREFIX_FILTER):
+                skipped_prefix += 1
                 continue
             if root_dir and source_path:
                 sources.setdefault(root_dir, set()).add(str(source_path))
+            _audit_add("run", path=str(rec.get("output_file") or ""), source=str(log_path), decision="accepted", reason="header ok", tests={"build": build_num, "prompt_startswith": True}, derived={"timestamp": rec.get("timestamp")})
             runs.append({
                 "timestamp": rec.get("timestamp"),
                 "build": rec.get("build"),
@@ -296,6 +543,9 @@ def _build_sources_and_runs_from_logs(log_paths):
         {"root_dir": rd, "source_paths": sorted(list(paths))}
         for rd, paths in sorted(sources.items(), key=lambda x: x[0])
     ]
+    LOG.info("[info] Looking for runs with: build ≥ %s and prompt startswith '%s'", MIN_BUILD_NUM, PROMPT_PREFIX_FILTER)
+    LOG.info("[info] Accepted runs: %d (skipped: no/invalid build=%d, old build=%d, no prompt=%d, prefix mismatch=%d)",
+             len(runs), skipped_no_build, skipped_old_build, skipped_no_prompt, skipped_prefix)
     return sources_out, runs
 
 def _discover_pcpt_header_files() -> list:
@@ -342,6 +592,7 @@ def _discover_pcpt_header_files() -> list:
             continue
     # Sort by file mtime (newest first)
     files.sort(key=lambda t: t[1], reverse=True)
+    LOG.info("[info] PCPT header candidate files discovered: %d", len(files))
     return [path for path, _ in files]
 
 
@@ -356,12 +607,15 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
       • When `link_all` is True: attach to **all** matching runs.
     No path-based fallback is performed.
     """
+    LOG.info("[info] Building sources/runs from logs…")
     logs = _discover_pcpt_header_files()
     if os.environ.get("PCPT_DEBUG"):
-        print(f"[DEBUG] PCPT header candidate files: {len(logs)}")
+        LOG.info("[info] PCPT header candidate files: %d", len(logs))
         for p in logs[:15]:
-            print(f"[DEBUG]  - {p}")
+            LOG.trace("[trace] candidate: %s", p)
     sources_out, runs = _build_sources_and_runs_from_logs(logs)
+    LOG.info("[info] Runs discovered : %d", len(runs))
+    LOG.info("[info] Roots discovered: %d", len(sources_out))
     # Prepare normalized text of the current output document (if provided)
     doc_norm = ""
     if output_file_path and os.path.exists(output_file_path):
@@ -396,6 +650,8 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
                     rec["rule_ids"] = list(prev_ids)
                 except Exception:
                     rec["rule_ids"] = prev_ids
+                LOG.info("[info] preserved rule_ids for run ts=%s log=%s (count=%d)", rec.get("timestamp"), rec.get("log_file"), len(prev_ids))
+                _audit_add("run", path=str(rec.get("log_file")), source="runs.json(prev)", decision="accepted", reason="existing links preserved", tests={"preserved": True}, derived={"count": len(prev_ids)})
     # Optionally attach rule IDs for the current run based on the produced report path
     if rule_ids_for_output and output_file_path:
         try:
@@ -448,6 +704,8 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
                         combined = list(existing) + [rid for rid in ids_list if rid not in set(existing)]
                     except Exception:
                         combined = ids_list
+                    LOG.info("[info] link rules → run: idx=%d ts=%s log=%s ids=%d", idx, runs[idx].get("timestamp"), runs[idx].get("log_file"), len(ids_list))
+                    _audit_add("link", path=str(output_file_path), source=str(runs[idx].get("log_file")), decision="accepted", reason="content match", tests={"matched": True}, derived={"rule_ids": ids_list})
                     runs[idx]["rule_ids"] = combined
     os.makedirs(os.path.dirname(SOURCE_JSON), exist_ok=True)
     _save_json_file(SOURCE_JSON, sources_out)
@@ -502,19 +760,6 @@ for rule in existing_rules:
     if k:
         seen.add(k)
 
-with open(input_file, "r", encoding="utf-8") as f:
-    text = f.read()
-
-# Normalize various "Rule Name" heading formats to a consistent "## " heading
-text = re.sub(r"#{2,6}\s*\d+\.\s*\*\*Rule Name:\*\*\s*", "## ", text)   # e.g., "### 1. **Rule Name:**"
-text = re.sub(r"#{2,6}\s*\*\*Rule Name:\*\*\s*", "## ", text)            # e.g., "### **Rule Name:**"
-text = re.sub(r"#{2,6}\s*\d+\.\s*Rule Name:\s*", "## ", text)            # e.g., "### 1. Rule Name:"
-text = re.sub(r"#{2,6}\s*Rule Name:\s*", "## ", text)                    # e.g., "### Rule Name:"
-text = re.sub(r"\n---+\n", "\n", text)                                   # Remove separators
-
-# Also handle non-heading "Rule Name" lines (e.g., "**Rule Name:** <name>" or "Rule Name: <name>")
-text = re.sub(r"(?m)^\s*\*\*Rule Name:\*\*\s*", "## ", text)        # "**Rule Name:** ..." -> "## ..."
-text = re.sub(r"(?m)^\s*Rule Name:\s*", "## ", text)                # "Rule Name: ..."    -> "## ..."
 
 # Defaults for team/owner and component must be empty strings (per requirement)
 default_owner = ""
@@ -528,239 +773,224 @@ _ingest_component = _prompt_with_default("Enter component to set on all rules", 
 _append_unique_value(TEAMS_JSON, _ingest_owner)
 _append_unique_value(COMPONENTS_JSON, _ingest_component)
 
-# Split into rule sections
-rule_sections = re.split(r"(?m)^\s{0,3}#{1,6}\s+", text.strip())[1:]
-
 updated_count = 0
 new_count = 0
 considered_count = 0
-
 new_rules = []
 
-for section in rule_sections:
-    considered_count += 1
-    try:
-        lines = section.strip().splitlines()
-        # Prefer the section heading itself as the rule name.
-        rule_name = _heading_text(lines[0])
+def _normalize_rule_doc_text(t: str) -> str:
+    # Normalize various "Rule Name" heading formats to a consistent "## " heading
+    t = re.sub(r"#{2,6}\s*\d+\.\s*\*\*Rule Name:\*\*\s*", "## ", t)   # e.g., "### 1. **Rule Name:**"
+    t = re.sub(r"#{2,6}\s*\*\*Rule Name:\*\*\s*", "## ", t)            # e.g., "### **Rule Name:**"
+    t = re.sub(r"#{2,6}\s*\d+\.\s*Rule Name:\s*", "## ", t)            # e.g., "### 1. Rule Name:"
+    t = re.sub(r"#{2,6}\s*Rule Name:\s*", "## ", t)                      # e.g., "### Rule Name:"
+    t = re.sub(r"\n---+\n", "\n", t)                                     # Remove separators
+    # Also handle non-heading inline forms
+    t = re.sub(r"(?m)^\s*\*\*Rule Name:\*\*\s*", "## ", t)
+    t = re.sub(r"(?m)^\s*Rule Name:\s*", "## ", t)
+    return t
 
-        # Fallback: if the heading is generic or empty, look for an explicit label inside the section.
-        if not rule_name or rule_name.lower() in {"rule name", "rule-name"}:
-            rn_match = re.search(r"\*\*Rule Name:\*\*\s*(.+)", section)
-            if rn_match:
-                rule_name = rn_match.group(1).strip()
-
-        # Extract Rule Purpose
-        purpose_match = re.search(r"\*\*Rule Purpose:\*\*\s*\n?(.*?)(?=\n\*\*Rule Spec|\n\*\*Specification|\n\*\*Code Block|\n\*\*Example|$)", section, re.DOTALL)
-        rule_purpose = purpose_match.group(1).strip() if purpose_match else ""
-
-        # Extract Rule Spec
-        spec_match = re.search(r"\*\*Rule Spec:\*\*|\*\*Specification:\*\*", section)
-        if spec_match:
-            start = spec_match.end()
-            next_marker = re.search(
-                r"\n\*\*(Code Block|Example):\*\*|\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", section[start:], re.DOTALL | re.IGNORECASE
-            )
-            end = next_marker.start() + start if next_marker else len(section)
-            rule_spec = section[start:end].strip()
-        else:
-            rule_spec = ""
-
-        # Extract Code Block from any fenced code block (e.g., ```javascript, ```xml, ```apex, ```sql, or no language)
-        code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", section, re.DOTALL)
-        code_block = code_match.group(1).strip() if code_match else ""
-
-        # Extract Example
-        example_match = re.search(
-            r"\*\*Example:\*\*\s*\n?(.*?)(?=\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?|\n## |\Z)",
-            section,
-            re.DOTALL | re.IGNORECASE,
-        )
-        example = example_match.group(1).strip() if example_match else ""
-        # Safety: strip any embedded DMN marker from example if present
-        if example:
-            example = re.split(r"\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", example, flags=re.IGNORECASE)[0].strip()
-
-        # Extract DMN block (now parses hit policy, inputs, outputs, and table)
-        dmn_hit_policy = ""
-        dmn_inputs = []
-        dmn_outputs = []
-        dmn_table = ""
-
-        dmn_match = re.search(
-            r"(?:^|\n)(?:\*{0,2}\s*)?DMN\s*:\s*\n?(.*?)(?=\n## |\Z)",
-            section,
-            re.DOTALL | re.IGNORECASE,
-        )
-        if dmn_match:
-            raw_dmn = dmn_match.group(1).strip()
-            # If DMN is in a fenced code block, extract the inner content
-            m_code = re.search(r"```.*?\n(.*?)```", raw_dmn, re.DOTALL)
-            dmn_body = m_code.group(1).strip() if m_code else raw_dmn
-            # Remove markdown artifacts: backticks and bold markers
-            dmn_body = re.sub(r"`+", "", dmn_body)
-            dmn_body = re.sub(r"\*\*", "", dmn_body)
-
-            # Hit Policy
-            m_hp = re.search(r"Hit\s*Policy\s*:\s*([A-Za-z_]+)", dmn_body, re.IGNORECASE)
-            if m_hp:
-                dmn_hit_policy = m_hp.group(1).strip()
-
-            # Inputs section (bulleted "- name: type" or "* name: type", accepts optional backticks)
-            m_inputs = re.search(r"Inputs\s*:\s*\n(?P<block>(?:\s*[-*]\s*.*(?:\n|$))+)", dmn_body, re.IGNORECASE)
-            if m_inputs:
-                for ln in m_inputs.group("block").splitlines():
-                    ln = ln.strip()
-                    if not (ln.startswith("-") or ln.startswith("*")):
-                        continue
-                    ln = ln.lstrip("-*").strip()
-                    if ":" in ln:
-                        name, typ = ln.split(":", 1)
-                        name = name.strip().strip('`')
-                        typ = typ.strip().strip('`')
-                        dmn_inputs.append({"name": name, "type": typ})
-                    else:
-                        field = ln.strip().strip('`')
-                        dmn_inputs.append({"name": field, "type": ""})
-
-            # Outputs section (bulleted "- name: type" or "* name: type", accepts optional backticks)
-            m_outputs = re.search(r"Outputs\s*:\s*\n(?P<block>(?:\s*[-*]\s*.*(?:\n|$))+)", dmn_body, re.IGNORECASE)
-            if m_outputs:
-                for ln in m_outputs.group("block").splitlines():
-                    ln = ln.strip()
-                    if not (ln.startswith("-") or ln.startswith("*")):
-                        continue
-                    ln = ln.lstrip("-*").strip()
-                    if ":" in ln:
-                        name, typ = ln.split(":", 1)
-                        name = name.strip().strip('`')
-                        typ = typ.strip().strip('`')
-                        dmn_outputs.append({"name": name, "type": typ})
-                    else:
-                        field = ln.strip().strip('`')
-                        dmn_outputs.append({"name": field, "type": ""})
-
-            # Decision table (contiguous block of lines containing '|' or divider rows)
-            lines = [ln.rstrip() for ln in dmn_body.splitlines()]
-            table_lines = []
-            in_table = False
-            for ln in lines:
-                if ("|" in ln) or ("+" in ln) or re.search(r"-{2,}", ln):
-                    table_lines.append(ln.rstrip())
-                    in_table = True
-                else:
-                    if in_table:
-                        break
-            dmn_table = "\n".join(table_lines).strip()
-
-        # Skip if rule with same name and timestamp already exists in seen
-        k = _dedupe_key(rule_name, file_timestamp)
-        if k in seen and not FORCE_LOAD:
-            continue
-
-        existing = existing_by_name.get(rule_name)
-        if existing:
-            old_ts = existing.get("timestamp")
-            # If not forcing, keep the old (newer-or-same) rule and skip updating.
-            if not FORCE_LOAD and old_ts and old_ts >= file_timestamp:
+def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: Optional[set] = None):
+    global updated_count, new_count, considered_count
+    t = _normalize_rule_doc_text(doc_text or "")
+    rule_sections = re.split(r"(?m)^\s{0,3}#{1,6}\s+", t.strip())[1:]
+    for section in rule_sections:
+        considered_count += 1
+        try:
+            lines = section.strip().splitlines()
+            rule_name = _heading_text(lines[0])
+            if not rule_name or rule_name.lower() in {"rule name", "rule-name"}:
+                rn_match = re.search(r"\*\*Rule Name:\*\*\s*(.+)", section)
+                if rn_match:
+                    rule_name = rn_match.group(1).strip()
+            # If an allowlist is provided (used for prior-runs mode), skip names not in the set
+            if allowed_names is not None and rule_name not in allowed_names:
                 continue
-            # Otherwise, we will update/replace the existing record
-            rule_id = existing.get("id") or str(uuid.uuid4())
-            updated_count += 1
-        else:
-            # No existing record by this name -> new rule
-            rule_id = str(uuid.uuid4())
-            new_count += 1
+            purpose_match = re.search(r"\*\*Rule Purpose:\*\*\s*\n?(.*?)(?=\n\*\*Rule Spec|\n\*\*Specification|\n\*\*Code Block|\n\*\*Example|$)", section, re.DOTALL)
+            rule_purpose = purpose_match.group(1).strip() if purpose_match else ""
+            spec_match = re.search(r"\*\*Rule Spec:\*\*|\*\*Specification:\*\*", section)
+            if spec_match:
+                start = spec_match.end()
+                next_marker = re.search(r"\n\*\*(Code Block|Example):\*\*|\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", section[start:], re.DOTALL | re.IGNORECASE)
+                end = next_marker.start() + start if next_marker else len(section)
+                rule_spec = section[start:end].strip()
+            else:
+                rule_spec = ""
+            code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", section, re.DOTALL)
+            code_block = code_match.group(1).strip() if code_match else ""
+            example_match = re.search(r"\*\*Example:\*\*\s*\n?(.*?)(?=\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?|\n## |\Z)", section, re.DOTALL | re.IGNORECASE)
+            example = example_match.group(1).strip() if example_match else ""
+            if example:
+                example = re.split(r"\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", example, flags=re.IGNORECASE)[0].strip()
+            dmn_hit_policy = ""
+            dmn_inputs, dmn_outputs = [], []
+            dmn_table = ""
+            dmn_match = re.search(r"(?:^|\n)(?:\*{0,2}\s*)?DMN\s*:\s*\n?(.*?)(?=\n## |\Z)", section, re.DOTALL | re.IGNORECASE)
+            if dmn_match:
+                raw_dmn = dmn_match.group(1).strip()
+                m_code = re.search(r"```.*?\n(.*?)```", raw_dmn, re.DOTALL)
+                dmn_body = m_code.group(1).strip() if m_code else raw_dmn
+                dmn_body = re.sub(r"`+", "", dmn_body)
+                dmn_body = re.sub(r"\*\*", "", dmn_body)
+                m_hp = re.search(r"Hit\s*Policy\s*:\s*([A-Za-z_]+)", dmn_body, re.IGNORECASE)
+                if m_hp:
+                    dmn_hit_policy = m_hp.group(1).strip()
+                m_inputs = re.search(r"Inputs\s*:\s*\n(?P<block>(?:\s*[-*]\s*.*(?:\n|$))+)", dmn_body, re.IGNORECASE)
+                if m_inputs:
+                    for ln in m_inputs.group("block").splitlines():
+                        ln = ln.strip()
+                        if not (ln.startswith("-") or ln.startswith("*")):
+                            continue
+                        ln = ln.lstrip("-*").strip()
+                        if ":" in ln:
+                            name, typ = ln.split(":", 1)
+                            name = name.strip().strip('`')
+                            typ = typ.strip().strip('`')
+                            dmn_inputs.append({"name": name, "type": typ})
+                        else:
+                            field = ln.strip().strip('`')
+                            dmn_inputs.append({"name": field, "type": ""})
+                m_outputs = re.search(r"Outputs\s*:\s*\n(?P<block>(?:\s*[-*]\s*.*(?:\n|$))+)", dmn_body, re.IGNORECASE)
+                if m_outputs:
+                    for ln in m_outputs.group("block").splitlines():
+                        ln = ln.strip()
+                        if not (ln.startswith("-") or ln.startswith("*")):
+                            continue
+                        ln = ln.lstrip("-*").strip()
+                        if ":" in ln:
+                            name, typ = ln.split(":", 1)
+                            name = name.strip().strip('`')
+                            typ = typ.strip().strip('`')
+                            dmn_outputs.append({"name": name, "type": typ})
+                        else:
+                            field = ln.strip().strip('`')
+                            dmn_outputs.append({"name": field, "type": ""})
+                lines2 = [ln.rstrip() for ln in dmn_body.splitlines()]
+                table_lines, in_table = [], False
+                for ln in lines2:
+                    if ("|" in ln) or ("+" in ln) or re.search(r"-{2,}", ln):
+                        table_lines.append(ln.rstrip())
+                        in_table = True
+                    else:
+                        if in_table:
+                            break
+                dmn_table = "\n".join(table_lines).strip()
+            # Dedup key uses the per-section timestamp now
+            k = _dedupe_key(rule_name, section_timestamp)
+            if k in seen and not FORCE_LOAD:
+                _audit_add("rule", path="section", source="input_doc", decision="rejected", reason="duplicate or older", tests={"key": str(k), "force": FORCE_LOAD}, derived={})
+                continue
+            existing = existing_by_name.get(rule_name)
+            if existing:
+                old_ts = existing.get("timestamp")
+                if not FORCE_LOAD and old_ts and old_ts >= section_timestamp:
+                    _audit_add("rule", path="section", source="input_doc", decision="rejected", reason="duplicate or older", tests={"key": str(k), "force": FORCE_LOAD}, derived={})
+                    continue
+                rule_id = existing.get("id") or str(uuid.uuid4())
+                updated_count += 1
+            else:
+                rule_id = str(uuid.uuid4())
+                new_count += 1
+            seen.add(k)
+            # code_file
+            code_file = ""
+            code_lines = None
+            m_codefile_inline = re.search(r"\*\*Code\s*Block:\*\*\s*`?([^`\n]+)`?", section, re.IGNORECASE)
+            if m_codefile_inline:
+                code_file = m_codefile_inline.group(1).strip()
+            else:
+                m_codefile_fileline = re.search(r"(?mi)^\s*File:\s*`?([^`\n]+)`?", section)
+                if m_codefile_fileline:
+                    code_file = m_codefile_fileline.group(1).strip()
+            if code_file:
+                code_file = code_file.replace("`", "").strip()
+            m_codelines = re.search(r"\bLine(?:s)?\s*:??\s*(\d+)(?:\s*[\-\u2013\u2014]\s*(\d+))?", section, re.IGNORECASE)
+            if m_codelines:
+                try:
+                    start_line = int(m_codelines.group(1))
+                    end_line = m_codelines.group(2)
+                    if end_line is not None:
+                        end_line = int(end_line)
+                    else:
+                        end_line = start_line
+                    code_lines = [start_line, end_line]
+                except Exception:
+                    code_lines = None
+            code_function = ""
+            m_codefunc = re.search(r"(?mi)^\s*Function\b\s*[:\-\u2013\u2014]*\s*`?([^`\n]+)`?", section)
+            if m_codefunc:
+                code_function = m_codefunc.group(1).strip()
+                code_function = re.sub(r"^[\s:;\-\u2013\u2014]+", "", code_function).strip()
+            rule_rec = {
+                "rule_name": rule_name,
+                "rule_purpose": rule_purpose,
+                "rule_spec": rule_spec,
+                "code_block": code_block,
+                "code_file": code_file,
+                "code_lines": code_lines,
+                "code_function": code_function,
+                "example": example,
+                "dmn_hit_policy": dmn_hit_policy,
+                "dmn_inputs": dmn_inputs,
+                "dmn_outputs": dmn_outputs,
+                "dmn_table": dmn_table,
+                "timestamp": section_timestamp,
+                "id": rule_id,
+                "owner": _ingest_owner,
+                "component": _ingest_component,
+            }
+            if existing and existing.get("archived") is not None:
+                rule_rec["archived"] = existing["archived"]
+            if FORCE_LOAD and existing:
+                for src_key in ("rule_category", "category", "category_id", "categoryId"):
+                    val = existing.get(src_key)
+                    if val not in (None, "", []):
+                        rule_rec["rule_category"] = val
+                        break
+            _audit_add("rule", path=rule_rec.get("code_file") or "", source="input_doc", decision="accepted", reason=("updated" if existing else "new"), tests={"has_code_block": bool(code_block)}, derived={"rule_id": rule_id, "rule_name": rule_name})
+            LOG.info("[info] ✓ %s rule: %s", ("updated" if existing else "new"), rule_name)
+            new_rules.append(rule_rec)
+        except Exception as e:
+            print(f"Failed to parse a rule section:\n{section[:100]}...\nError: {e}")
 
-        seen.add(k)
+ # First ingest the current file content (collect current rule names)
+LOG.info("[step 1/4] Parsing current report to extract rules…")
+with open(input_file, "r", encoding="utf-8") as f:
+    _add_rules_from_text(f.read(), file_timestamp)
 
-        # Extract code file path (from either the "**Code Block:** <path>" inline form, or a subsequent "File: <path>" line)
-        code_file = ""
-        code_lines = None
-
-        # 1) Try inline form on the same line as **Code Block:**
-        m_codefile_inline = re.search(r"\*\*Code\s*Block:\*\*\s*`?([^`\n]+)`?", section, re.IGNORECASE)
-        if m_codefile_inline:
-            code_file = m_codefile_inline.group(1).strip()
-        else:
-            # 2) Try a following line that starts with "File: <path>" (common in newer docs)
-            m_codefile_fileline = re.search(r"(?mi)^\s*File:\s*`?([^`\n]+)`?", section)
-            if m_codefile_fileline:
-                code_file = m_codefile_fileline.group(1).strip()
-
-        # Final trim & backtick cleanup if anything slipped through
-        if code_file:
-            code_file = code_file.replace("`", "").strip()
-
-        # Support formats like:
-        #   "Line: 68-70" or "Lines: 68-70" (hyphen, en dash, or em dash)
-        #   "Line: 68" (single line)
-        #   case-insensitive, optional colon
-        m_codelines = re.search(r"\bLine(?:s)?\s*:??\s*(\d+)(?:\s*[\-\u2013\u2014]\s*(\d+))?", section, re.IGNORECASE)
-        if m_codelines:
-            try:
-                start_line = int(m_codelines.group(1))
-                end_line = m_codelines.group(2)
-                if end_line is not None:
-                    end_line = int(end_line)
-                else:
-                    end_line = start_line
-                code_lines = [start_line, end_line]
-            except Exception:
-                code_lines = None
-
-        # Optional: extract function name within the code block context (backwards compatible)
-        # Supports lines like:
-        #   "Function: Check_Brand decision"
-        #   "Function: `Check Brand`"
-        #   case-insensitive, optional colon/dash/en dash/em dash, optional surrounding backticks
-        code_function = ""
-        m_codefunc = re.search(r"(?mi)^\s*Function\b\s*[:\-\u2013\u2014]*\s*`?([^`\n]+)`?", section)
-        if m_codefunc:
-            code_function = m_codefunc.group(1).strip()
-            # Clean up any leading separators accidentally captured (e.g., ":  ", "- ")
-            code_function = re.sub(r"^[\s:;\-\u2013\u2014]+", "", code_function).strip()
-
-        new_rules.append({
-            "rule_name": rule_name,
-            "rule_purpose": rule_purpose,
-            "rule_spec": rule_spec,
-            "code_block": code_block,
-            "code_file": code_file,
-            "code_lines": code_lines,
-            "code_function": code_function,
-            "example": example,
-            "dmn_hit_policy": dmn_hit_policy,
-            "dmn_inputs": dmn_inputs,
-            "dmn_outputs": dmn_outputs,
-            "dmn_table": dmn_table,
-            "timestamp": file_timestamp,
-            "id": rule_id,
-            "owner": _ingest_owner,
-            "component": _ingest_component,
-        })
-
-    except Exception as e:
-        print(f"Failed to parse a rule section:\n{section[:100]}...\nError: {e}")
+# Then, if requested, ingest prior iterations **only for rules that already exist**
+if ALL_RUNS:
+    LOG.info("[step 2/4] Searching logs for prior iterations (same output file, same root/src/out)…")
+    prior_items = _gather_prior_responses_for_same_output(input_file)
+    if prior_items:
+        print(f"[info] All-runs: found {len(prior_items)} prior iteration(s) for {input_file}")
+    # Allow only names that already exist (either previously in the model, or just parsed from the current file)
+    _existing_names = set(existing_by_name.keys())
+    _current_names  = {r.get("rule_name") for r in new_rules if r.get("rule_name")}
+    _allowed_names  = _existing_names.union(_current_names)
+    for ts, resp_text in prior_items:
+        _add_rules_from_text(resp_text, ts or file_timestamp, allowed_names=_allowed_names)
 
 final_rules = {r["rule_name"]: r for r in existing_rules}
 for r in new_rules:
     final_rules[r["rule_name"]] = r  # overwrite with latest
 
+LOG.info("[step 3/4] Persisting rules to model…")
 # Persist rules first to ensure output file exists (helps first-run linkage)
 final_rules_list = list(final_rules.values())
 os.makedirs(os.path.dirname(output_file), exist_ok=True)
 with open(output_file, "w", encoding="utf-8") as out_file:
     json.dump(final_rules_list, out_file, indent=2)
 
-print(
-    f"Extracted {len(new_rules)} rules: {new_count} new, {updated_count} updated. "
-    f"Total rules now: {len(final_rules_list)}. Saved to {output_file}. "
-    f"Considered {considered_count} rule section(s)."
-)
+LOG.info("[info] Extracted %d rules: %d new, %d updated. Total now: %d. Saved to %s. Considered %d section(s).",
+         len(new_rules), new_count, updated_count, len(final_rules_list), output_file, considered_count)
+sidecar_path = _audit_write(prefix="rules_ingest")
+if sidecar_path:
+    LOG.info("[info] Wrote audit sidecar: %s", sidecar_path)
 
 # Build auxiliary model indices from PCPT headers and link this run to its rule IDs
 _current_run_rule_ids = [r.get("id") for r in new_rules if r.get("id")]
+LOG.info("[step 4/4] Rebuilding sources/runs index and linking this run…")
 write_model_sources_and_runs(
     rule_ids_for_output=_current_run_rule_ids,
     output_file_path=input_file,
