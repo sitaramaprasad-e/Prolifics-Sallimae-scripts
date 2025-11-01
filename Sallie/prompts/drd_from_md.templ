@@ -1,0 +1,152 @@
+## 🧠 **Prompt: Generate Interactive DMN-Compliant DRD (.SVG) from Markdown Rules**
+
+You are a Decision Modeling expert specializing in DMN (Decision Model and Notation).
+
+Your task is to generate a **DMN-compliant, self-contained interactive Decision Requirements Diagram (DRD)** in `.svg` format from extracted business rules provided in a Markdown (`.md`) file.
+
+---
+
+### 🎯 Objective
+
+From the rules provided in Markdown format, create a **business-level DRD** that:
+
+1. Groups related rules under **business decisions**.
+2. Keeps all rule names and IDs **exactly as written** in the `.md` file.
+3. Follows **DMN 1.4 visual standards** for shape types and layout.
+4. Produces a **single interactive `.svg` file** where each Decision node is clickable and shows the associated DMN decision table from the Markdown.
+
+---
+
+### 🧹 Input Format
+
+The input is a `.md` file (like `business_logic_report.md`) with sections structured as:
+
+```
+### Rule Name: <Rule Title>
+**Rule Purpose:** <purpose>
+**Rule Spec:** <spec>
+**Code Block:** <file reference>
+**DMN:**
+Inputs:
+- input1: type
+Outputs:
+- output1: type
+
+| condition | output | ... |
+|------------|---------|-----|
+| ...        | ...     | ... |
+```
+
+---
+
+### 🛠️ Steps to Follow
+
+#### **Step 1 — Parse and Group Rules**
+
+* Parse each rule by detecting headers starting with `### Rule Name:`.
+* Preserve every **rule name, purpose, DMN table, and code reference** exactly as written.
+* Identify natural **groupings** of rules into business decisions, based on context (examples below):
+
+  * Claim Header Validation
+  * Claim Line Validation
+  * Data Standardization and Derived Fields
+* Assign each group as a **Decision node** in the DRD.
+
+#### **Step 2 — Identify DMN Elements**
+
+| DMN Element      | Shape                     | Usage                                        |
+| ---------------- | ------------------------- | -------------------------------------------- |
+| Decision         | Rectangle                 | Clickable, groups related rules              |
+| Input Data       | Rounded Rectangle         | Source inputs (e.g., claimDate, totalCharge) |
+| BKM              | Rectangle with cut corner | Reusable calculation logic                   |
+| Knowledge Source | Document shape            | Optional data/policy reference               |
+
+#### **Step 3 — Establish Relationships**
+
+* Draw dependencies according to variable flow and rule context:
+
+  * Input Data → Decision
+  * Decision → Decision (if dependent)
+  * BKM → Decision (for reusable logic)
+* Group by claim-level, line-level, and standardization-level logic.
+
+#### **Step 4 — Interactivity Rules**
+
+* Each **Decision node** must be **clickable**.
+* On click, display the corresponding **DMN decision table** from the Markdown file exactly as written.
+* Embed decision tables inside the SVG using `<foreignObject>` or tooltips.
+* Include the rule's **Code Block reference** as metadata or tooltip text.
+
+#### **Step 5 — Output Structure**
+
+**1. Structured DRD Description (text)**
+
+```
+Decision: Claim Header Validation
+  Includes:
+    - Invalid Claim Date Rejection
+    - Negative Charge Amount Rejection
+    - Service Date Range Validation
+    - Required Patient ID Validation
+    - Master Data Existence Requirement
+
+Decision: Claim Line Validation
+  Includes:
+    - Invalid Service Date Rejection for Lines
+    - Negative Line Charge Amount Rejection
+    - Invalid Units Validation for Lines
+    - Required Procedure Code Validation
+
+Decision: Standardization and Derivations
+  Includes:
+    - Gender Standardization Rule
+    - Provider Specialty Standardization Rule
+    - Age at First Claim Calculation Rule
+```
+
+**2. DMN-Compliant `.svg` Diagram**
+
+* Shapes:
+
+  * Decision → Rectangle
+  * Input Data → Rounded rectangle
+  * BKM → Rectangle with cut corner
+* Arrows:
+
+  * Solid: Information Requirement
+  * Dashed: Knowledge Requirement
+* Clickable behavior reveals DMN tables inline.
+
+**3. Traceability Table (Markdown)**
+
+```
+| Business Decision | Associated Rules | Code Source |
+|--------------------|------------------|--------------|
+| Claim Header Validation | Invalid Claim Date Rejection, Negative Charge Amount Rejection, Service Date Range Validation, Required Patient ID Validation, Master Data Existence Requirement | Process_Staging_To_ODS_Claims.txt |
+| Claim Line Validation | Invalid Service Date Rejection for Lines, Negative Line Charge Amount Rejection, Invalid Units Validation for Lines, Required Procedure Code Validation | Process_Staging_To_ODS_Claims.txt |
+| Standardization and Derivations | Gender Standardization Rule, Provider Specialty Standardization Rule, Age at First Claim Calculation Rule | Process_Staging_To_ODS_Claims.txt |
+```
+
+**4. Narrative Summary**
+Provide a short paragraph explaining the logical flow between the business decisions and their dependencies.
+
+---
+
+### 🔧 Technical SVG Requirements
+
+* Generate a **self-contained `.svg`** file (no external JS or CSS).
+* Use embedded `<script>` elements for minimal click/toggle logic.
+* Decision tables must be embedded using `<foreignObject>` or toggled `<g>` groups.
+* The SVG should be viewable directly in any browser or Markdown viewer.
+
+---
+
+### 🛠️ Optional Enhancement
+
+If advanced expand/collapse animation or richer DMN tables are desired, wrap the same SVG in a minimal HTML file. The core SVG content must remain DMN-compliant and functional standalone.
+
+---
+
+### 🚀 Start
+
+Begin when I upload or paste my `.md` rules file (like `business_logic_report.md`) and optionally specify a high-level business goal (e.g., "Validate and Standardize Claims before ODS Insertion").
