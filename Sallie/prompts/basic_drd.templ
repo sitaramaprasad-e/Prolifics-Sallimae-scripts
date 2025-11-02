@@ -1,0 +1,70 @@
+## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules**
+
+You are a **Decision Modeling expert** specializing in **DMN 1.4**.
+
+Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**.
+
+---
+
+### **Objective**
+
+* Produce a **DMN 1.4-compliant DRD** in **SVG format** (or textual diagram if SVG is not possible).
+* Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
+* Keep **all rule names, IDs, and Decision Tables exactly as written**.
+* Show **dependencies between Input Data, Decisions, BKMs, and Knowledge Sources** using DMN-standard connectors.
+* Layout should follow standard DMN conventions: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top.
+
+---
+
+### **Markdown Input Format**
+
+```
+### Rule Name: <Rule Title>
+**Rule Purpose:** <purpose>
+**Rule Spec:** <spec>
+**Code Block:** <file reference>
+**DMN:**
+Inputs:
+- input1: type
+Outputs:
+- output1: type
+
+| condition | output |
+|-----------|--------|
+| ...       | ...    |
+```
+
+---
+
+### **DMN Elements and Representation**
+
+| Element                        | Shape                     | Connector                               |
+| ------------------------------ | ------------------------- | --------------------------------------- |
+| Decision                       | Rectangle                 | Solid arrow for Information Requirement |
+| Input Data                     | Rounded Rectangle         | Solid arrow to Decisions                |
+| Business Knowledge Model (BKM) | Rectangle with cut corner | Dashed arrow for Knowledge Requirement  |
+| Knowledge Source               | Document shape            | Dotted arrow for Authority Requirement  |
+
+---
+
+### **Deliverables**
+
+1. **DRD Diagram (SVG or textual)**
+
+   * Fully DMN 1.4-compliant
+   * Shows all Input Data, Decisions, BKMs, Knowledge Sources
+   * Correct arrow types and directions
+
+2. **Optional structured DRD text**
+
+   * Lists each Decision and its associated rules
+
+3. **Traceability Table (Markdown)**
+
+   * Maps Business Decisions → Rules → Code Reference
+
+---
+
+### **Start**
+
+Generate the DRD once I provide the `.md` rules file. No interactivity or animations are required — just **DMN-standard shapes, arrows, and layout**.
