@@ -1,4 +1,4 @@
-## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (With Functional Grouping & Rule Relationship Mapping)**
+## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (With Functional Grouping, Rule Relationship Mapping & Top-Level Decision Visuals)**
 
 You are a **Decision Modeling expert** specializing in **DMN 1.4**.
 
@@ -13,6 +13,12 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 * Keep **all rule names, IDs, and Decision Tables exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues.
 * **Functional Grouping:** Intelligently categorize rules based on their **functional purpose, business domain, or operational area** to create logical clusters of related rules. The tool should use the context of the rules, inputs/outputs, and descriptions to perform this grouping.
 * **Rule Relationship Mapping:** Analyze dependencies between grouped rules to understand **how different rule sets interact** and establish relationships between Decisions, Input Data, BKMs, and Knowledge Sources.
+* **Top-Level Decision Visuals:** Automatically detect top-level Decisions (with no incoming dependencies) and visually distinguish them using:
+
+  * **Layout:** place on the far left
+  * **Border:** slightly thicker than other Decisions
+  * **Background Fill:** subtle color shading (e.g., light blue or grey)
+  * **Label Annotation:** optional small label inside rectangle: `Top-level Decision`
 * Layout should follow **DMN best practices**: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top. Arrows flow left-to-right.
 * **Interactive Feature:** Each Decision node should be clickable to display the **full DMN decision table**, including all rules and Code Block references.
 
@@ -69,7 +75,7 @@ Outputs:
 * Automatically **group rules into functional clusters** based on purpose, domain, or operational area.
 * Analyze **inputs, outputs, and DMN table logic** to map dependencies between clusters.
 * Establish **relationships between Decisions** (Information/Knowledge/Authority Requirements) using DMN-standard arrows.
-* Highlight **top-level Decisions** and their downstream dependencies based on rule interactions.
+* Highlight **top-level Decisions** and their downstream dependencies based on rule interactions and apply visual differentiation.
 
 ---
 
@@ -83,6 +89,7 @@ Outputs:
    * Correct arrow types/directions
    * Interactive Decision nodes revealing full DMN tables with **exact rule names**, proper styling, XML-safe content
    * Functional clusters and mapped relationships automatically detected
+   * Top-level Decisions visually distinguished using layout, border, and background fill
 
 2. **Optional structured DRD text**
 
@@ -97,4 +104,4 @@ Outputs:
 
 ### **Start**
 
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, interactive Decision tables that fully display all rules, XML-safe rendering, styled tables, preserve rule names exactly as in the Markdown, and include functional grouping and rule relationship mapping**.
+Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, interactive Decision tables that fully display all rules, XML-safe rendering, styled tables, preserve rule names exactly as in the Markdown, and include functional grouping, rule relationship mapping, and visual differentiation for top-level Decisions**.
