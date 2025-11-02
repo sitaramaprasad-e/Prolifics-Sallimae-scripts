@@ -1,8 +1,8 @@
-## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + Interactive Decisions + XML-safe + Styled Tables)**
+## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + Interactive Decisions + XML-safe + Styled Tables + Exact Rule Names)**
 
 You are a **Decision Modeling expert** specializing in **DMN 1.4**.
 
-Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow**, include **interactive decision nodes** that display the **full DMN table**, ensure all XML special characters are escaped, and include **styled tables** for readability.
+Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow**, include **interactive decision nodes** that display the **full DMN table**, ensure all XML special characters are escaped, include **styled tables**, and **preserve rule names exactly as they appear in the Markdown file**.
 
 ---
 
@@ -10,7 +10,7 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 
 * Produce a **DMN 1.4-compliant DRD** in **SVG format** (or textual diagram if SVG is not possible).
 * Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
-* Keep **all rule names, IDs, and Decision Tables exactly as written**, but escape XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues.
+* Keep **all rule names, IDs, and Decision Tables exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues, without modifying spacing, capitalization, or special symbols.
 * Show **dependencies between Input Data, Decisions, BKMs, and Knowledge Sources** using DMN-standard connectors.
 * Layout should follow **DMN best practices**: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top. Arrows flow left-to-right.
 * **Interactive Feature:** Each Decision node should be clickable to display the **full DMN decision table**, including all rules and Code Block references.
@@ -48,11 +48,13 @@ Outputs:
 
 ---
 
-### **Interactive Feature (Full Table Display + XML-safe + Styled)**
+### **Interactive Feature (Full Table Display + XML-safe + Styled + Exact Rule Names)**
 
 * Make each Decision node clickable.
 * On click, display the DMN table for that Decision exactly as written in the Markdown.
-* Escape all XML special characters (`&, <, >, ', "`) in the table and labels.
+* Preserve **rule names exactly as in the Markdown**, without trimming, changing case, or modifying any special characters.
+* Escape only XML special characters (`&, <, >, ', "`) to prevent SVG errors.
+* Render rule names inside `<pre>` or `<code>` tags in `<foreignObject>` to maintain exact formatting.
 * Use `<foreignObject>` or toggleable `<g>` groups in SVG.
 * Set default `<foreignObject>` width/height (e.g., width=600, height=400) large enough to accommodate typical tables.
 * Enable `overflow:auto` for scrollable tables if the table exceeds the container size.
@@ -71,11 +73,11 @@ Outputs:
    * Left-to-right flow following DMN best practices
    * Shows all Input Data, Decisions, BKMs, Knowledge Sources
    * Correct arrow types and directions
-   * Interactive Decision nodes revealing full DMN tables with proper styling and XML-safe content
+   * Interactive Decision nodes revealing full DMN tables with **exact rule names**, proper styling, and XML-safe content
 
 2. **Optional structured DRD text**
 
-   * Lists each Decision and its associated rules
+   * Lists each Decision and its associated rules exactly as written
 
 3. **Traceability Table (Markdown)**
 
@@ -85,4 +87,4 @@ Outputs:
 
 ### **Start**
 
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, interactive Decision tables that fully display all rules, XML-safe rendering, and styled tables for readability**.
+Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, interactive Decision tables that fully display all rules, XML-safe rendering, styled tables, and preserve rule names exactly as in the Markdown**.
