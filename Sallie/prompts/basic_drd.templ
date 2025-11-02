@@ -1,8 +1,8 @@
-## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + Interactive Decisions)**
+## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + Interactive Decisions + XML-safe + Styled Tables)**
 
 You are a **Decision Modeling expert** specializing in **DMN 1.4**.
 
-Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow** and include **interactive decision nodes**.
+Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow**, include **interactive decision nodes** that display the **full DMN table**, ensure all XML special characters are escaped, and include **styled tables** for readability.
 
 ---
 
@@ -10,10 +10,10 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 
 * Produce a **DMN 1.4-compliant DRD** in **SVG format** (or textual diagram if SVG is not possible).
 * Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
-* Keep **all rule names, IDs, and Decision Tables exactly as written**.
+* Keep **all rule names, IDs, and Decision Tables exactly as written**, but escape XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues.
 * Show **dependencies between Input Data, Decisions, BKMs, and Knowledge Sources** using DMN-standard connectors.
 * Layout should follow **DMN best practices**: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top. Arrows flow left-to-right.
-* **Interactive Feature:** Each Decision node should be clickable to display the associated DMN decision table from the Markdown file, including all rules and Code Block references.
+* **Interactive Feature:** Each Decision node should be clickable to display the **full DMN decision table**, including all rules and Code Block references.
 
 ---
 
@@ -48,36 +48,14 @@ Outputs:
 
 ---
 
-### **Interactive Feature**
+### **Interactive Feature (Full Table Display + XML-safe + Styled)**
 
 * Make each Decision node clickable.
-* On click, display the DMN table for that Decision, including all rules exactly from the Markdown.
-* Use embedded `<foreignObject>` or toggleable `<g>` groups in SVG.
-* Include Code Block reference as a tooltip or metadata.
-* The DRD should still follow DMN 1.4 standard shapes and left-to-right flow.
-
----
-
-### **Deliverables**
-
-1. **DRD Diagram (SVG or textual)**
-
-   * Fully DMN 1.4-compliant
-   * Left-to-right flow following DMN best practices
-   * Shows all Input Data, Decisions, BKMs, Knowledge Sources
-   * Correct arrow types and directions
-   * Interactive Decision nodes revealing the DMN tables
-
-2. **Optional structured DRD text**
-
-   * Lists each Decision and its associated rules
-
-3. **Traceability Table (Markdown)**
-
-   * Maps Business Decisions → Rules → Code Reference
-
----
-
-### **Start**
-
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, and include interactive decision tables**.
+* On click, display the DMN table for that Decision exactly as written in the Markdown.
+* Escape all XML special characters (`&, <, >, ', "`) in the table and labels.
+* Use `<foreignObject>` or toggleable `<g>` groups in SVG.
+* Set default `<foreignObject>` width/height (e.g., width=600, height=400) large enough to accommodate typical tables.
+* Enable `overflow:auto` for scrollable tables if the table exceeds the container size.
+* Dynamically expand the `<foreignObject>` height if table content is larger.
+* Include table styling for readability: borders, padding, word-wrap, and alternating row colors.
+* Inclu
