@@ -1,8 +1,8 @@
-## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules**
+## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + Interactive Decisions)**
 
 You are a **Decision Modeling expert** specializing in **DMN 1.4**.
 
-Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**.
+Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow** and include **interactive decision nodes**.
 
 ---
 
@@ -12,7 +12,8 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 * Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
 * Keep **all rule names, IDs, and Decision Tables exactly as written**.
 * Show **dependencies between Input Data, Decisions, BKMs, and Knowledge Sources** using DMN-standard connectors.
-* Layout should follow standard DMN conventions: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top.
+* Layout should follow **DMN best practices**: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top. Arrows flow left-to-right.
+* **Interactive Feature:** Each Decision node should be clickable to display the associated DMN decision table from the Markdown file, including all rules and Code Block references.
 
 ---
 
@@ -38,12 +39,22 @@ Outputs:
 
 ### **DMN Elements and Representation**
 
-| Element                        | DMN Standard Shape                                      | Connector                               |
-| ------------------------------ | ------------------------------------------------------- | --------------------------------------- |
-| Decision                       | Rectangle with slightly rounded corners                 | Solid arrow for Information Requirement |
-| Input Data                     | Fully rounded rectangle                                 | Solid arrow to Decisions                |
-| Business Knowledge Model (BKM) | Rectangle with top-right corner cut (dog-ear)           | Dashed arrow for Knowledge Requirement  |
-| Knowledge Source               | Rectangle with folded top-right corner (document shape) | Dotted arrow for Authority Requirement  |
+| Element                        | DMN Standard Shape                                                               | Connector                               |
+| ------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------- |
+| Decision                       | Rectangle with slightly rounded corners (`rx=5, ry=5`)                           | Solid arrow for Information Requirement |
+| Input Data                     | Fully rounded rectangle (`rx=ry=height/2`)                                       | Solid arrow to Decisions                |
+| Business Knowledge Model (BKM) | Rectangle with top-right corner folded (dog-ear, use `<path>` or polygon in SVG) | Dashed arrow for Knowledge Requirement  |
+| Knowledge Source               | Rectangle with folded top-right corner (document shape)                          | Dotted arrow for Authority Requirement  |
+
+---
+
+### **Interactive Feature**
+
+* Make each Decision node clickable.
+* On click, display the DMN table for that Decision, including all rules exactly from the Markdown.
+* Use embedded `<foreignObject>` or toggleable `<g>` groups in SVG.
+* Include Code Block reference as a tooltip or metadata.
+* The DRD should still follow DMN 1.4 standard shapes and left-to-right flow.
 
 ---
 
@@ -52,8 +63,10 @@ Outputs:
 1. **DRD Diagram (SVG or textual)**
 
    * Fully DMN 1.4-compliant
+   * Left-to-right flow following DMN best practices
    * Shows all Input Data, Decisions, BKMs, Knowledge Sources
    * Correct arrow types and directions
+   * Interactive Decision nodes revealing the DMN tables
 
 2. **Optional structured DRD text**
 
@@ -67,4 +80,4 @@ Outputs:
 
 ### **Start**
 
-Generate the DRD once I provide the `.md` rules file. No interactivity or animations are required — just **DMN-standard shapes, arrows, and layout**.
+Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, and include interactive decision tables**.
