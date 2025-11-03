@@ -1,4 +1,4 @@
-## 🧠 Prompt: Generate Fully Interactive DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + XML-safe + Styled Tables + Exact Rule Names + Final Decision Identification + Top-Level Heading + All Elements Interactive)
+## 🧠 Prompt: Generate Fully Interactive DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + XML-safe + Styled Tables + Exact Rule Names + Final Decision Identification + Top-Level Heading + All Elements Interactive + Bottom Sections)
 
 You are a **Decision Modeling expert** specializing in **DMN 1.4**.
 
@@ -6,7 +6,7 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 
 ---
 
-### Objective
+### **Objective**
 
 * Produce a **DMN 1.4-compliant DRD** in **SVG format** (or textual diagram if SVG is not possible).
 * Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
@@ -20,15 +20,16 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
   * **Business Knowledge Models (BKM):** Click → display BKM logic or formula details.
   * **Input Data:** Click → show input metadata (type, allowed values, source).
   * **Knowledge Sources:** Click → show policy, document, or reference details.
+  * Include **Close button** in each interactive content block.
   * Use `<g>` groups with `onclick` events and embed content in `<foreignObject>` or toggleable `<g>` blocks.
   * Assign **unique IDs** for each interactive block.
+  * Dynamically **position content near the clicked element** and bring it to front to prevent it from being hidden behind DRD shapes.
   * Enable `overflow:auto` for scrollable content and dynamically expand `<foreignObject>` to fit content.
-  * Preserve XML-safe content and exact rule names formatting.
 * Ensure **no overlapping elements**; the layout remains left-to-right and visually clear.
 
 ---
 
-### Final Decision Identification
+### **Final Decision Identification**
 
 Before generating the DRD, the tool must:
 
@@ -39,7 +40,7 @@ Before generating the DRD, the tool must:
 
 ---
 
-### Markdown Input Format
+### **Markdown Input Format**
 
 ```
 ### Rule Name: <Rule Title>
@@ -59,7 +60,7 @@ Outputs:
 
 ---
 
-### DMN Elements and Representation
+### **DMN Elements and Representation**
 
 | Element                        | DMN Standard Shape                                                               | Connector                               |
 | ------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------- |
@@ -70,29 +71,53 @@ Outputs:
 
 ---
 
-### Interactive Feature Details
+### **Interactive Feature Details**
 
 * Wrap each DRD element in `<g>` groups.
 * Each element clickable to display its content in a `<foreignObject>` block.
+* Include **Close button** in all interactive content blocks.
+* Dynamically **position content near the clicked element** and bring it to front.
 * Decision nodes show DMN tables with rules and Code Blocks.
 * BKM nodes show function/formula details.
 * Input Data nodes show metadata.
 * Knowledge Source nodes show reference or policy details.
-* Ensure **unique IDs**, scrollable content, and proper table styling.
-* Maintain layout integrity: no overlap, left-to-right flow preserved.
+* Scrollable `<foreignObject>` ensures large content fits without affecting DRD shapes.
+* Preserve XML-safe content and exact rule names formatting.
 
 ---
 
-### Deliverables
+### **Bottom Sections to Include (Below DRD Shapes)**
+
+1. **Traceability / Mapping Table**
+
+   * Maps Business Decisions → Rules → Code Reference.
+   * Scrollable or toggleable.
+
+2. **Decision Narrative / Summary**
+
+   * Explains logical flow of decisions.
+   * Can be collapsed by default.
+
+3. **Legend / DMN Key**
+
+   * Explains shapes and connector types.
+   * Compact table; optionally toggleable.
+
+*All three sections should be positioned below the main DRD, without overlapping the DRD nodes or interactive content.*
+
+---
+
+### **Deliverables**
 
 1. **DRD Diagram (SVG or textual)**
 
    * Fully DMN 1.4-compliant.
    * Left-to-right flow following DMN best practices.
-   * All elements (Decision, BKM, Input Data, Knowledge Source) interactive.
+   * All elements (Decision, BKM, Input Data, Knowledge Source) interactive with Close buttons.
    * Correct arrow types and directions.
    * Top-level heading displayed prominently.
    * XML-safe rendering, styled tables, exact rule names.
+   * Bottom sections: Traceability Table, Decision Narrative, Legend.
 
 2. **Optional structured DRD text**
 
@@ -104,6 +129,6 @@ Outputs:
 
 ---
 
-### Start
+### **Start**
 
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements, interactive tables that fully display all rules, XML-safe rendering, styled tables, preserve exact rule names, and include a top-level heading**.
+Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements with Close buttons, interactive tables that fully display all rules, XML-safe rendering, styled tables, preserve exact rule names, top-level heading, and include the three bottom sections**.
