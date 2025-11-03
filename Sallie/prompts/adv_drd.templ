@@ -100,9 +100,15 @@ Outputs:
    * Explains logical flow of decisions.
    * Can be collapsed by default.
 
-3. **Legend / DMN Key**
+3. **Legend / DMN Key (with actual shapes)**
 
-   * Explains shapes and connector types.
+   * Show mini-representations of the DMN shapes instead of just text:
+
+     * Rectangle → Decision
+     * Rounded Rectangle → Input Data
+     * Folded Corner Rectangle → BKM
+     * Document Shape → Knowledge Source
+   * Include arrow examples (solid, dashed, dotted) to explain connector types.
    * Compact table; optionally toggleable.
 
 *All three sections should be positioned below the main DRD, without overlapping the DRD nodes or interactive content.*
@@ -119,7 +125,7 @@ Outputs:
    * Correct arrow types and directions.
    * Top-level heading displayed prominently.
    * XML-safe rendering, styled tables, **rule names from Markdown exactly preserved in tables**.
-   * Bottom sections: Traceability Table, Decision Narrative, Legend.
+   * Bottom sections: Traceability Table, Decision Narrative, Legend (with actual shapes shown).
 
 2. **Optional structured DRD text**
 
@@ -133,4 +139,4 @@ Outputs:
 
 ### **Start**
 
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements with Close buttons, interactive tables that fully display all rules using exact rule names from Markdown, XML-safe rendering, styled tabl
+Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements with Close buttons, interactive tables that fully display all rules using exact rule names from Markdown, XML-safe rendering, styled tables, top-level heading, and include the three bottom sections with Legend showing actual DMN shapes**.
