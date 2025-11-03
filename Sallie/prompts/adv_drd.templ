@@ -1,36 +1,45 @@
-## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + Interactive Decisions + XML-safe + Styled Tables + Exact Rule Names + Final Decision Identification)**
+## 🧠 Prompt: Generate Fully Interactive DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + XML-safe + Styled Tables + Exact Rule Names + Final Decision Identification + Top-Level Heading + All Elements Interactive)
 
 You are a **Decision Modeling expert** specializing in **DMN 1.4**.
 
-Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow**, include **interactive decision nodes** that display the **full DMN table**, ensure all XML special characters are escaped, include **styled tables**, and **preserve rule names exactly as they appear in the Markdown file**.
+Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow**, include **fully interactive nodes** that display relevant information when clicked, ensure all XML special characters are escaped, include **styled tables**, and **preserve rule names exactly as they appear in the Markdown file**.
 
 ---
 
-### **Objective**
+### Objective
 
 * Produce a **DMN 1.4-compliant DRD** in **SVG format** (or textual diagram if SVG is not possible).
 * Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
-* Keep **all rule names, IDs, and Decision Tables exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues, without modifying spacing, capitalization, or special symbols.
+* Keep **all rule names, IDs, and Decision Tables exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues.
 * Show **dependencies between Input Data, Decisions, BKMs, and Knowledge Sources** using DMN-standard connectors.
 * Layout should follow **DMN best practices**: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top. Arrows flow left-to-right.
-* **Interactive Feature:** Each Decision node should be clickable to display the **full DMN decision table**, including all rules and Code Block references.
+* **Top-level heading:** Include a heading at the top of the DRD. Use the **user-provided business goal** if available; otherwise, use the **top-level decision name**. Style it bold and prominent above all shapes.
+* **Interactive Feature for All Elements:**
+
+  * **Decision Nodes:** Click → full DMN table with all rules and Code Block references.
+  * **Business Knowledge Models (BKM):** Click → display BKM logic or formula details.
+  * **Input Data:** Click → show input metadata (type, allowed values, source).
+  * **Knowledge Sources:** Click → show policy, document, or reference details.
+  * Use `<g>` groups with `onclick` events and embed content in `<foreignObject>` or toggleable `<g>` blocks.
+  * Assign **unique IDs** for each interactive block.
+  * Enable `overflow:auto` for scrollable content and dynamically expand `<foreignObject>` to fit content.
+  * Preserve XML-safe content and exact rule names formatting.
+* Ensure **no overlapping elements**; the layout remains left-to-right and visually clear.
 
 ---
 
-### **Final Decision Identification (New Feature)**
+### Final Decision Identification
 
 Before generating the DRD, the tool must:
 
-1. **Logically scan all rules** in the provided Markdown file to identify which rules represent **final business outcomes or top-level decisions**.
-2. **Trace dependencies** among rules by analyzing their input/output structure and references to determine **sub-decisions** and their data lineage.
-3. **Establish the decision sequence** — mapping each sub-decision, its input data, and the final decision in a clear hierarchy.
-4. Use this logical chain to position **final decisions** at the far-right of the DRD and their **preceding sub-decisions** leading toward them.
-
-This step ensures the DRD reflects true **decision flow from input data to final outcome**, even when multiple layers of intermediate rules exist.
+1. Logically scan all rules to identify **top-level/final decisions**.
+2. Trace dependencies to map sub-decisions up to the final decision.
+3. Establish decision sequence from input data → sub-decisions → final decisions.
+4. Position final decisions at the far-right of the DRD with preceding sub-decisions leading toward them.
 
 ---
 
-### **Markdown Input Format**
+### Markdown Input Format
 
 ```
 ### Rule Name: <Rule Title>
@@ -50,7 +59,7 @@ Outputs:
 
 ---
 
-### **DMN Elements and Representation**
+### DMN Elements and Representation
 
 | Element                        | DMN Standard Shape                                                               | Connector                               |
 | ------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------- |
@@ -61,37 +70,40 @@ Outputs:
 
 ---
 
-### **Interactive Feature (Full Table Display + XML-safe + Styled + Exact Rule Names)**
+### Interactive Feature Details
 
-* Make each Decision node clickable.
-* On click, display the DMN table for that Decision exactly as written in the Markdown.
-* Preserve **rule names exactly as in the Markdown**, without trimming, changing case, or modifying any special characters.
-* Escape only XML special characters (`&, <, >, ', "`) to prevent SVG errors.
-* Render rule names inside `<pre>` or `<code>` tags in `<foreignObject>` to maintain exact formatting.
-* Use `<foreignObject>` or toggleable `<g>` groups in SVG.
-* Set default `<foreignObject>` width/height (e.g., width=600, height=400) large enough to accommodate typical tables.
-* Enable `overflow:auto` for scrollable tables if the table exceeds the container size.
-* Dynamically expand the `<foreignObject>` height if table content is larger.
-* Include table styling for readability: borders, padding, word-wrap, and alternating row colors.
-* Include Code Block reference as a tooltip or metadata.
-* The DRD should still follow DMN 1.4 standard shapes and left-to-right flow.
+* Wrap each DRD element in `<g>` groups.
+* Each element clickable to display its content in a `<foreignObject>` block.
+* Decision nodes show DMN tables with rules and Code Blocks.
+* BKM nodes show function/formula details.
+* Input Data nodes show metadata.
+* Knowledge Source nodes show reference or policy details.
+* Ensure **unique IDs**, scrollable content, and proper table styling.
+* Maintain layout integrity: no overlap, left-to-right flow preserved.
 
 ---
 
-### **Deliverables**
+### Deliverables
 
 1. **DRD Diagram (SVG or textual)**
 
-   * Fully DMN 1.4-compliant
-   * Left-to-right flow following DMN best practices
-   * Shows all Input Data, Decisions, BKMs, Knowledge Sources
-   * Correct arrow types and directions
-   * Interactive Decision nodes revealing full DMN tables with **exact rule names**, proper styling, and XML-safe content
+   * Fully DMN 1.4-compliant.
+   * Left-to-right flow following DMN best practices.
+   * All elements (Decision, BKM, Input Data, Knowledge Source) interactive.
+   * Correct arrow types and directions.
+   * Top-level heading displayed prominently.
+   * XML-safe rendering, styled tables, exact rule names.
 
 2. **Optional structured DRD text**
 
-   * Lists each Decision and its associated rules exactly as written
+   * Lists each Decision and its associated rules exactly as written.
 
 3. **Traceability Table (Markdown)**
 
-   * Maps Business Decisions → Rules → Code Reference
+   * Maps Business Decisions → Rules → Code Reference.
+
+---
+
+### Start
+
+Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements, interactive tables that fully display all rules, XML-safe rendering, styled tables, preserve exact rule names, and include a top-level heading**.
