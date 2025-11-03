@@ -1,94 +1,163 @@
-## 🧠 Prompt: Generate Clean DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + XML-safe + Styled Tables + Exact Rule Names + Final Decision Identification + Top-Level Heading + Interactive Decisions)
+## 🧠 Prompt: Generate Interactive DMN-Compliant DRD (.SVG) from Markdown Rules
 
-You are a **Decision Modeling expert** specializing in **DMN 1.4**.
+You are a Decision Modeling expert specializing in **DMN 1.4 (Decision Model and Notation)**.
 
-Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-standard notation** using rules from a **Markdown (`.md`) file**. The DRD should follow **DMN best practices** with a **left-to-right flow**, include **interactive decision nodes**, ensure all XML special characters are escaped, include **styled tables**, and **preserve rule names exactly as they appear in the Markdown file**.
-
----
-
-### **Objective**
-
-* Produce a **DMN 1.4-compliant DRD** in **SVG format**.
-* Use **only the rules provided in the Markdown file**.
-* Keep **all rule names exactly as written**, escaping only XML special characters (`&, <, >, ', "`).
-* Show **dependencies between Input Data and Decisions** using DMN-standard connectors.
-* Layout: Inputs on the left, Decisions in the center; arrows flow left-to-right.
-* **Top-level heading:** Include a heading at the top of the DRD using the **business goal or top-level decision name**.
-* **All nodes interactive:** Decision and Input Data nodes.
-* Remove all bold letters from DRD boxes.
-* Use a **subtle, professional color palette**: Decisions (soft blue #AED6F1), Input Data (light green #D5F5E3), arrows dark gray/black.
+Your task is to generate a **DMN-compliant, self-contained interactive Decision Requirements Diagram (DRD)** in `.svg` format from extracted business rules provided in a Markdown (`.md`) file.
 
 ---
 
-### **Final Decision Identification**
+### 🌟 Objective
 
-Before generating the DRD, the tool must:
+From the rules provided in Markdown format, create a **business-level DRD** that:
 
-1. Identify **top-level/final decisions** by scanning all rules.
-2. Map sub-decisions and input data dependencies leading up to final decisions.
-3. Position final decisions at the far-right; sub-decisions lead toward them.
+1. Groups related rules under **business decisions**.
+2. Keeps all rule names and IDs **exactly as written** in the `.md` file.
+3. Follows **DMN 1.4 visual standards** for all shapes and layout.
+4. Produces a **single interactive `.svg` file** where each Decision node is clickable and shows:
+
+   * The **list of rules** under that decision (from the Markdown)
+   * The **DMN-standard Decision Table**
+   * A **Close button** to dismiss the popup
 
 ---
 
-### **Markdown Input Format**
+### 📥 Markdown Input Format
+
+Rules are provided in a Markdown file with the following structure:
 
 ```
 ### Rule Name: <Rule Title>
 **Rule Purpose:** <purpose>
 **Rule Spec:** <spec>
 **Code Block:** <file reference>
+
 **DMN:**
 Inputs:
 - input1: type
 Outputs:
 - output1: type
 
-| condition | output |
-|-----------|--------|
-| ...       | ...    |
+| Condition | Output | ... |
+|------------|---------|-----|
+| ...        | ...     | ... |
 ```
 
 ---
 
-### **DMN Elements and Representation**
+### 🧩 Step 1 — Parse and Group Rules
 
-| Element    | DMN Standard Shape                      | Connector                               |
-| ---------- | --------------------------------------- | --------------------------------------- |
-| Decision   | Rectangle with slightly rounded corners | Solid arrow for Information Requirement |
-| Input Data | Fully rounded rectangle                 | Solid arrow to Decisions                |
+* Detect each rule by headers starting with `### Rule Name:`
+* Preserve all rule names, DMN tables, and references exactly as written
+* Identify **groups of related rules** → assign each as a **Decision node**
+* Infer dependencies:
 
----
-
-### **Interactive Feature for Decisions**
-
-* Clicking on a Decision node displays:
-
-  1. **List of rules used in that decision** (exactly as in Markdown) at the top.
-
-     * If no rules are present, show: "No rules defined for this decision".
-     * Normal font weight, 12–14px, line spacing 1.4–1.6.
-  2. **DMN-compliant decision table** below the rule list, with standard DMN columns (Inputs, Outputs, Conditions, Hit Policy, etc.), **without rule names**.
-
-     * Table headers bold, rows normal weight, scrollable if content exceeds container.
-     * Styled for readability (borders, padding, alternating row colors, word-wrap).
-  3. **Close button** to dismiss the popup.
-* Popup appears **near clicked node**, brought to front, XML-safe content.
+  * `Inputs` → Input Data nodes
+  * Shared outputs or references → Decision → Decision links
+  * Shared calculations → BKM nodes
 
 ---
 
-### **Deliverables**
+### 🟦 Step 2 — Map to DMN Shapes (1.4 Standard)
 
-1. **DRD Diagram (SVG)**
-
-   * Fully DMN 1.4-compliant, left-to-right flow.
-   * Interactive Decision nodes with Close buttons.
-   * Clicking Decisions shows **exact rule list + DMN table** (readable, styled, scrollable).
-   * All shapes strictly follow **DMN 1.4 standards** (Decision rectangle with rounded corners, Input Data rounded rectangle).
-
-2. **Optional structured DRD text** listing each Decision and its associated rules exactly as written.
+| DMN Element                    | Shape                           | Use Case Example                |
+| ------------------------------ | ------------------------------- | ------------------------------- |
+| Decision                       | Rounded Rectangle               | Main decision logic             |
+| Input Data                     | Fully Rounded Rectangle         | Source inputs (e.g., claimDate) |
+| Business Knowledge Model (BKM) | Rectangle with dog-eared corner | Reusable logic                  |
+| Knowledge Source               | Document Shape                  | Policy or external guidance     |
 
 ---
 
-### **Start**
+### 🧭 Step 3 — Layout and Styling Rules
 
-Generate the DRD once the `.md` rules file is provided, following all above specifications, with **clean colors**, **no bold in boxes**, **proper decision popups**, and **DMN 1.4-compliant shapes**.
+* Arrange nodes **left → right** following dependency flow
+* Keep spacing even; avoid overlapping edges
+* Use **soft neutral palette** (`#E0E0E0`, `#C8D3E5`, `#B0BEC5`)
+* Remove all bold text from boxes
+* Font: 14 px sans-serif, dark gray
+* Rounded corners: 5 px for Decisions
+* Arrow types:
+
+  * Solid line → Information Requirement
+  * Dashed line → Knowledge Requirement
+
+---
+
+### 🔁 Step 4 — Interactivity Specifications
+
+Each **Decision node** must open a popup containing:
+
+1. **Rule List** – all rules under that decision (verbatim)
+2. **DMN Decision Table** – formatted using DMN standard columns:
+
+   * Inputs
+   * Conditions
+   * Outputs
+   * Hit Policy
+   * Rules
+
+**Popup Requirements**
+
+* Centered, bordered, light background
+* Scrollable if long
+* Includes a **“Close” button** (top right corner)
+* Closes cleanly without affecting the DRD layout
+* No bold fonts; use alternating row colors for readability
+* Escape XML special chars (`&`, `<`, `>`, `'`, `"`)
+* Works fully offline (embedded JS + CSS only)
+
+---
+
+### 🗾 Step 5 — Legend (Top-Right Corner)
+
+Use visual shapes instead of text labels:
+
+* Decision  ⬜ (Rounded Rectangle)
+* Input Data  ◯ (Fully Rounded Rectangle)
+* BKM  ▭ (Rectangle with folded corner)
+* Knowledge Source  📄 (Document Shape)
+
+Keep legend small, aligned to top-right corner.
+
+---
+
+### 🧰 Step 6 — Output Specification
+
+#### 1. **DRD Diagram (.svg)**
+
+* Fully DMN 1.4 compliant visuals
+* No external dependencies
+* Smooth edges, clean spacing
+* Interactive popups as per spec
+
+#### 2. **Traceability Table (Markdown)**
+
+```
+| Business Decision | Associated Rules | Code Reference |
+|--------------------|------------------|----------------|
+| Claim Validation | Invalid Claim Date, Negative Charge | process_staging_to_ods_claims.txt |
+```
+
+#### 3. **Summary Narrative**
+
+* Short text explaining overall flow and key dependencies
+
+---
+
+### ⚙️ Technical Requirements
+
+* Output: self-contained SVG with embedded JS and CSS
+* Interactivity via `<script>` tag, no external files
+* Validate against DMN 1.4 naming and notation
+* Ensure accessibility (zoomable, readable on white background)
+
+---
+
+### 🚀 Start
+
+Generate the **Interactive DMN DRD** when a `.md` rules file is provided.
+Output must include:
+
+1. Interactive DRD diagram (.svg)
+2. Traceability Table (.md)
+3. Narrative summary (.txt)
