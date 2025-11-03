@@ -8,25 +8,13 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 
 ### **Objective**
 
-* Produce a **DMN 1.4-compliant DRD** in **SVG format** (or textual diagram if SVG is not possible).
+* Produce a **DMN 1.4-compliant DRD** in **SVG format**.
 * Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
-* Keep **all rule names, IDs, and Decision Tables exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues.
+* Keep **all rule names exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues.
 * Show **dependencies between Input Data, Decisions, BKMs, and Knowledge Sources** using DMN-standard connectors.
 * Layout should follow **DMN best practices**: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top. Arrows flow left-to-right.
-* **Top-level heading:** Include a heading at the top of the DRD. Use the **user-provided business goal** if available; otherwise, use the **top-level decision name**. Style it bold and prominent above all shapes.
-* **Interactive Feature for All Elements:**
-
-  * **Decision Nodes:** Click → full DMN table with all rules and Code Block references, **using exact rule names from the Markdown file** as the first column.
-  * **Business Knowledge Models (BKM):** Click → display BKM logic or formula details.
-  * **Input Data:** Click → show input metadata (type, allowed values, source).
-  * **Knowledge Sources:** Click → show policy, document, or reference details.
-  * Include **Close button** in each interactive content block.
-  * Use `<g>` groups with `onclick` events and embed content in `<foreignObject>` or toggleable `<g>` blocks.
-  * Assign **unique IDs** for each interactive block.
-  * Dynamically **position content near the clicked element** and bring it to front to prevent it from being hidden behind DRD shapes.
-  * Enable `overflow:auto` for scrollable tables if the table exceeds the container size.
-  * Dynamically expand the `<foreignObject>` height if table content is larger.
-* Ensure **no overlapping elements**; the layout remains left-to-right and visually clear.
+* **Top-level heading:** Include a heading at the top of the DRD using the **business goal or top-level decision name**, styled prominently.
+* **All elements interactive:** Decision, Input Data, BKM, Knowledge Source nodes.
 
 ---
 
@@ -63,80 +51,60 @@ Outputs:
 
 ### **DMN Elements and Representation**
 
-| Element                        | DMN Standard Shape                                                               | Connector                               |
-| ------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------- |
-| Decision                       | Rectangle with slightly rounded corners (`rx=5, ry=5`)                           | Solid arrow for Information Requirement |
-| Input Data                     | Fully rounded rectangle (`rx=ry=height/2`)                                       | Solid arrow to Decisions                |
-| Business Knowledge Model (BKM) | Rectangle with top-right corner folded (dog-ear, use `<path>` or polygon in SVG) | Dashed arrow for Knowledge Requirement  |
-| Knowledge Source               | Rectangle with folded top-right corner (document shape)                          | Dotted arrow for Authority Requirement  |
+| Element                        | DMN Standard Shape                                      | Connector                               |
+| ------------------------------ | ------------------------------------------------------- | --------------------------------------- |
+| Decision                       | Rectangle with slightly rounded corners (`rx=5, ry=5`)  | Solid arrow for Information Requirement |
+| Input Data                     | Fully rounded rectangle (`rx=ry=height/2`)              | Solid arrow to Decisions                |
+| Business Knowledge Model (BKM) | Rectangle with top-right corner folded (dog-ear)        | Dashed arrow for Knowledge Requirement  |
+| Knowledge Source               | Document shape (rectangle with folded top-right corner) | Dotted arrow for Authority Requirement  |
 
 ---
 
-### **Interactive Feature Details**
+### **Interactive Feature for Decisions**
 
-* Wrap each DRD element in `<g>` groups.
-* Each element clickable to display its content in a `<foreignObject>` block.
-* Include **Close button** in all interactive content blocks.
-* Dynamically **position content near the clicked element** and bring it to front.
-* **Decision nodes:** display DMN tables with columns: `Rule Name (from MD)`, `Inputs…`, `Outputs…`, `Code Reference / Annotation`.
-* **All rules in tables must exactly match the names in the Markdown file.**
-* BKM nodes show function/formula details.
-* Input Data nodes show metadata.
-* Knowledge Source nodes show reference or policy details.
-* Scrollable `<foreignObject>` ensures large content fits without affecting DRD shapes.
-* Preserve XML-safe content and exact rule names formatting.
+* Clicking on a Decision node displays:
+
+  1. **List of rules used in that decision** (exactly as in Markdown) at the top.
+  2. **DMN-compliant decision table** below the rule list, containing only standard DMN columns (Inputs, Outputs, Conditions, Hit Policy, etc.), without including rule names.
+  3. **Close button** to dismiss the popup.
+* Popup should appear near the clicked node and **bring content to the front**.
+* Table is scrollable if content exceeds container size, styled with borders, padding, alternating row colors, word-wrap.
+* Preserve XML-safe content.
 
 ---
 
-### **Bottom Sections to Include (Below DRD Shapes)**
+### **Interactive Features for Other Elements**
 
-1. **Traceability / Mapping Table**
+* **BKM nodes:** Click → display function/formula details.
+* **Input Data nodes:** Click → show input metadata (type, allowed values, source).
+* **Knowledge Source nodes:** Click → show policy/document/reference details.
+* All interactive popups include a Close button and dynamically appear in front of DRD nodes.
 
-   * Maps Business Decisions → Rules → Code Reference.
-   * Scrollable or toggleable.
+---
 
-2. **Decision Narrative / Summary**
+### **Bottom Sections (Inside SVG)**
 
-   * Explains logical flow of decisions.
-   * Can be collapsed by default.
+1. **Traceability Table**: Maps Business Decisions → Rules → Code Reference.
+2. **Decision Narrative / Summary**: Explains logical flow of decisions (collapsible by default).
+3. **Legend / DMN Key**: Show **actual shapes** for Decision, Input Data, BKM, Knowledge Source and arrow types (solid, dashed, dotted).
 
-3. **Legend / DMN Key (with actual shapes)**
-
-   * Show mini-representations of the DMN shapes instead of just text:
-
-     * Rectangle → Decision
-     * Rounded Rectangle → Input Data
-     * Folded Corner Rectangle → BKM
-     * Document Shape → Knowledge Source
-   * Include arrow examples (solid, dashed, dotted) to explain connector types.
-   * Compact table; optionally toggleable.
-
-*All three sections should be positioned below the main DRD, without overlapping the DRD nodes or interactive content.*
+* Position all three sections below DRD nodes without overlapping main DRD.
 
 ---
 
 ### **Deliverables**
 
-1. **DRD Diagram (SVG or textual)**
+1. **DRD Diagram (SVG)**
 
-   * Fully DMN 1.4-compliant.
-   * Left-to-right flow following DMN best practices.
-   * All elements (Decision, BKM, Input Data, Knowledge Source) interactive with Close buttons.
-   * Correct arrow types and directions.
-   * Top-level heading displayed prominently.
-   * XML-safe rendering, styled tables, **rule names from Markdown exactly preserved in tables**.
-   * Bottom sections: Traceability Table, Decision Narrative, Legend (with actual shapes shown).
+   * Fully DMN 1.4-compliant, left-to-right flow.
+   * Interactive nodes (Decisions, BKM, Input Data, Knowledge Sources) with Close buttons.
+   * Clicking Decisions shows exact rule list + DMN decision table.
+   * Bottom sections included inside SVG: Traceability, Narrative, Legend (with actual shapes).
 
-2. **Optional structured DRD text**
-
-   * Lists each Decision and its associated rules exactly as written.
-
-3. **Traceability Table (Markdown)**
-
-   * Maps Business Decisions → Rules → Code Reference.
+2. **Optional structured DRD text** listing each Decision and its associated rules exactly as written.
 
 ---
 
 ### **Start**
 
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements with Close buttons, interactive tables that fully display all rules using exact rule names from Markdown, XML-safe rendering, styled tables, top-level heading, and include the three bottom sections with Legend showing actual DMN shapes**.
+Generate the DRD once the `.md` rules file is provided, following all above specifications.
