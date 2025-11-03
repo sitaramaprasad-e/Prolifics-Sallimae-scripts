@@ -16,7 +16,7 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 * **Top-level heading:** Include a heading at the top of the DRD. Use the **user-provided business goal** if available; otherwise, use the **top-level decision name**. Style it bold and prominent above all shapes.
 * **Interactive Feature for All Elements:**
 
-  * **Decision Nodes:** Click → full DMN table with all rules and Code Block references.
+  * **Decision Nodes:** Click → full DMN table with all rules and Code Block references, **using exact rule names from the Markdown file** as the first column.
   * **Business Knowledge Models (BKM):** Click → display BKM logic or formula details.
   * **Input Data:** Click → show input metadata (type, allowed values, source).
   * **Knowledge Sources:** Click → show policy, document, or reference details.
@@ -24,7 +24,8 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
   * Use `<g>` groups with `onclick` events and embed content in `<foreignObject>` or toggleable `<g>` blocks.
   * Assign **unique IDs** for each interactive block.
   * Dynamically **position content near the clicked element** and bring it to front to prevent it from being hidden behind DRD shapes.
-  * Enable `overflow:auto` for scrollable content and dynamically expand `<foreignObject>` to fit content.
+  * Enable `overflow:auto` for scrollable tables if the table exceeds the container size.
+  * Dynamically expand the `<foreignObject>` height if table content is larger.
 * Ensure **no overlapping elements**; the layout remains left-to-right and visually clear.
 
 ---
@@ -77,7 +78,8 @@ Outputs:
 * Each element clickable to display its content in a `<foreignObject>` block.
 * Include **Close button** in all interactive content blocks.
 * Dynamically **position content near the clicked element** and bring it to front.
-* Decision nodes show DMN tables with rules and Code Blocks.
+* **Decision nodes:** display DMN tables with columns: `Rule Name (from MD)`, `Inputs…`, `Outputs…`, `Code Reference / Annotation`.
+* **All rules in tables must exactly match the names in the Markdown file.**
 * BKM nodes show function/formula details.
 * Input Data nodes show metadata.
 * Knowledge Source nodes show reference or policy details.
@@ -116,7 +118,7 @@ Outputs:
    * All elements (Decision, BKM, Input Data, Knowledge Source) interactive with Close buttons.
    * Correct arrow types and directions.
    * Top-level heading displayed prominently.
-   * XML-safe rendering, styled tables, exact rule names.
+   * XML-safe rendering, styled tables, **rule names from Markdown exactly preserved in tables**.
    * Bottom sections: Traceability Table, Decision Narrative, Legend.
 
 2. **Optional structured DRD text**
@@ -131,4 +133,4 @@ Outputs:
 
 ### **Start**
 
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements with Close buttons, interactive tables that fully display all rules, XML-safe rendering, styled tables, preserve exact rule names, top-level heading, and include the three bottom sections**.
+Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, fully interactive elements with Close buttons, interactive tables that fully display all rules using exact rule names from Markdown, XML-safe rendering, styled tabl
