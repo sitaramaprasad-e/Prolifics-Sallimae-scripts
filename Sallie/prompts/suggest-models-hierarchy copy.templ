@@ -1,0 +1,54 @@
+INPUT 1: DECISIONS
+
+@@INPUT1@@
+
+INPUT 2: EXISTING MODELS
+
+@@INPUT_FILE_CONTENT@@
+
+INSTRUCTIONS
+
+You are an expert at identifying where decisions link to each other in a hierarchy.
+
+You will have a list of decisions for grouping into a hierarchy as per DRD thinking (input 1: decisions). Analyse these decisions and link them together where one decisions outputs match another decisions inputs. Compare the decision specs completely as well as the outputs/inputs. Make sure you are clear on why you think one decision feeds into another.
+
+Here is an example of a models file:
+
+{
+  "hierarchy_links": [
+    {
+      "from": {
+        "id": "d7940e8e-71d4-4dd1-97fb-a6aaec10c732",
+        "name": "ODS Claim – Validate Header Required Fields"
+      },
+      "to": {
+        "id": "b53e7537-9da6-4b22-9418-2cc7c0f232e1",
+        "name": "ODS Claim – Validate Header Formatting"
+      },
+      "mappings": [
+        { "from_output": "validated_header", "to_input": "header_context" },
+        { "from_output": "claim_id",         "to_input": "claim_id" },
+        { "from_output": "header_status",    "to_input": "header_status" }
+      ]
+    },
+    {
+      "from": {
+        "id": "734941ba-01bc-4c58-a2e5-1bf8e287f772",
+        "name": "ODS Claim – Validate Line Data Elements"
+      },
+      "to": {
+        "id": "f0656d76-b83c-4e8a-a4aa-72979e4fa111",
+        "name": "ODS Claim – Validate Line Pricing Inputs"
+      },
+      "mappings": [
+        { "from_output": "validated_line_item", "to_input": "line_context" },
+        { "from_output": "line_code",           "to_input": "line_code" },
+        { "from_output": "line_amount",         "to_input": "line_amount" }
+      ]
+    }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting. The response must be a json file.
+* Do not put any special characters in the output.
