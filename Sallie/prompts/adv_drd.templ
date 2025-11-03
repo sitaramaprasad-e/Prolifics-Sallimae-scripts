@@ -1,4 +1,4 @@
-## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (With Functional Grouping & Rule Relationship Mapping)**
+## 🧠 **Prompt: Generate DMN 1.4 Standard DRD from Markdown Rules (Left-to-Right Flow + Interactive Decisions + XML-safe + Styled Tables + Exact Rule Names + Final Decision Identification)**
 
 You are a **Decision Modeling expert** specializing in **DMN 1.4**.
 
@@ -8,13 +8,25 @@ Your task is to generate a **Decision Requirements Diagram (DRD)** in **DMN-stan
 
 ### **Objective**
 
-* Produce a **DMN 1.4-compliant DRD** in **SVG format**.
-* Use **only the rules provided in the Markdown file**.
-* Keep **all rule names, IDs, and Decision Tables exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues.
-* **Functional Grouping:** Intelligently categorize rules based on their **functional purpose, business domain, or operational area** to create logical clusters of related rules. The tool should use the context of the rules, inputs/outputs, and descriptions to perform this grouping.
-* **Rule Relationship Mapping:** Analyze dependencies between grouped rules to understand **how different rule sets interact** and establish relationships between Decisions, Input Data, BKMs, and Knowledge Sources.
+* Produce a **DMN 1.4-compliant DRD** in **SVG format** (or textual diagram if SVG is not possible).
+* Use **only the rules provided in the Markdown file** — do not read source code or generate new rules.
+* Keep **all rule names, IDs, and Decision Tables exactly as written**, escaping only XML special characters (`&, <, >, ', "`) to prevent SVG rendering issues, without modifying spacing, capitalization, or special symbols.
+* Show **dependencies between Input Data, Decisions, BKMs, and Knowledge Sources** using DMN-standard connectors.
 * Layout should follow **DMN best practices**: Inputs on the left, Decisions in the center, BKMs on the right, Knowledge Sources on top. Arrows flow left-to-right.
 * **Interactive Feature:** Each Decision node should be clickable to display the **full DMN decision table**, including all rules and Code Block references.
+
+---
+
+### **Final Decision Identification (New Feature)**
+
+Before generating the DRD, the tool must:
+
+1. **Logically scan all rules** in the provided Markdown file to identify which rules represent **final business outcomes or top-level decisions**.
+2. **Trace dependencies** among rules by analyzing their input/output structure and references to determine **sub-decisions** and their data lineage.
+3. **Establish the decision sequence** — mapping each sub-decision, its input data, and the final decision in a clear hierarchy.
+4. Use this logical chain to position **final decisions** at the far-right of the DRD and their **preceding sub-decisions** leading toward them.
+
+This step ensures the DRD reflects true **decision flow from input data to final outcome**, even when multiple layers of intermediate rules exist.
 
 ---
 
@@ -40,12 +52,12 @@ Outputs:
 
 ### **DMN Elements and Representation**
 
-| Element                        | DMN Standard Shape                                      | Connector                               |
-| ------------------------------ | ------------------------------------------------------- | --------------------------------------- |
-| Decision                       | Rectangle with slightly rounded corners (`rx=5, ry=5`)  | Solid arrow for Information Requirement |
-| Input Data                     | Fully rounded rectangle (`rx=ry=height/2`)              | Solid arrow to Decisions                |
-| Business Knowledge Model (BKM) | Rectangle with top-right corner folded (dog-ear)        | Dashed arrow for Knowledge Requirement  |
-| Knowledge Source               | Rectangle with folded top-right corner (document shape) | Dotted arrow for Authority Requirement  |
+| Element                        | DMN Standard Shape                                                               | Connector                               |
+| ------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------- |
+| Decision                       | Rectangle with slightly rounded corners (`rx=5, ry=5`)                           | Solid arrow for Information Requirement |
+| Input Data                     | Fully rounded rectangle (`rx=ry=height/2`)                                       | Solid arrow to Decisions                |
+| Business Knowledge Model (BKM) | Rectangle with top-right corner folded (dog-ear, use `<path>` or polygon in SVG) | Dashed arrow for Knowledge Requirement  |
+| Knowledge Source               | Rectangle with folded top-right corner (document shape)                          | Dotted arrow for Authority Requirement  |
 
 ---
 
@@ -57,18 +69,12 @@ Outputs:
 * Escape only XML special characters (`&, <, >, ', "`) to prevent SVG errors.
 * Render rule names inside `<pre>` or `<code>` tags in `<foreignObject>` to maintain exact formatting.
 * Use `<foreignObject>` or toggleable `<g>` groups in SVG.
-* Set default `<foreignObject>` width/height large enough for typical tables; enable scroll for overflow.
-* Dynamically resize `<foreignObject>` if content is larger.
-* Include table styling for readability: borders, padding, word-wrap, alternating row colors.
+* Set default `<foreignObject>` width/height (e.g., width=600, height=400) large enough to accommodate typical tables.
+* Enable `overflow:auto` for scrollable tables if the table exceeds the container size.
+* Dynamically expand the `<foreignObject>` height if table content is larger.
+* Include table styling for readability: borders, padding, word-wrap, and alternating row colors.
 * Include Code Block reference as a tooltip or metadata.
-
----
-
-### **Functional Grouping and Relationship Mapping**
-
-* Automatically **group rules into functional clusters** based on purpose, domain, or operational area.
-* Analyze **inputs, outputs, and DMN table logic** to map dependencies between clusters.
-* Establish **relationships between Decisions** (Information/Knowledge/Authority Requirements) using DMN-standard arrows.
+* The DRD should still follow DMN 1.4 standard shapes and left-to-right flow.
 
 ---
 
@@ -77,11 +83,10 @@ Outputs:
 1. **DRD Diagram (SVG or textual)**
 
    * Fully DMN 1.4-compliant
-   * Left-to-right flow
+   * Left-to-right flow following DMN best practices
    * Shows all Input Data, Decisions, BKMs, Knowledge Sources
-   * Correct arrow types/directions
-   * Interactive Decision nodes revealing full DMN tables with **exact rule names**, proper styling, XML-safe content
-   * Functional clusters and mapped relationships automatically detected
+   * Correct arrow types and directions
+   * Interactive Decision nodes revealing full DMN tables with **exact rule names**, proper styling, and XML-safe content
 
 2. **Optional structured DRD text**
 
@@ -90,24 +95,3 @@ Outputs:
 3. **Traceability Table (Markdown)**
 
    * Maps Business Decisions → Rules → Code Reference
-   * Shows relationships/dependencies between grouped decisions
-
----
-
-### **DMN Legend (For Bottom of DRD)**
-
-| Symbol / Shape                                          | Meaning                        |
-| ------------------------------------------------------- | ------------------------------ |
-| Rectangle with rounded corners                          | Decision                       |
-| Fully rounded rectangle                                 | Input Data                     |
-| Rectangle with top-right folded corner (dog-ear)        | Business Knowledge Model (BKM) |
-| Rectangle with folded top-right corner (document shape) | Knowledge Source               |
-| Solid arrow                                             | Information Requirement        |
-| Dashed arrow                                            | Knowledge Requirement          |
-| Dotted arrow                                            | Authority Requirement          |
-
----
-
-### **Start**
-
-Generate the DRD once I provide the `.md` rules file. The DRD must follow **DMN-standard shapes, left-to-right layout, interactive Decision tables that fully display all rules, XML-safe rendering, styled tables, preserve rule names exactly as in the Markdown, and include functional grouping and rule relationship mapping**.
