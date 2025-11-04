@@ -7,6 +7,9 @@ import os
 import subprocess
 import sys
 import time
+import pty
+import select
+import shlex
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -279,14 +282,10 @@ def _prepare_models_input(models_json_path: str) -> Dict[str, Any]:
 
 
 def _run_pcpt(code_dir: str, input_file: str, output_dir: str, prompt_name: str) -> None:
-    """Call pcpt.sh run-custom-prompt with rules JSON as code_dir and models as --input-file.
+    """Call pcpt.sh with a pseudo‑TTY so child processes flush output immediately.
 
-    Final shape:
-      pcpt.sh run-custom-prompt \
-        --input-file <models_input.json> \
-        --output <output_dir> \
-        <rules_export.json> \
-        <prompt_name>
+    This greatly improves streaming for tools that buffer when stdout is not a TTY
+    (e.g., Python default I/O, Docker/Podman wrappers, rich console libs).
     """
     cmd = [
         "pcpt.sh",
@@ -298,11 +297,73 @@ def _run_pcpt(code_dir: str, input_file: str, output_dir: str, prompt_name: str)
         code_dir,
         prompt_name,
     ]
-    _log("Running: " + " ".join(cmd))
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    print(proc.stdout)
-    if proc.returncode != 0:
-        raise RuntimeError(f"PCPT run failed with exit code {proc.returncode}")
+
+    # Pretty log with proper shell quoting
+    _log("Running: " + " ".join(shlex.quote(c) for c in cmd))
+
+    env = os.environ.copy()
+    # Nudge child interpreters to be unbuffered/UTF-8
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    # Allocate a PTY so downstream tools behave as if attached to a real terminal
+    master_fd, slave_fd = pty.openpty()
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+            close_fds=True,
+        )
+        # We don't write to the child; close our dup of the slave end
+        os.close(slave_fd)
+
+        # Pump bytes from the PTY master to our stdout in near‑real time
+        rc: Optional[int] = None
+        while True:
+            # Read with a tiny timeout to keep the UI snappy without busy‑waiting
+            r, _, _ = select.select([master_fd], [], [], 0.1)
+            if master_fd in r:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    # EOF from child PTY
+                    pass
+                else:
+                    # Write raw bytes to preserve ANSI art / carriage returns
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+
+            rc = proc.poll()
+            if rc is not None:
+                # Drain any final bytes that arrived between poll and loop break
+                while True:
+                    r2, _, _ = select.select([master_fd], [], [], 0)
+                    if master_fd not in r2:
+                        break
+                    try:
+                        chunk2 = os.read(master_fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk2:
+                        break
+                    sys.stdout.buffer.write(chunk2)
+                    sys.stdout.buffer.flush()
+                break
+
+        if rc != 0:
+            raise RuntimeError(f"PCPT run failed with exit code {rc}")
+
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
 
 
 def _normalize_models(payload: Any) -> List[Dict[str, Any]]:

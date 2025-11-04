@@ -730,7 +730,7 @@ def _heading_text(line: str) -> str:
     s = re.sub(r"\s*#{1,6}\s*$", "", s)
     s = s.strip(" *-\t")
     # If the heading still includes a leading label like "Rule Name:", strip it.
-    s = re.sub(r"^Rule Name:\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^(?:Rule\s+Name|Name):\s*", "", s, flags=re.IGNORECASE)
     return s
 
 
@@ -783,11 +783,22 @@ def _normalize_rule_doc_text(t: str) -> str:
     t = re.sub(r"#{2,6}\s*\d+\.\s*\*\*Rule Name:\*\*\s*", "## ", t)   # e.g., "### 1. **Rule Name:**"
     t = re.sub(r"#{2,6}\s*\*\*Rule Name:\*\*\s*", "## ", t)            # e.g., "### **Rule Name:**"
     t = re.sub(r"#{2,6}\s*\d+\.\s*Rule Name:\s*", "## ", t)            # e.g., "### 1. Rule Name:"
-    t = re.sub(r"#{2,6}\s*Rule Name:\s*", "## ", t)                      # e.g., "### Rule Name:"
-    t = re.sub(r"\n---+\n", "\n", t)                                     # Remove separators
+    t = re.sub(r"#{2,6}\s*Rule Name:\s*", "## ", t)                    # e.g., "### Rule Name:"
+
+    # Newer "Name:" heading variants → also normalize to "## "
+    t = re.sub(r"#{2,6}\s*\d+\.\s*\*\*Name:\*\*\s*", "## ", t)         # e.g., "### 1. **Name:**"
+    t = re.sub(r"#{2,6}\s*\*\*Name:\*\*\s*", "## ", t)                 # e.g., "### **Name:**"
+    t = re.sub(r"#{2,6}\s*\d+\.\s*Name:\s*", "## ", t)                 # e.g., "### 1. Name:"
+    t = re.sub(r"#{2,6}\s*Name:\s*", "## ", t)                         # e.g., "### Name:"
+
+    t = re.sub(r"\n---+\n", "\n", t)                                   # Remove separators
+
     # Also handle non-heading inline forms
     t = re.sub(r"(?m)^\s*\*\*Rule Name:\*\*\s*", "## ", t)
     t = re.sub(r"(?m)^\s*Rule Name:\s*", "## ", t)
+    t = re.sub(r"(?m)^\s*\*\*Name:\*\*\s*", "## ", t)
+    t = re.sub(r"(?m)^\s*Name:\s*", "## ", t)
+
     return t
 
 def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: Optional[set] = None):
@@ -803,14 +814,32 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                 rn_match = re.search(r"\*\*Rule Name:\*\*\s*(.+)", section)
                 if rn_match:
                     rule_name = rn_match.group(1).strip()
+            
+            if (not rule_name or rule_name.lower() in {"rule name", "rule-name"}):
+                rn2 = re.search(r"\*\*Name:\*\*\s*(.+)", section)
+                if rn2:
+                    rule_name = rn2.group(1).strip()
+
+            # New optional Kind field (Decision | BKM)
+            kind = ""
+            m_kind = re.search(r"\*\*Kind:\*\*\s*([A-Za-z]+)", section)
+            if m_kind:
+                kind = m_kind.group(1).strip()
+            
             # If an allowlist is provided (used for prior-runs mode), skip names not in the set
             if allowed_names is not None and rule_name not in allowed_names:
                 continue
-            purpose_match = re.search(r"\*\*Rule Purpose:\*\*\s*\n?(.*?)(?=\n\*\*Rule Spec|\n\*\*Specification|\n\*\*Code Block|\n\*\*Example|$)", section, re.DOTALL)
+            # Purpose: accept "**Rule Purpose:**" or "**Purpose:**"
+            purpose_match = re.search(
+                r"\*\*(?:Rule\s+)?Purpose:\*\*\s*\n?(.*?)(?=\n\*\*(?:Rule\s+)?Spec|\n\*\*Specification|\n\*\*Code Block|\n\*\*Example|$)",
+                section, re.DOTALL | re.IGNORECASE
+            )
             rule_purpose = purpose_match.group(1).strip() if purpose_match else ""
-            spec_match = re.search(r"\*\*Rule Spec:\*\*|\*\*Specification:\*\*", section)
-            if spec_match:
-                start = spec_match.end()
+
+            # Spec: accept "**Rule Spec:**" or "**Spec:**" or "**Specification:**"
+            spec_marker = re.search(r"\*\*(?:Rule\s+)?Spec:\*\*|\*\*Specification:\*\*", section, re.IGNORECASE)
+            if spec_marker:
+                start = spec_marker.end()
                 next_marker = re.search(r"\n\*\*(Code Block|Example):\*\*|\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", section[start:], re.DOTALL | re.IGNORECASE)
                 end = next_marker.start() + start if next_marker else len(section)
                 rule_spec = section[start:end].strip()
@@ -921,6 +950,38 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
             if m_codefunc:
                 code_function = m_codefunc.group(1).strip()
                 code_function = re.sub(r"^[\s:;\-\u2013\u2014]+", "", code_function).strip()
+            # New: parse **Links:** block (optional)
+            links = []
+            m_links = re.search(r"(?mi)^\s*\*\*Links:\*\*\s*\n(?P<body>.*?)(?=\n## |\Z)", section, re.DOTALL)
+            if m_links:
+                body = m_links.group("body").strip()
+                if body.lower() == "none":
+                    links = []
+                else:
+                    for ln in [x.strip() for x in body.splitlines() if x.strip()]:
+                        # Accept two forms (case-insensitive):
+                        #  A) Implicit to_step (preferred):
+                        #     <from_step>.<from_output> -> <to_input> [kind=...]
+                        #     (to_step is inferred as the current rule_name)
+                        #  B) Legacy explicit to_step:
+                        #     <from_step>.<from_output> -> <to_step>.<to_input> [kind=...]
+                        # We do NOT store to_step; it is implied by the owning rule. The entire RHS
+                        # is treated as to_input. If RHS starts with "<rule_name>." we strip that prefix.
+                        mm = re.match(r"^(.+?)\.(.+?)\s*->\s*(.+?)\s*\[kind=([^\]]+)\]\s*$", ln, flags=re.IGNORECASE)
+                        if mm:
+                            _from_step = mm.group(1).strip()
+                            _from_output = mm.group(2).strip()
+                            rhs = mm.group(3).strip()
+                            _kind = mm.group(4).strip()
+                            links.append({
+                                "from_step": _from_step,
+                                "from_output": _from_output,
+                                "to_input": rhs,               # full RHS preserved (may contain dots)
+                                "kind": _kind
+                            })
+                        else:
+                            # keep raw line for diagnostics if it doesn't match
+                            links.append({"raw": ln})
             rule_rec = {
                 "rule_name": rule_name,
                 "rule_purpose": rule_purpose,
@@ -938,6 +999,8 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                 "id": rule_id,
                 "owner": _ingest_owner,
                 "component": _ingest_component,
+                "kind": kind,
+                "links": links,
             }
             if existing and existing.get("archived") is not None:
                 rule_rec["archived"] = existing["archived"]
@@ -947,7 +1010,15 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                     if val not in (None, "", []):
                         rule_rec["rule_category"] = val
                         break
-            _audit_add("rule", path=rule_rec.get("code_file") or "", source="input_doc", decision="accepted", reason=("updated" if existing else "new"), tests={"has_code_block": bool(code_block)}, derived={"rule_id": rule_id, "rule_name": rule_name})
+            _audit_add(
+                "rule",
+                path=rule_rec.get("code_file") or "",
+                source="input_doc",
+                decision="accepted",
+                reason=("updated" if existing else "new"),
+                tests={"has_code_block": bool(code_block)},
+                derived={"rule_id": rule_id, "rule_name": rule_name, "kind": kind, "links": len(links)}
+            )
             LOG.info("[info] ✓ %s rule: %s", ("updated" if existing else "new"), rule_name)
             new_rules.append(rule_rec)
         except Exception as e:
