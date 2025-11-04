@@ -92,15 +92,15 @@ def _copy(src: str, dst: str) -> None:
 # ----------------------------
 # PCPT helpers (inspired by categorize_rules.py)
 # ----------------------------
-def pcpt_sequence(output_dir: str, visualize: str, domain_hints: Optional[str] = None, filters: Optional[str] = None) -> None:
+def pcpt_sequence(output_dir: str, visualize: str, domain_hints: Optional[str] = None, filter_file: Optional[str] = None) -> None:
   """
-  Run: pcpt.sh sequence --output <output_dir> [--domain-hints <domain_hints>] [--filters <filters>] --visualize <visualize>
+  Run: pcpt.sh sequence --output <output_dir> [--domain-hints <domain_hints>] [--filter <filter_file>] --visualize <visualize>
   """
   cmd = ["pcpt.sh", "sequence", "--output", output_dir]
   if domain_hints:
     cmd.extend(["--domain-hints", domain_hints])
-  if filters:
-    cmd.extend(["--filters", filters])
+  if filter_file:
+    cmd.extend(["--filter", filter_file])
   cmd.extend(["--visualize", visualize])
   _run(cmd)
 
@@ -110,10 +110,10 @@ def pcpt_run_custom_prompt(
     output_dir: str,
     code_dir: str,
     prompt_name: str,
-    filters: Optional[str] = None,
+    filter_file: Optional[str] = None,
 ) -> None:
   """
-  Run: pcpt.sh run-custom-prompt --input-file <input_file> --input-file2 <input_file2> --output <output_dir> [--filters <filters>] <code_dir> <prompt_name>
+  Run: pcpt.sh run-custom-prompt --input-file <input_file> --input-file2 <input_file2> --output <output_dir> [--filter <filter_file>] <code_dir> <prompt_name>
   """
   cmd = [
     "pcpt.sh",
@@ -125,8 +125,8 @@ def pcpt_run_custom_prompt(
     "--output",
     output_dir,
   ]
-  if filters:
-    cmd.extend(["--filters", filters])
+  if filter_file:
+    cmd.extend(["--filter", filter_file])
   cmd.extend([
     code_dir,
     prompt_name,
@@ -142,16 +142,16 @@ def main() -> None:
   parser.add_argument("code_dir", help="Path to code directory to visualize (required)")
   parser.add_argument("output_dir", help="Output directory for docs (required)")
   parser.add_argument("--domain-hints", default=None, help="Domain hints file (optional). If not provided, domain hints are not used.")
-  parser.add_argument("--filters", default=None, help="Filters file (optional). If provided, it will be passed to PCPT.")
   parser.add_argument("--prompt-name", default=DEFAULT_PROMPT_NAME, help="Custom prompt template name (default: markup-sequence.templ)")
+  parser.add_argument("--filter", default=None, help="Filter file (optional). If provided, it will be passed to PCPT.")
   parser.add_argument("--skip-initial-sequence", action="store_true", help="Skip the initial sequence generation step.")
   args = parser.parse_args()
 
   code_dir = args.code_dir
   output_dir = args.output_dir
   domain_hints = args.domain_hints if args.domain_hints and args.domain_hints.strip() else None
-  filters = args.filters if args.filters and args.filters.strip() else None
   prompt_name = args.prompt_name
+  filter_file = args.filter if args.filter and args.filter.strip() else None
 
   # Paths used by the flow
   seq_report_src = os.path.join(output_dir, "sequence_report", "sequence_report.txt")
@@ -160,9 +160,9 @@ def main() -> None:
   _log("Step 1: Create standard Sequence Diagram", header=True)
   if not args.skip_initial_sequence:
     if domain_hints:
-      pcpt_sequence(output_dir=output_dir, visualize=code_dir, domain_hints=domain_hints, filters=filters)
+      pcpt_sequence(output_dir=output_dir, visualize=code_dir, domain_hints=domain_hints, filter_file=filter_file)
     else:
-      pcpt_sequence(output_dir=output_dir, visualize=code_dir, filters=filters)
+      pcpt_sequence(output_dir=output_dir, visualize=code_dir, filter_file=filter_file)
   else:
     _log("Skipped initial sequence generation as requested.")
 
@@ -205,7 +205,7 @@ def main() -> None:
     output_dir=output_dir,
     code_dir=code_dir,
     prompt_name=prompt_name,
-    filters=filters,
+    filter_file=filter_file,
   )
 
   _log("Step 5: Regenerate sequence diagram from markup", header=True)
@@ -216,9 +216,9 @@ def main() -> None:
     )
   # Only pass domain_hints if it was provided
   if domain_hints:
-    pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints, filters=filters)
+    pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints, filter_file=filter_file)
   else:
-    pcpt_sequence(output_dir=output_dir, visualize=markup_md, filters=filters)
+    pcpt_sequence(output_dir=output_dir, visualize=markup_md, filter_file=filter_file)
 
   _log("✅ Done. Sequence regenerated using markup.")
   _log(f"Markup file: {markup_md}")
