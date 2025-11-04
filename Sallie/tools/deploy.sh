@@ -19,6 +19,8 @@ LOCAL_TLS=false
 NO_BUILD=false
 IMAGE_NAME="rules-portal"
 TAG="latest"
+MODEL_HOME=""
+MODEL_HOME_SET=false
 
 # Track if image-name/tag were set by CLI
 IMAGE_NAME_SET=false
@@ -58,6 +60,11 @@ while [[ $# -gt 0 ]]; do
       TAG_SET=true
       shift 2
       ;;
+    --home)
+      MODEL_HOME="$2"
+      MODEL_HOME_SET=true
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [--push] [--domain your.domain.com --email you@example.com] [--local-https] [--no-build] [--image-name name] [--tag tag]"
       echo "  --push           Push images to podman Hub."
@@ -74,6 +81,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Determine model home default
+if [[ "$MODEL_HOME_SET" != true ]]; then
+  MODEL_HOME="$HOME/.model"
+fi
 
 # Interactive prompt for IMAGE_NAME and TAG if not set by CLI and if running interactively (not in CI)
 if [ -t 0 ]; then
@@ -145,7 +157,7 @@ if [[ "$USE_PROXY" == true ]]; then
   podman run -d \
       --name $CONTAINER_NAME \
       --network $NETWORK_NAME \
-      -v ~/.model:/app/public \
+      -v "${MODEL_HOME}:/app/public" \
       --health-cmd="wget -qO- http://127.0.0.1:$PORT/healthz || exit 1" \
       --health-interval=10s \
       --health-retries=3 \
@@ -169,7 +181,7 @@ else
   podman run -d \
       --name $CONTAINER_NAME \
       -p 443:$PORT \
-      -v ~/.model:/app/public \
+      -v "${MODEL_HOME}:/app/public" \
       --health-cmd="wget -qO- http://127.0.0.1:$PORT/healthz || exit 1" \
       --health-interval=10s \
       --health-retries=3 \
