@@ -9,6 +9,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 import re
 import glob
+import time
 
 # Reusable pcpt helpers
 from call_pcpt import build_output_path, clean_previous_outputs, run_pcpt_for_rule
@@ -252,6 +253,27 @@ def _log_cmd(cmd: List[str]) -> None:
     print(f"\033[90m[{ts}]\033[0m $ \033[1m{' '.join(cmd)}\033[0m")
 
 # ----------------------------
+# Visible wait helper
+# ----------------------------
+
+def _pause_between_rules(seconds: int) -> None:
+    """Show a short, elegant countdown before the next pcpt call."""
+    if seconds <= 0:
+        return
+    # One-time header line, then a quiet inline countdown without timestamps
+    print("\n⏳ Cooling down before next pcpt call…")
+    try:
+        for remaining in range(seconds, 0, -1):
+            # Inline countdown on one line; carriage return rewrites in place
+            print(f"\r   Next call in {remaining:2d}s ", end="", flush=True)
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n(Countdown interrupted)\n")
+        return
+    # Clear the inline line and acknowledge
+    print("\r✅ Continuing…           \n")
+
+# ----------------------------
 # Utilities
 # ----------------------------
 def load_json(path: str) -> Any:
@@ -363,7 +385,10 @@ def main() -> None:
     total = len(rules)
     _log(f"Step 2: Scan {total} rule(s)", header=True)
     # Precompute target rules and total
-    target_rules = [r for r in rules if isinstance(r, dict) and is_missing_category(r)]
+    target_rules = [
+        r for r in rules
+        if isinstance(r, dict) and is_missing_category(r) and not r.get("archived", False)
+    ]
     total_targets = len(target_rules)
     unchanged_with_category = len([r for r in rules if isinstance(r, dict) and not is_missing_category(r)])
     _log(f"Step 3: Categorize {total_targets} rule(s) needing category", header=True)
@@ -451,6 +476,9 @@ def main() -> None:
             f"  Per-Rule Log: {log_path}",
             ""
         ])
+        # Pause between pcpt calls to avoid back-to-back invocations
+        if running_index < total_targets:
+            _pause_between_rules(12)
 
     # --- One execution per entire run (for run-log display only) ---
     OUTPUT_PARENT_DIR = os.path.join(OUTPUT_DIR_ARG, os.path.dirname(OUTPUT_FILE_ARG))  # e.g., docs/categorise-rule

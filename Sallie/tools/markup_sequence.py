@@ -216,9 +216,9 @@ def main() -> None:
     )
   # Only pass domain_hints if it was provided
   if domain_hints:
-    pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints, filter_file=filter_file)
+    pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints)
   else:
-    pcpt_sequence(output_dir=output_dir, visualize=markup_md, filter_file=filter_file)
+    pcpt_sequence(output_dir=output_dir, visualize=markup_md)
 
   _log("✅ Done. Sequence regenerated using markup.")
   _log(f"Markup file: {markup_md}")

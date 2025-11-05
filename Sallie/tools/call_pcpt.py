@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python3
 """
 call_pcpt.py
@@ -86,20 +84,155 @@ def _ensure_output_dirs(output_dir_arg: str, output_file_arg: str) -> str:
 # Helper for calling pcpt.sh sequence with optional --domain-hints
 def pcpt_sequence(
     output_dir_arg: str,
-    visualize_arg: str,
+    visualize_arg: Optional[str] = None,
     domain_hints: Optional[str] = None,
+    visualize: bool = False,
+    filter_path: Optional[str] = None,
+    source_path: Optional[str] = None,
 ) -> None:
     """
     Wrapper around:
-      pcpt.sh sequence --output <output_dir_arg> [--domain-hints <domain_hints>] --visualize <visualize_arg>
-    If domain_hints is None or empty, the flag is omitted (backwards compatible).
+      pcpt.sh sequence \
+        --output <output_dir_arg> \
+        [--domain-hints <domain_hints>] \
+        [--visualize] \
+        [--filter <filter_path>] \
+        <source_path>
+
+    Backward compatible behavior:
+      - If `visualize_arg` is provided (any non-None value), `--visualize` is added.
+      - New boolean `visualize` also controls `--visualize` when True.
+      - `filter_path` and `source_path` are optional and omitted when not provided.
     """
     cmd = ["pcpt.sh", "sequence", "--output", output_dir_arg]
     if domain_hints:
         cmd.extend(["--domain-hints", domain_hints])
-    cmd.extend(["--visualize", visualize_arg])
+
+    # Honor both legacy visualize_arg and new boolean visualize switch
+    if visualize or (visualize_arg is not None and str(visualize_arg).strip() != ""):
+        cmd.append("--visualize")
+
+    if filter_path:
+        cmd.extend(["--filter", filter_path])
+
+    if source_path:
+        cmd.append(source_path)
+
     subprocess.run(cmd, check=True)
 
+# Helper for calling pcpt.sh domain-model with optional --domain-hints
+def pcpt_domain_model(
+    output_dir_arg: str,
+    domain_hints: Optional[str] = None,
+    visualize: bool = False,
+    filter_path: Optional[str] = None,
+    mode: Optional[str] = None,
+    source_path: str = None,
+) -> None:
+    """
+    Wrapper around:
+      pcpt.sh domain-model \
+        --output <output_dir_arg> \
+        [--domain-hints <domain_hints>] \
+        [--visualize] \
+        [--filter <filter_path>] \
+        [--mode {multi,single}] \
+        <source_path>
+    If any optional values are None/False, their flags are omitted (backwards compatible).
+    """
+    cmd = ["pcpt.sh", "domain-model", "--output", output_dir_arg]
+    if domain_hints:
+        cmd.extend(["--domain-hints", domain_hints])
+    if visualize:
+        cmd.append("--visualize")
+    if filter_path:
+        cmd.extend(["--filter", filter_path])
+    if mode:
+        cmd.extend(["--mode", mode])
+    if source_path:
+        cmd.append(source_path)
+    subprocess.run(cmd, check=True)
+
+# Helper for calling pcpt.sh business-logic with optional --domain-hints
+
+def pcpt_business_logic(
+    output_dir_arg: str,
+    domain_path: str,
+    domain_hints: Optional[str] = None,
+    filter_path: Optional[str] = None,
+    mode: Optional[str] = None,
+    source_path: str = None,
+) -> None:
+    """
+    Wrapper around:
+      pcpt.sh business-logic --output <output_dir_arg> --domain <domain_path> [--domain-hints <domain_hints>] [--filter <filter_path>] [--mode {multi,single}] <source_path>
+    If domain_hints is None or empty, the flag is omitted (backwards compatible).
+    """
+    cmd = ["pcpt.sh", "business-logic", "--output", output_dir_arg]
+    cmd.extend(["--domain", domain_path])
+    if domain_hints:
+        cmd.extend(["--domain-hints", domain_hints])
+    if filter_path:
+        cmd.extend(["--filter", filter_path])
+    if mode:
+        cmd.extend(["--mode", mode])
+    if source_path:
+        cmd.append(source_path)
+    subprocess.run(cmd, check=True)
+
+# Helper for calling pcpt.sh run-custom-prompt (generic wrapper)
+def pcpt_run_custom_prompt(
+    source_path: str,
+    custom_prompt_template: str,
+    input_file: Optional[str] = None,
+    input_file2: Optional[str] = None,
+    echo_only: bool = False,
+    output_dir_arg: Optional[str] = None,
+    filter_path: Optional[str] = None,
+    mode: Optional[str] = None,  # 'multi' (default) or 'single'
+    index: Optional[int] = None,
+    total: Optional[int] = None,
+) -> None:
+    """
+    Wrapper around:
+      pcpt.sh run-custom-prompt \
+        [--input-file <input_file>] \
+        [--input-file2 <input_file2>] \
+        [--echo-only] \
+        [--output <output_dir_arg>] \
+        [--filter <filter_path>] \
+        [--mode {multi,single}] \
+        [--index X --total Y] \
+        <source_path> <custom_prompt_template>
+
+    Notes / Backward compatibility:
+      - Any optional flag is omitted when its corresponding argument is None/False.
+      - `mode` should be 'multi' or 'single' when provided.
+      - `index` and `total` must be provided together (mirrors CLI requirement).
+    """
+    cmd = ["pcpt.sh", "run-custom-prompt"]
+
+    if input_file:
+        cmd.extend(["--input-file", input_file])
+    if input_file2:
+        cmd.extend(["--input-file2", input_file2])
+    if echo_only:
+        cmd.append("--echo-only")
+    if output_dir_arg:
+        cmd.extend(["--output", output_dir_arg])
+    if filter_path:
+        cmd.extend(["--filter", filter_path])
+    if mode:
+        cmd.extend(["--mode", mode])
+
+    # Pair requirement: only add when both provided
+    if index is not None and total is not None:
+        cmd.extend(["--index", str(index), "--total", str(total)])
+
+    # Positional arguments
+    cmd.extend([source_path, custom_prompt_template])
+
+    subprocess.run(cmd, check=True)
 
 def run_pcpt_for_rule(
     dynamic_rule_file: str,

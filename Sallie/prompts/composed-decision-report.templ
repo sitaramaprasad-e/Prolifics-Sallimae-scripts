@@ -1,0 +1,22 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+Can you create a top-level decision that takes in the outputs of these base decisions and synthesizes into a composite decision? Make sure the top-level decision doesn't implement the logic in the base decisions, but rather takes their outputs as inputs.
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Response must be a json in the exact same form as the rules in input 2.
+* Do not put any special characters in the output.
+* Provide blanks for the following json fields: rule_category, ai_categorised, component, owner, category_explanation
+* Set kind to Decision (Top-Level)

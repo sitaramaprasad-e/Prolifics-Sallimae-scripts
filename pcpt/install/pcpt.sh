@@ -420,6 +420,13 @@ if [[ -n "$POS_PATH_RULES" ]]; then
                     "question"|"follow-up-question"|"extract-psm"|"run-custom-prompt")
                         map_path_to_volume "$SECOND_LAST_ARG" "/source_path"
                         ARGS+=("/source_path")
+                        # Ensure PCPT_SOURCE_PATH reflects the host source path (absolute if provided)
+                        SRC_HOST="$SECOND_LAST_ARG"
+                        if [[ "$SRC_HOST" = /* ]]; then
+                            PCPT_SOURCE_PATH="$SRC_HOST"
+                        else
+                            PCPT_SOURCE_PATH="$CURRENT_PATH_OVERRIDE/$SRC_HOST"
+                        fi
                         ;;
                     "generate-code")
                         map_path_to_volume "$SECOND_LAST_ARG" "/target_path"
@@ -461,7 +468,11 @@ if [[ -n "$POS_PATH_RULES" ]]; then
                     fi
                     map_path_to_volume "$LAST_ARG" "/source_path"
                     ARGS+=("/source_path")
-                    PCPT_SOURCE_PATH="$CURRENT_PATH_OVERRIDE/$LAST_ARG"
+                    if [[ "$LAST_ARG" = /* ]]; then
+                        PCPT_SOURCE_PATH="$LAST_ARG"
+                    else
+                        PCPT_SOURCE_PATH="$CURRENT_PATH_OVERRIDE/$LAST_ARG"
+                    fi
                     ;;
             esac
             POS_ARGS=("${POS_ARGS[@]:0:$((POS_COUNT-1))}")  # Remove the last positional argument
