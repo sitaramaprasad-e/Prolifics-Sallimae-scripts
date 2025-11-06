@@ -1,0 +1,26 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+Take a look at these decisions, and work out what the decision hierarchy is that organizes these decisions from top to botton, and specifically which of the decisions should be at the top-level of that decision hierarchy.
+
+1. Top-level should have decisions flow into them from lower level decisions. There is often only one top-level decision, but could be more.
+2. Top-level decisions should not themselves flow into higher level decisions. They are at the top.
+3. You need to think carefully about all of the rules, and how they form mini hierarchies of decisions that feed from top to bottom, lower level decisions driving a higher level decision.
+4. Just include the rule uuid in the output.
+5. If none, just return an empty json.
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Response must be a json in the exact same form as the rules in input 2.
+* Do not put any special characters in the output.

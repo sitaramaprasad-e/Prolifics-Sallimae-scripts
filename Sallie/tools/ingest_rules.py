@@ -1230,7 +1230,12 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                 "links": links,
             }
             if existing and existing.get("archived") is not None:
-                rule_rec["archived"] = existing["archived"]
+                # If rule was archived and we are updating it, unarchive automatically
+                if existing.get("archived") is True:
+                    rule_rec["archived"] = False
+                    LOG.info("[info] Unarchived rule on update: %s", rule_name)
+                else:
+                    rule_rec["archived"] = existing["archived"]
             if FORCE_LOAD and existing:
                 for src_key in ("rule_category", "category", "category_id", "categoryId"):
                     val = existing.get(src_key)

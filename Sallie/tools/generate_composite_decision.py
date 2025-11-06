@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate a composed decision report by selecting a model and its rules, then
-invoking pcpt.sh run-custom-prompt via the helper wrapper.
+invoking pcpt.sh run-custom-prompt via the helper wrapper. Supports compose modes: 'top', 'next', and 'mim' (meet-in-the-middle).
 
 Spec implemented:
 0) Prompt for location of model home (default to ~/.model) where models.json and business_rules.json live.
@@ -272,6 +272,9 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
         eprint(f"[WARN] Could not parse rule JSON from report {report_file.name}: {ex}")
         return
 
+    # Detect MIM mode by template name
+    is_mim_mode = (template_base or "").strip().lower() == "meet-in-the-middle-decision-report"
+
     # Enrich and prepare merge
     now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for r in new_rules:
@@ -295,81 +298,167 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
             eprint(f"[WARN] Failed reading existing business_rules.json: {ex}; initializing a new list.")
             business_rules = []
 
-    # Lookup by name for update-in-place behavior
+    # Helpers for MIM mode and kind classification
+    def _norm_kind(val: Optional[str]) -> str:
+        return (val or "").strip().lower()
+
+    def _is_composite(rule: dict) -> bool:
+        return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (composite)".lower()
+
+    def _is_top_level(rule: dict) -> bool:
+        return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (top-level)".lower()
+
+    def _link_key(link: dict) -> tuple:
+        # Use tuple of selected fields to detect duplicates
+        return (
+            (link.get("from_step") or "").strip(),
+            (link.get("from_output") or "").strip(),
+            (link.get("to_input") or "").strip(),
+            (link.get("kind") or "").strip(),
+        )
+
+    def _merge_links_in_place(existing_rule: dict, incoming_rule: dict) -> int:
+        """Merge unique links from incoming_rule into existing_rule. Returns number of links added."""
+        existing_links = existing_rule.get("links") or []
+        if not isinstance(existing_links, list):
+            existing_links = []
+        incoming_links = incoming_rule.get("links") or []
+        if not isinstance(incoming_links, list):
+            incoming_links = []
+        seen = { _link_key(l) for l in existing_links if isinstance(l, dict) }
+        added = 0
+        for l in incoming_links:
+            if not isinstance(l, dict):
+                continue
+            k = _link_key(l)
+            if k in seen:
+                continue
+            existing_links.append(l)
+            seen.add(k)
+            added += 1
+        existing_rule["links"] = existing_links
+        return added
+
+    skipped_details: List[Dict[str, Any]] = []
+    added_ids: List[str] = []
+    updated_top_links = 0
+
+    # Precompute lookups used by both paths
     existing_by_name = {}
     for idx, r in enumerate(business_rules):
         if isinstance(r, dict):
-            rn = (r.get("rule_name") or r.get("name") or "").strip()
-            if rn:
-                existing_by_name[rn] = {"idx": idx, "rule": r}
+            rn0 = (r.get("rule_name") or r.get("name") or "").strip()
+            if rn0:
+                existing_by_name[rn0] = {"idx": idx, "rule": r}
 
-    # Build lookup of existing rules by fingerprint
-    existing_by_fp = {}
-    for idx, r in enumerate(business_rules):
-        if not isinstance(r, dict):
-            continue
-        fp = _content_fingerprint(r)
-        if fp:
-            existing_by_fp.setdefault(fp, []).append({
-                "idx": idx,
-                "id": r.get("id"),
-                "name": r.get("rule_name") or r.get("name") or "(unnamed)",
-            })
-    skipped_details: List[Dict[str, Any]] = []
-    added_ids: List[str] = []
-    for new_rule in new_rules:
-        rn = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
-        # If an existing rule with same name exists, prefer update-in-place when DMN changed (incl. allowedValues)
+    def _process_as_add_update(rule: dict) -> None:
+        nonlocal skipped_details, added_ids, business_rules, existing_by_name
+        rn = (rule.get("rule_name") or rule.get("name") or "").strip()
         ex = existing_by_name.get(rn)
-        if ex:
-            old = ex["rule"]
-            if _has_dmn_material_change(old, new_rule):
-                # Preserve stable fields from existing rule, update DMN fields from new_rule
-                preserved_id = old.get("id")
-                preserved_archived = old.get("archived", False)
-                # Keep new timestamp already set on new_rule
+        if ex and _has_dmn_material_change(ex["rule"], rule):
+            preserved_id = ex["rule"].get("id")
+            preserved_archived = ex["rule"].get("archived", False)
+            rule["id"] = preserved_id or rule.get("id") or str(uuid.uuid4())
+            rule["archived"] = preserved_archived
+            business_rules[ex["idx"]] = rule
+            existing_by_name[rn] = {"idx": ex["idx"], "rule": rule}
+            print(f"[INFO] Updated rule by name with DMN changes (incl. allowedValues): '{rn}'")
+            return
+        new_norm = _normalize_rule_for_compare(rule)
+        exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
+        if exists:
+            fp_new = _content_fingerprint(rule)
+            matches = []
+            if ex:
+                matches.append({"idx": ex["idx"], "id": ex["rule"].get("id"), "name": rn})
+            skipped_details.append({"new_name": rn or "(unnamed)", "fingerprint": fp_new, "matches": matches})
+            if matches:
+                first = matches[0]
+                eprint(f"[INFO] Skipping duplicate by content: '{rn}' → existing id={first.get('id')} (fp={fp_new})")
+            else:
+                eprint(f"[INFO] Skipping duplicate by content: '{rn}' (fp={fp_new})")
+            return
+        business_rules.append(rule)
+        added_ids.append(rule["id"])
+
+    if is_mim_mode:
+        composite_rules = [r for r in new_rules if _is_composite(r)]
+        top_rules = [r for r in new_rules if _is_top_level(r)]
+        other_rules = [r for r in new_rules if r not in composite_rules and r not in top_rules]
+
+        # 3a) Add/Update Composite decisions as usual
+        for new_rule in composite_rules + other_rules:
+            _process_as_add_update(new_rule)
+
+        # Defensive trace: show how many links are in each incoming TL rule
+        for tr in top_rules:
+            ln = len(tr.get("links") or [])
+            print(f"[TRACE] MIM: Incoming Top-Level candidate '{(tr.get('rule_name') or tr.get('name') or '(unnamed)')}' has {ln} link(s).")
+        # Now perform the actual merge using the real variable name
+        for new_rule in top_rules:
+            rn = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
+            ex = existing_by_name.get(rn)
+            if not ex:
+                eprint(f"[WARN] MIM: Top-Level decision '{rn}' not found in business_rules.json; skipping link merge.")
+                continue
+            # Merge links
+            before_kind = (ex["rule"].get("Kind") or ex["rule"].get("kind") or "").strip()
+            added = _merge_links_in_place(ex["rule"], new_rule)
+            # Elevate kind to Top-Level if incoming is Top-Level
+            if _is_top_level(new_rule) and before_kind.lower() != "decision (top-level)":
+                ex["rule"]["Kind"] = "Decision (Top-Level)"
+                ex["rule"]["kind"] = "Decision (Top-Level)"
+                print(f"[INFO] MIM: Elevated kind → Top-Level for '{rn}'.")
+            # Persist the updated rule back into the list
+            if added or before_kind.lower() != "decision (top-level)":
+                business_rules[ex["idx"]] = ex["rule"]
+            if added:
+                updated_top_links += added
+                print(f"[INFO] MIM: Added {added} link(s) to Top-Level decision '{rn}'.")
+    else:
+        # Original behavior for 'top' and 'next'
+        existing_by_fp = {}
+        for idx, r in enumerate(business_rules):
+            if not isinstance(r, dict):
+                continue
+            fp = _content_fingerprint(r)
+            if fp:
+                existing_by_fp.setdefault(fp, []).append({
+                    "idx": idx,
+                    "id": r.get("id"),
+                    "name": r.get("rule_name") or r.get("name") or "(unnamed)",
+                })
+        for new_rule in new_rules:
+            rn = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
+            ex = existing_by_name.get(rn)
+            if ex and _has_dmn_material_change(ex["rule"], new_rule):
+                preserved_id = ex["rule"].get("id")
+                preserved_archived = ex["rule"].get("archived", False)
                 new_rule["id"] = preserved_id or new_rule.get("id") or str(uuid.uuid4())
                 new_rule["archived"] = preserved_archived
                 business_rules[ex["idx"]] = new_rule
-                # Update lookups
                 existing_by_name[rn] = {"idx": ex["idx"], "rule": new_rule}
                 print(f"[INFO] Updated rule by name with DMN changes (incl. allowedValues): '{rn}'")
                 continue
-            # If no material DMN change, fall back to duplicate-by-content handling below
-
-        new_norm = _normalize_rule_for_compare(new_rule)
-        fp_new = _content_fingerprint(new_rule)
-        exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
-        if exists:
-            # Try to resolve which existing entry matched, for better diagnostics
-            matches = existing_by_fp.get(fp_new) or []
-            # Fall back to a lightweight search by name if fingerprint wasn’t available
-            if not matches:
-                rn2 = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
-                if rn2:
+            new_norm = _normalize_rule_for_compare(new_rule)
+            fp_new = _content_fingerprint(new_rule)
+            exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
+            if exists:
+                matches = existing_by_fp.get(fp_new) or []
+                if not matches and rn:
                     for idx2, r in enumerate(business_rules):
-                        if isinstance(r, dict) and (r.get("rule_name") == rn2 or r.get("name") == rn2):
-                            matches.append({
-                                "idx": idx2,
-                                "id": r.get("id"),
-                                "name": r.get("rule_name") or r.get("name") or "(unnamed)",
-                            })
+                        if isinstance(r, dict) and (r.get("rule_name") == rn or r.get("name") == rn):
+                            matches.append({"idx": idx2, "id": r.get("id"), "name": rn})
                             break
-            detail = {
-                "new_name": new_rule.get("rule_name") or new_rule.get("name") or "(unnamed)",
-                "fingerprint": fp_new,
-                "matches": matches,
-            }
-            skipped_details.append(detail)
-            # Print a concise inline message for immediate visibility
-            if matches:
-                first = matches[0]
-                eprint(f"[INFO] Skipping duplicate by content: '{detail['new_name']}' → existing id={first.get('id')} (fp={fp_new})")
-            else:
-                eprint(f"[INFO] Skipping duplicate by content: '{detail['new_name']}' (fp={fp_new})")
-            continue
-        business_rules.append(new_rule)
-        added_ids.append(new_rule["id"])
+                skipped_details.append({"new_name": rn or "(unnamed)", "fingerprint": fp_new, "matches": matches})
+                if matches:
+                    first = matches[0]
+                    eprint(f"[INFO] Skipping duplicate by content: '{rn}' → existing id={first.get('id')} (fp={fp_new})")
+                else:
+                    eprint(f"[INFO] Skipping duplicate by content: '{rn}' (fp={fp_new})")
+                continue
+            business_rules.append(new_rule)
+            added_ids.append(new_rule["id"])
 
     if skipped_details:
         print(f"Skipped {len(skipped_details)} duplicate rule(s) by content:")
@@ -383,10 +472,13 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
             else:
                 print(f"  • {name}  (fp={fp})")
 
-    if added_ids:
+    if added_ids or (is_mim_mode and updated_top_links > 0):
         _safe_backup_json(br_path)
         write_json(br_path, business_rules)
-        print(f"Added {len(added_ids)} rule(s) to business_rules.json")
+        if added_ids:
+            print(f"Added {len(added_ids)} rule(s) to business_rules.json")
+        if is_mim_mode and updated_top_links > 0:
+            print(f"Updated links on Top-Level decisions (+{updated_top_links}).")
     else:
         print("No new rules added to business_rules.json (all duplicates).")
 
@@ -441,15 +533,20 @@ SPEC_DIR = REPO_ROOT / "tools" / "spec"
 TEMPLATES_DIR = REPO_ROOT / "prompts"
 COMPOSED_TEMPLATE_ONE = TEMPLATES_DIR / "composed-decision-report.templ"
 COMPOSED_TEMPLATE_NEXT = TEMPLATES_DIR / "multi-composed-decision-report.templ"
+COMPOSED_TEMPLATE_MIM = TEMPLATES_DIR / "meet-in-the-middle-decision-report.templ"
+SUGGEST_TOP_TEMPLATE = TEMPLATES_DIR / "suggest-top-level-decision-report.templ"
 
 def _resolve_template_path(mode: str) -> Path:
     """
     mode: 'top'  -> single composed decision template
           'next' -> multi composed decision template (can emit multiple rules)
+          'mim'  -> meet-in-the-middle decision template
     """
     m = (mode or "top").strip().lower()
     if m == "next":
         return COMPOSED_TEMPLATE_NEXT
+    if m == "mim":
+        return COMPOSED_TEMPLATE_MIM
     return COMPOSED_TEMPLATE_ONE
 
 
@@ -477,7 +574,7 @@ def resolve_optional_path(candidate: Optional[str], base_candidates: List[Path])
 # Core steps
 # ---------------------------
 
-def step_select_model(model_home: Path) -> Dict[str, Any]:
+def step_select_model(model_home: Path, keep_ids: bool = False) -> Dict[str, Any]:
     print("\nSTEP 1: Load models and select one")
     models_path = model_home / "models.json"
     rules_path = model_home / "business_rules.json"
@@ -528,7 +625,10 @@ def step_select_model(model_home: Path) -> Dict[str, Any]:
     cleaned_rules = []
     for r in filtered_rules:
         rc = dict(r)
-        for k in ["timestamp", "doc_rule_id", "business_area", "doc_match_score", "id", "archived"]:
+        drop_keys = ["timestamp", "doc_rule_id", "business_area", "doc_match_score", "archived"]
+        if not keep_ids:
+            drop_keys.append("id")
+        for k in drop_keys:
             rc.pop(k, None)
         cleaned_rules.append(rc)
 
@@ -644,6 +744,66 @@ def step_run_pcpt(
     print(f"→ Template: {template_path.name}")
     print(f"→ Compose Mode: {compose_mode}")
 
+    if compose_mode == "mim" and not skip_generate:
+        print("[MIM] Pre-step: Suggest Top-Level decisions")
+        if not SUGGEST_TOP_TEMPLATE.exists():
+            eprint(f"ERROR: Template not found: {SUGGEST_TOP_TEMPLATE}")
+            sys.exit(1)
+        pcpt_run_custom_prompt(
+            source_path=str(source_path),
+            custom_prompt_template=SUGGEST_TOP_TEMPLATE.name,
+            input_file=str(rules_file),
+            input_file2=str(model_file),
+            output_dir_arg=str(output_path),
+            filter_path=filter_path,
+            mode=pcpt_mode,
+        )
+        suggest_base = SUGGEST_TOP_TEMPLATE.stem
+        suggest_candidates = [
+            output_path / suggest_base / f"{suggest_base}.json",
+            output_path / f"{suggest_base}.json",
+            output_path / suggest_base / f"{suggest_base}.md",
+            output_path / f"{suggest_base}.md",
+        ]
+        suggest_report = next((p for p in suggest_candidates if p.exists()), None)
+        if not suggest_report:
+            eprint(f"[WARN] MIM: Could not find suggestion report under {output_path}; proceeding without Top-Level overrides.")
+        else:
+            try:
+                suggested = _load_rules_from_report(suggest_report)
+            except Exception as ex:
+                eprint(f"[WARN] MIM: Failed to parse suggestion report: {ex}; proceeding without Top-Level overrides.")
+                suggested = []
+            select_ids = set()
+            select_names = set()
+            for r in suggested:
+                rid = (r.get("id") or r.get("uuid") or r.get("rule_id") or "").strip()
+                if rid:
+                    select_ids.add(rid)
+                rn = (r.get("rule_name") or r.get("name") or "").strip()
+                if rn:
+                    select_names.add(rn)
+            if select_ids or select_names:
+                try:
+                    rules_data = load_json(Path(rules_file))
+                    changed = 0
+                    for rr in rules_data:
+                        if not isinstance(rr, dict):
+                            continue
+                        rid0 = (rr.get("id") or "").strip()
+                        rn0 = (rr.get("rule_name") or rr.get("name") or "").strip()
+                        if (rid0 and rid0 in select_ids) or (rn0 and rn0 in select_names):
+                            rr["Kind"] = "Decision (Top-Level)"
+                            rr["kind"] = "Decision (Top-Level)"
+                            changed += 1
+                    if changed:
+                        write_json(Path(rules_file), rules_data)
+                        print(f"[MIM] Marked {changed} rule(s) as Top-Level in rules_for_model.json before main prompt.")
+                    else:
+                        print("[MIM] No matching rules found to mark as Top-Level; proceeding as-is.")
+                except Exception as ex:
+                    eprint(f"[WARN] MIM: Failed to update rules_for_model.json with Top-Level kinds: {ex}")
+
     if not skip_generate:
         pcpt_run_custom_prompt(
             source_path=str(source_path),
@@ -685,9 +845,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a composed decision report (single or multi).")
     parser.add_argument(
         "--mode",
-        choices=["top", "next"],
-        help=("Select template behavior: 'top' uses composed-decision-report.templ, "
-              "'next' uses multi-composed-decision-report.templ (may emit multiple rules). If omitted, you'll be prompted.")
+        choices=["top", "next", "mim"],
+        help=(
+            "Select template behavior: "
+            "'top' uses composed-decision-report.templ; "
+            "'next' uses multi-composed-decision-report.templ (may emit multiple rules); "
+            "'mim' uses meet-in-the-middle-decision-report.templ. If omitted, you'll be prompted."
+        ),
     )
     parser.add_argument(
         "--skip-generate",
@@ -706,10 +870,11 @@ def main() -> None:
             [
                 "top  – single composed decision template",
                 "next – multi composed decision template (can emit multiple rules)",
+                "mim  – meet-in-the-middle decision template",
             ],
             default_index=1,
         )
-        compose_mode = "top" if choice == 1 else "next"
+        compose_mode = "top" if choice == 1 else ("next" if choice == 2 else "mim")
 
     print("=== Generate Composite Decision ===")
 
@@ -740,7 +905,7 @@ def main() -> None:
     model_home = Path(model_home_str).expanduser().resolve()
 
     # Steps 1-2: Select model and export its rules
-    model_info = step_select_model(model_home)
+    model_info = step_select_model(model_home, keep_ids=(compose_mode == "mim"))
 
     # Step 5-6: Run pcpt and finish
     step_run_pcpt(model_info, spec_info, model_home, compose_mode, skip_generate)

@@ -1,0 +1,30 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+Take a look at these decisions, and come up with a middle layer of the decision hierarchy that fits in between the top-level decisions and the base decisions, acting as adapters between their outputs/inputs.
+
+1. Identify where existing base decisions logically should feed into existing top-level decision (there is a logical link), but has a missing layer in between to adapts their base outputs to the inputs of the top-level.
+2. Create a middle layer of composed decisions that acts as this adapter layer, takes in the outputs of the appropriate base decisions, and sending outputs into the inputs of the appropriate top-level decisions.
+3. Make sure the new middle-layer decisions doesn't implement the same logic in the existing base decisions, but rather takes outputs from the base layer and matching exactly to inputs. It is critical that the middle inputs map to the base outputs exactly, so formulate the inputs of the middle-layer to be an exact match for the output of the base layer.
+4. Make sure the new middle-layer decisions doesn't implement the same logic as the existing top-level decisions, but provides outputs that match their inputs. It is critical that the middle ouputs map to the top-level inputs exactly, so formulate the outputs of the middle-layer to be an exact match for the inputs of the top layer.
+5. This may involve generating one, multiple, or no middle-layer decisions. If none, just return an empty json.
+6. As well as generating the new middle-layer decisions, it is very important that you include the existing top-level decisions in your output, with the addition of the new links from the new middle layer decisions.
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Response must be a json in the exact same form as the rules in input 2.
+* Do not put any special characters in the output.
+* Provide blanks for the following json fields: rule_category, ai_categorised, component, owner, category_explanation
+* Set kind to Decision (Composite) for the new middle-layer decisions, and keep the kind for the top-level decisions set at Decision (Top-Level)
+* Do not change anything on the top-level decisions other than adding links
