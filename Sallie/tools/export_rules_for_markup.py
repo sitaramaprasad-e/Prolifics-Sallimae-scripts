@@ -24,7 +24,11 @@ import os
 
 TRACE_ENABLED = False
 TRACE_REMAINING = 0
+
 REASONS_COUNT: Dict[str, int] = defaultdict(int)
+# Collect a small sample of path mismatches for clear diagnostics
+MISMATCH_SAMPLES: List[Dict[str, str]] = []
+MAX_MISMATCH_SAMPLES = 5
 
 # ---- Rule ID helpers --------------------------------------------------------
 from typing import Optional
@@ -218,6 +222,14 @@ def group_rules_by_file(
                 "rule_id": extract_rule_id(r),
             })
         else:
+            # Record up to MAX_MISMATCH_SAMPLES clear examples for troubleshooting
+            if len(MISMATCH_SAMPLES) < MAX_MISMATCH_SAMPLES:
+                MISMATCH_SAMPLES.append({
+                    "rule_id": str(extract_rule_id(r) or "(no-id)"),
+                    "rule_name": str(rule_name or "(unnamed)"),
+                    "code_file": str(cf_norm),
+                    "original_code_file": str(code_file),
+                })
             _tprint(f"[trace] reject (Stage B) rule_id={extract_rule_id(r)} file={cf_norm} — not under {source_prefix}")
             _count("StageB:not under source_prefix")
     if TRACE_ENABLED:
@@ -666,6 +678,27 @@ def main():
     print(f"[info] Found {len(grouped)} files under {source_prefix}")
     total_rules = sum(len(rules) for rules in grouped.values())
     print(f"[info] Exported {total_rules} rules across {len(grouped)} files")
+    # If any rules were rejected due to path-prefix mismatch, show first few examples clearly
+    mismatch_total = REASONS_COUNT.get("StageB:not under source_prefix", 0)
+    if mismatch_total:
+        sample_count = len(MISMATCH_SAMPLES)
+        header = (
+            f"[diag] First {sample_count} rules rejected for path-prefix mismatch "
+            f"(not under '{source_prefix}', case_insensitive={args.case_insensitive}).\n"
+            f"[diag] Total mismatches: {mismatch_total}. Examples:"
+        )
+        print(header)
+        for i, s in enumerate(MISMATCH_SAMPLES, start=1):
+            rid = s.get("rule_id", "")
+            rname = s.get("rule_name", "")
+            cfile = s.get("code_file", "")
+            ocfile = s.get("original_code_file", "")
+            print(
+                f"  {i}. rule_id={rid} | name='{rname}'\n"
+                f"     code_file(normalized)='{cfile}'\n"
+                f"     code_file(original) ='{ocfile}'"
+            )
+        print("[diag] Hint: Broaden --source_path, add --case-insensitive, or normalize absolute vs relative paths if needed.")
     # Show a small sample of files and their rule counts to aid troubleshooting
     if grouped:
         preview_items = []
