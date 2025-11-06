@@ -298,6 +298,38 @@ def format_json(grouped: "OrderedDict[str, List[Dict[str, str]]]") -> str:
     # Convert OrderedDict to normal dict for JSON output (ordering preserved in Python 3.7+)
     return json.dumps(grouped, indent=2, ensure_ascii=False)
 
+def load_rule_categories(rc_path: Path) -> Dict[str, Any]:
+    try:
+        with rc_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"[warn] rule_categories.json not found: {rc_path}")
+        return {}
+    except json.JSONDecodeError as e:
+        print(f"[warn] failed to parse JSON ({rc_path}): {e}")
+        return {}
+
+def compute_non_business_category_ids(rc: Dict[str, Any]) -> set[str]:
+    groups = rc.get("ruleCategoryGroups", []) or []
+    cat_list = rc.get("ruleCategories", []) or []
+    # businessRelevant missing => treated as True
+    group_biz = {g.get("id"): (g.get("businessRelevant") is not False) for g in groups if g.get("id")}
+    non_biz_group_ids = {gid for gid, is_biz in group_biz.items() if is_biz is False}
+    non_biz_cat_ids = {c.get("id") for c in cat_list if c.get("groupId") in non_biz_group_ids and c.get("id")}
+    return non_biz_cat_ids
+
+def extract_rule_categories(rule: Dict[str, Any]) -> List[str]:
+    # NOTE: This function only returns raw category IDs embedded on the rule and may not resolve names.
+    # Prefer single id fields first
+    cid = rule.get("categoryId") or rule.get("category_id")
+    if cid:
+        return [str(cid)]
+    cats = rule.get("categories")
+    if isinstance(cats, list):
+        # normalize to strings
+        return [str(x) for x in cats if x is not None]
+    return []
+
 def main():
     parser = argparse.ArgumentParser(
         description="Export business rules grouped by code_file for a given source path."
@@ -336,6 +368,11 @@ def main():
         "--include-archived",
         action="store_true",
         help="Include archived rules (by default they are skipped)."
+    )
+    parser.add_argument(
+        "--include-all-rules",
+        action="store_true",
+        help="Include all rules regardless of business relevance (overrides rule_categories.json filtering)."
     )
     parser.add_argument(
         "--root-path",
@@ -380,12 +417,188 @@ def main():
     rules = load_rules(rules_file)
     print(f"[info] Loaded {len(rules)} rules")
 
+    # Prepare rule category lookups (for printing names) even if we don't filter
+    rc_path = (Path(args.rules_file).expanduser().parent) / "rule_categories.json"
+    rc_lookup: Dict[str, Any] = {}
+    rc_groups_by_id: Dict[str, Dict[str, Any]] = {}
+    rc_cats_by_id: Dict[str, Dict[str, Any]] = {}
+    if rc_path.exists():
+        rc_lookup = load_rule_categories(rc_path)
+        _groups = rc_lookup.get("ruleCategoryGroups", []) or []
+        _cats = rc_lookup.get("ruleCategories", []) or []
+        rc_groups_by_id = {g.get("id"): g for g in _groups if g.get("id")}
+        rc_cats_by_id = {c.get("id"): c for c in _cats if c.get("id")}
+        # Build reverse lookup: category name (lowercased) -> id
+        rc_cats_by_name: Dict[str, str] = {}
+        for _cid, _cmeta in rc_cats_by_id.items():
+            _cname = (_cmeta.get("name") or "").strip()
+            if _cname:
+                rc_cats_by_name[_cname.lower()] = _cid
+    else:
+        print(f"[info] No rule_categories.json next to business_rules.json ({rc_path}); category names will not be printed")
+        rc_cats_by_name: Dict[str, str] = {}
+
+    def _format_rule_categories(rule: Dict[str, Any]) -> List[str]:
+        ids = _extract_rule_category_ids(rule)
+        out: List[str] = []
+        for cid in ids:
+            cmeta = rc_cats_by_id.get(cid)
+            cname = cmeta.get("name") if cmeta else None
+            if cname:
+                out.append(f"{cname} ({cid})")
+            else:
+                out.append(str(cid))
+        return out
+
+    def _extract_rule_category_ids(rule: Dict[str, Any]) -> List[str]:
+        """
+        Returns normalized category IDs for a rule.
+        Order of precedence:
+          1) ID fields: categoryId, category_id
+          2) ID list: categories (list of ids)
+          3) Name fields: rule_category, category, categoryName (single string)
+          4) Name list: category_names (list of names)
+        Name-based fields are resolved via rule_categories.json (rc_cats_by_name).
+        """
+        out: List[str] = []
+        # ID fields first
+        cid = rule.get("categoryId") or rule.get("category_id")
+        if cid:
+            out.append(str(cid))
+        cats = rule.get("categories")
+        if isinstance(cats, list):
+            out.extend(str(x) for x in cats if x is not None)
+        # Name fields
+        name_single = rule.get("rule_category") or rule.get("category") or rule.get("categoryName")
+        if isinstance(name_single, str) and name_single.strip():
+            nid = rc_cats_by_name.get(name_single.strip().lower())
+            if nid:
+                out.append(nid)
+        name_list = rule.get("category_names")
+        if isinstance(name_list, list):
+            for nm in name_list:
+                if isinstance(nm, str) and nm.strip():
+                    nid = rc_cats_by_name.get(nm.strip().lower())
+                    if nid:
+                        out.append(nid)
+        # De-duplicate preserving order
+        return dedupe_in_order(out)
+
+    # --- Business relevance filter (rule_categories.json) ---
+    if args.include_all_rules:
+        print("[info] --include-all-rules supplied: skipping business relevance filter")
+    else:
+        # rc_path already computed above
+        if rc_path.exists():
+            rc = load_rule_categories(rc_path)
+            non_biz_cat_ids = compute_non_business_category_ids(rc)
+            if non_biz_cat_ids:
+                # Report non-business groups and their affected categories
+                groups_list = list(rc_groups_by_id.values())
+                cats_list = list(rc_cats_by_id.values())
+                # Compute non-business groups directly for printing
+                non_biz_group_ids = {g.get("id") for g in groups_list if g.get("id") and g.get("businessRelevant") is False}
+                if non_biz_group_ids:
+                    print("[info] Non-business groups (businessRelevant=false):")
+                    # stable order by name then id
+                    for g in sorted((g for g in groups_list if g.get("id") in non_biz_group_ids),
+                                    key=lambda x: (str(x.get("name") or ""), str(x.get("id") or ""))):
+                        print(f"- Group: {g.get('name') or '(unknown group)'} ({g.get('id')})")
+                    # Categories affected under each non-business group
+                    print("[info] Categories that become non-business due to those groups:")
+                    for gid in sorted(non_biz_group_ids):
+                        gname = next((g.get("name") for g in groups_list if g.get("id") == gid), "(unknown group)")
+                        print(f"- Group: {gname} ({gid})")
+                        affected = [c for c in cats_list if c.get("groupId") == gid]
+                        if affected:
+                            for c in sorted(affected, key=lambda x: (str(x.get('name') or ""), str(x.get('id') or ""))):
+                                print(f"  - Category: {c.get('name') or '(unknown category)'} ({c.get('id')})")
+                        else:
+                            print("  (no categories found under this group)")
+                groups_by_id = {g.get("id"): g for g in groups_list if g.get("id")}
+                cats_by_id = {c.get("id"): c for c in cats_list if c.get("id")}
+
+                # Structure to collect excluded rules under group->category
+                # excluded_index = {group_id: {"group": {...}, "categories": {cat_id: {"cat": {...}, "rules": [rule, ...]}}}}
+                excluded_index: Dict[str, Dict[str, Any]] = {}
+
+                before = len(rules)
+                kept = []
+                excluded = 0
+                for r in rules:
+                    cat_ids = _extract_rule_category_ids(r)
+                    offending = [c for c in cat_ids if c in non_biz_cat_ids]
+                    # Exclude if any category is in the non-business set
+                    if offending:
+                        excluded += 1
+                        # Index under each offending category for reporting
+                        for cid in offending:
+                            cmeta = cats_by_id.get(cid, {})
+                            gid = cmeta.get("groupId")
+                            if not gid:
+                                # If category metadata missing, we can't map to group; still record under a placeholder key
+                                gid = "__unknown_group__"
+                            # Ensure group bucket
+                            if gid not in excluded_index:
+                                excluded_index[gid] = {
+                                    "group": groups_by_id.get(gid, {"id": gid, "name": "(unknown group)", "businessRelevant": False}),
+                                    "categories": {}
+                                }
+                            # Ensure category bucket
+                            cat_bucket = excluded_index[gid]["categories"].setdefault(
+                                cid,
+                                {"cat": cmeta if cmeta else {"id": cid, "name": "(unknown category)", "groupId": gid}, "rules": []}
+                            )
+                            cat_bucket["rules"].append(r)
+                        continue
+                    kept.append(r)
+                rules = kept
+                after = len(rules)
+                print(f"[info] Business relevance filter applied: excluded={excluded}, before={before}, after={after}")
+                # Show a small sample of excluded category IDs
+                sample = list(sorted(non_biz_cat_ids))[:10]
+                print(f"[info] Non-business categories (sample): {', '.join(sample)}")
+
+                # Detailed breakdown: groups -> categories -> rules excluded
+                if excluded_index:
+                    print("[info] Non-business relevant breakdown:")
+                    # Sort groups by name/id for stable output
+                    for gid in sorted(excluded_index.keys(), key=lambda x: (str(excluded_index[x]["group"].get("name") or ""), str(x))):
+                        g = excluded_index[gid]["group"]
+                        g_name = g.get("name") or "(unknown group)"
+                        print(f"- Group: {g_name} ({gid}) businessRelevant=false")
+                        cats = excluded_index[gid]["categories"]
+                        for cid in sorted(cats.keys(), key=lambda c: (str(cats[c]["cat"].get("name") or ""), str(c))):
+                            c = cats[cid]["cat"]
+                            c_name = c.get("name") or "(unknown category)"
+                            print(f"  - Category: {c_name} ({cid})")
+                            rules_list = cats[cid]["rules"]
+                            # stable order by rule_name then id
+                            def _rule_key(rr: Dict[str, Any]):
+                                return (str(rr.get('rule_name') or ""), str(extract_rule_id(rr) or ""))
+                            for rr in sorted(rules_list, key=_rule_key):
+                                rid = extract_rule_id(rr) or "(no-id)"
+                                rname = rr.get("rule_name") or "(unnamed rule)"
+                                rfile = rr.get("code_file") or ""
+                                cat_label = f"{c_name} ({cid})"
+                                if rfile:
+                                    print(f"    - Rule: {rname} [{rid}] — {rfile} — Category: {cat_label}")
+                                else:
+                                    print(f"    - Rule: {rname} [{rid}] — Category: {cat_label}")
+            else:
+                print("[info] rule_categories.json present but no non-business groups detected; no rules filtered")
+        else:
+            print(f"[info] No rule_categories.json next to business_rules.json ({rc_path}); proceeding without business relevance filter")
+    # --------------------------------------------------------
+
     # Write out rule ids before any run-based filtering (for manual comparison)
     if TRACE_ENABLED:
         _tprint("[trace] rules file inventory (all rule_ids before run filter):")
         for r in rules:
             rid = extract_rule_id(r)
-            _tprint(f"[trace]   rule_id={rid} name={r.get('rule_name')} file={r.get('code_file')}")
+            cats_formatted = _format_rule_categories(r)
+            cats_str = f" cats=[{', '.join(cats_formatted)}]" if cats_formatted else " cats=[]"
+            _tprint(f"[trace]   rule_id={rid} name={r.get('rule_name')} file={r.get('code_file')}{cats_str}")
 
     # Keep a copy for tracing
     original_rules = rules[:]

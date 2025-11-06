@@ -9,16 +9,18 @@
       "filter": "stored_proc.filter",
       "mode": "multi",
       "team": "DB Team",
-      "component": "ODS Claims ETL"
+      "component": "ODS Claims ETL",
+      "default_step": "i"
     },
     {
       "source-path": "code/sf",
       "output-path": "docs/sf",
       "domain-hints": "sf.hints",
       "filter": "sf.filter",
-      "mode": "multi",
+      "mode": "single",
       "team": "SF Team",
-      "component": "SF Code"
+      "component": "SF Code",
+      "default_step": "i"
     }
   ]
 }

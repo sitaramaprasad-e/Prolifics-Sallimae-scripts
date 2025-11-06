@@ -403,6 +403,94 @@ def _normalize_text(s: str) -> str:
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
 
+# Helper: Parse DMN Inputs/Outputs line with optional Allowed Values
+def _parse_dmn_io_decl(line: str) -> dict:
+    """
+    Parse a single DMN Inputs/Outputs line of the form:
+      - Name : Type [Allowed Values: v1, v2, "v 3"]
+    Returns a dict with keys: name, type, and optional allowedValues (list).
+    Backwards compatible with lines that omit type or allowed values.
+    """
+    s = (line or "").strip()
+    # Strip bullet markers if present
+    s = s.lstrip("-*").strip()
+    # Try full pattern with Allowed Values
+    m = re.match(
+        r'^(?P<name>[^:]+?)\s*:\s*(?P<type>[^\[\]]+?)(?:\s*\[\s*Allowed\s*Values\s*:\s*(?P<values>.+?)\s*\])?\s*$',
+        s,
+        flags=re.IGNORECASE
+    )
+    if m:
+        name = m.group("name").strip().strip('`')
+        typ = (m.group("type") or "").strip().strip('`')
+        out = {"name": name, "type": typ}
+        vals = m.group("values")
+        if vals:
+            # Split by comma, strip whitespace and surrounding quotes
+            parts = []
+            for tok in vals.split(","):
+                t = tok.strip()
+                # remove surrounding single/double quotes if present
+                if (len(t) >= 2) and ((t[0] == t[-1]) and t[0] in {'"', "'"}):
+                    t = t[1:-1]
+                if t:
+                    parts.append(t)
+            if parts:
+                out["allowedValues"] = parts
+        return out
+    # Fallbacks for legacy forms:
+    # 1) "Name : Type"
+    if ":" in s:
+        name, typ = s.split(":", 1)
+        return {"name": name.strip().strip('`'), "type": typ.strip().strip('`')}
+    # 2) Only a field name
+    field = s.strip().strip('`')
+    return {"name": field, "type": ""}
+
+
+# Helper: detect material change in DMN-relevant fields (hit policy, inputs, outputs, table)
+def _has_material_change(existing: dict, new_fields: dict) -> bool:
+    """
+    Determine whether DMN-relevant fields have materially changed.
+    Compares hit policy, inputs, outputs (including allowedValues), and table text.
+    Returns True if different; False if effectively the same or if existing is missing.
+    """
+    if not isinstance(existing, dict):
+        return True
+    def _norm_io(lst):
+        out = []
+        for x in (lst or []):
+            if not isinstance(x, dict):
+                continue
+            out.append({
+                "name": str(x.get("name", "")),
+                "type": str(x.get("type", "")),
+                # Normalize allowedValues to a list of strings
+                "allowedValues": [str(v) for v in (x.get("allowedValues") or [])]
+            })
+        # Keep deterministic order
+        return out
+    # Build comparable snapshots
+    ex_hp   = str(existing.get("dmn_hit_policy", "") or "")
+    ex_in   = _norm_io(existing.get("dmn_inputs"))
+    ex_out  = _norm_io(existing.get("dmn_outputs"))
+    ex_tbl  = str(existing.get("dmn_table", "") or "").strip()
+
+    new_hp  = str(new_fields.get("dmn_hit_policy", "") or "")
+    new_in  = _norm_io(new_fields.get("dmn_inputs"))
+    new_out = _norm_io(new_fields.get("dmn_outputs"))
+    new_tbl = str(new_fields.get("dmn_table", "") or "").strip()
+
+    if ex_hp != new_hp:
+        return True
+    if ex_in != new_in:
+        return True
+    if ex_out != new_out:
+        return True
+    if ex_tbl != new_tbl:
+        return True
+    return False
+
 def _parse_pcpt_header_block(lines):
     data = {}
     for line in lines:
@@ -514,7 +602,9 @@ def _build_sources_and_runs_from_logs(log_paths):
                 "output_file": output_file,
                 "root_dir": root_dir,
                 "log_file": str(log_path),
-                "response_text": rec.get("response_text") or ""
+                "response_text": rec.get("response_text") or "",
+                "total": rec.get("total"),
+                "index": rec.get("index"),
             })
     # Order runs newest-first (by header timestamp; fallback to log file mtime)
     def _parse_ts(ts: str):
@@ -597,6 +687,25 @@ def _discover_pcpt_header_files() -> list:
 
 
 
+def _extract_rule_names(doc_text: str) -> List[str]:
+    t = _normalize_text(doc_text or "")
+    names: List[str] = []
+    # Split on headings and collect level-2+ headings as rule names
+    parts = re.split(r"(?m)^\s{0,3}#{1,6}\s+", t.strip())
+    for sec in parts[1:]:
+        first = (sec.splitlines() or [""])[0]
+        nm = _heading_text(first)
+        if nm and nm.lower() not in {"rule name", "rule-name", "name"}:
+            names.append(nm)
+    # de-dupe while preserving order
+    seen = set()
+    out = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
 def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None,
                                  output_file_path: Optional[str] = None,
                                  link_all: bool = False):
@@ -605,7 +714,7 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
     based on content matching between the current output document and a run's RESPONSE content:
       • When `link_all` is False (default): attach to the single most recent matching run.
       • When `link_all` is True: attach to **all** matching runs.
-    No path-based fallback is performed.
+    In single-file mode, supports partial-content fallback using rule names.
     """
     LOG.info("[info] Building sources/runs from logs…")
     logs = _discover_pcpt_header_files()
@@ -618,12 +727,16 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
     LOG.info("[info] Roots discovered: %d", len(sources_out))
     # Prepare normalized text of the current output document (if provided)
     doc_norm = ""
+    rule_names_from_doc: List[str] = []
     if output_file_path and os.path.exists(output_file_path):
         try:
             with open(output_file_path, "r", encoding="utf-8", errors="ignore") as df:
-                doc_norm = _normalize_text(df.read())
+                raw = df.read()
+            doc_norm = _normalize_text(raw)
+            rule_names_from_doc = _extract_rule_names(raw)
         except Exception:
             doc_norm = ""
+            rule_names_from_doc = []
     # Preserve previously stored rule_ids from existing runs.json before we add new links
     try:
         _existing_runs = []
@@ -639,19 +752,21 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
 
     _existing_map: Dict[Tuple[str, str], dict] = { _run_key(r): r for r in _existing_runs if isinstance(r, dict) }
 
-    # Copy forward any existing rule_ids so we don't lose them when we rebuild from logs
-    for rec in runs:
-        k = _run_key(rec)
-        prev = _existing_map.get(k)
-        if prev and isinstance(prev, dict):
-            prev_ids = prev.get("rule_ids")
-            if prev_ids and not rec.get("rule_ids"):
-                try:
-                    rec["rule_ids"] = list(prev_ids)
-                except Exception:
-                    rec["rule_ids"] = prev_ids
-                LOG.info("[info] preserved rule_ids for run ts=%s log=%s (count=%d)", rec.get("timestamp"), rec.get("log_file"), len(prev_ids))
-                _audit_add("run", path=str(rec.get("log_file")), source="runs.json(prev)", decision="accepted", reason="existing links preserved", tests={"preserved": True}, derived={"count": len(prev_ids)})
+    # Helper to preserve previous rule_ids after linking, but only if still empty
+    def _preserve_previous_links_when_empty():
+        for rec in runs:
+            k = _run_key(rec)
+            prev = _existing_map.get(k)
+            if prev and isinstance(prev, dict):
+                prev_ids = prev.get("rule_ids")
+                if prev_ids and not rec.get("rule_ids"):
+                    try:
+                        rec["rule_ids"] = list(prev_ids)
+                    except Exception:
+                        rec["rule_ids"] = prev_ids
+                    LOG.info("[info] preserved prior rule_ids for run ts=%s log=%s (count=%d)", rec.get("timestamp"), rec.get("log_file"), len(prev_ids))
+                    _audit_add("run", path=str(rec.get("log_file")), source="runs.json(prev)", decision="accepted", reason="existing links preserved (empty current)", tests={"preserved": True}, derived={"count": len(prev_ids)})
+
     # Optionally attach rule IDs for the current run based on the produced report path
     if rule_ids_for_output and output_file_path:
         try:
@@ -668,7 +783,118 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
                         matched_idxs.append(idx)
                         if not link_all:
                             break  # stop on first match when linking only the newest/first
-            # If no content match is found, we do not attach rule_ids (no path-based fallback).
+            # --- partial match fallback for single-file mode ---
+            if not matched_idxs and rule_names_from_doc:
+                # Count rule-name matches per run, but only for single-file mode runs
+                scored = []  # (idx, score, total, index)
+                for idx, rec in enumerate(runs):
+                    mode_val = str(rec.get("mode") or "").strip().lower()
+                    if mode_val != "single":
+                        continue
+                    resp = _normalize_text(rec.get("response_text") or "")
+                    if not resp:
+                        continue
+                    score = 0
+                    for nm in rule_names_from_doc:
+                        if (f"## {nm}" in resp) or (nm in resp):
+                            score += 1
+                    if score > 0:
+                        scored.append((idx, score, str(rec.get("total")), str(rec.get("index"))))
+
+                if scored:
+                    # Group by total to ensure all parts belong to the same series
+                    series: Dict[str, list] = {}
+                    for tup in scored:
+                        idx, s, tot, ind = tup
+                        key = (tot or "")
+                        series.setdefault(key, []).append(tup)
+
+                    # Choose the best series: most unique indices; tie-break by newest timestamp
+                    def _series_key(items: list):
+                        uniq_idx = {x[3] for x in items}  # index values as strings
+                        newest = max((_parse_ts_safe(runs[x[0]].get("timestamp")) or datetime.min) for x in items)
+                        # Prefer series with a real total (non-empty) as an additional tiebreaker
+                        has_total = 1 if (items and (items[0][2] or "")) else 0
+                        return (len(uniq_idx), has_total, newest)
+
+                    best_total = None
+                    best_items = []
+                    for tot, items in series.items():
+                        if not items:
+                            continue
+                        if best_total is None:
+                            best_total, best_items = tot, items
+                        else:
+                            cur_key = _series_key(items)
+                            best_key = _series_key(best_items)
+                            if cur_key > best_key:
+                                best_total, best_items = tot, items
+
+                    # Deduplicate by index within the chosen series (keep newest per index)
+                    by_index: Dict[str, Tuple[int, int, str, str]] = {}
+                    for tup in best_items:
+                        idx, s, tot, ind = tup
+                        ts = _parse_ts_safe(runs[idx].get("timestamp")) or datetime.min
+                        prev = by_index.get(ind)
+                        if (prev is None) or (ts > (_parse_ts_safe(runs[prev[0]].get("timestamp")) or datetime.min)):
+                            by_index[ind] = tup
+
+                    chosen = list(by_index.values())
+                    # Order chosen by timestamp desc to make selection predictable
+                    chosen.sort(key=lambda x: _parse_ts_safe(runs[x[0]].get("timestamp")) or datetime.min, reverse=True)
+
+                    LOG.info(
+                        "[match] Partial-match (single-file) • total=%s • parts=%d (unique indices) • linking=partial per-rule",
+                        best_total, len(chosen)
+                    )
+
+                    # --- Begin: new per-rule partial-match logic ---
+                    # 1. Load rule_id → rule_name mapping for ids_list from business_rules.json
+                    id_to_name = {}
+                    try:
+                        rules_path = f"{MODEL_HOME}/.model/business_rules.json"
+                        with open(rules_path, "r", encoding="utf-8") as rf:
+                            rule_objs = json.load(rf)
+                        for rule in rule_objs:
+                            rid = rule.get("id")
+                            nm = rule.get("rule_name")
+                            if rid in ids_list and nm:
+                                id_to_name[rid] = nm
+                    except Exception as e:
+                        LOG.info("[warn] Could not load business_rules.json for per-rule linking: %s", e)
+                        # fallback: skip per-rule linking if mapping fails
+                        id_to_name = {rid: rid for rid in ids_list}
+
+                    # 2. For each run in chosen, collect the subset of ids_list whose rule_name is found in response_text
+                    found_ids_per_run = []
+                    found_rule_ids = set()
+                    for tup in chosen:
+                        idx = tup[0]
+                        rec = runs[idx]
+                        resp = _normalize_text(rec.get("response_text") or "")
+                        matched_rule_ids = []
+                        for rid in ids_list:
+                            rule_name = id_to_name.get(rid)
+                            if not rule_name:
+                                continue
+                            if (f"## {rule_name}" in resp) or (rule_name in resp):
+                                matched_rule_ids.append(rid)
+                        if matched_rule_ids:
+                            found_rule_ids.update(matched_rule_ids)
+                            # Attach only these rule IDs to this run, de-duped
+                            existing = rec.get("rule_ids") or []
+                            combined = list(existing) + [rid for rid in matched_rule_ids if rid not in set(existing)]
+                            runs[idx]["rule_ids"] = combined
+                            LOG.info("[info] link rules → run: idx=%d ts=%s log=%s ids=%d (partial per-rule match)", idx, rec.get("timestamp"), rec.get("log_file"), len(matched_rule_ids))
+                            _audit_add("link", path=str(output_file_path), source=str(rec.get("log_file")), decision="accepted", reason="partial per-rule match", tests={"matched": True}, derived={"rule_ids": matched_rule_ids})
+                        found_ids_per_run.append((idx, matched_rule_ids))
+                    # Save and return (skip matched_idxs logic below)
+                    _preserve_previous_links_when_empty()
+                    os.makedirs(os.path.dirname(SOURCE_JSON), exist_ok=True)
+                    _save_json_file(SOURCE_JSON, sources_out)
+                    _save_json_file(RUNS_JSON, runs)
+                    return
+                    # --- End: new per-rule partial-match logic ---
             if matched_idxs:
                 def _parse_ts(ts: str):
                     try:
@@ -682,7 +908,6 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
                         return None
 
                 target_indices = matched_idxs if link_all else None
-
                 if not link_all:
                     # Pick the most recent by timestamp
                     newest_idx = matched_idxs[0]
@@ -697,6 +922,10 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
                             newest_idx = idx
                     target_indices = [newest_idx]
 
+                # Determine if we are in partial mode (no doc_norm in any selected response)
+                partial_mode = False
+                if doc_norm:
+                    partial_mode = not any((_normalize_text(runs[i].get("response_text") or "") and (doc_norm in _normalize_text(runs[i].get("response_text") or ""))) for i in (matched_idxs or []))
                 # Attach rule IDs to each selected run (either newest or all)
                 for idx in target_indices:
                     existing = runs[idx].get("rule_ids") or []
@@ -705,8 +934,9 @@ def write_model_sources_and_runs(rule_ids_for_output: Optional[List[str]] = None
                     except Exception:
                         combined = ids_list
                     LOG.info("[info] link rules → run: idx=%d ts=%s log=%s ids=%d", idx, runs[idx].get("timestamp"), runs[idx].get("log_file"), len(ids_list))
-                    _audit_add("link", path=str(output_file_path), source=str(runs[idx].get("log_file")), decision="accepted", reason="content match", tests={"matched": True}, derived={"rule_ids": ids_list})
+                    _audit_add("link", path=str(output_file_path), source=str(runs[idx].get("log_file")), decision="accepted", reason=("partial content match" if partial_mode else "content match"), tests={"matched": True}, derived={"rule_ids": ids_list})
                     runs[idx]["rule_ids"] = combined
+    _preserve_previous_links_when_empty()
     os.makedirs(os.path.dirname(SOURCE_JSON), exist_ok=True)
     _save_json_file(SOURCE_JSON, sources_out)
     _save_json_file(RUNS_JSON, runs)
@@ -870,30 +1100,17 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                         ln = ln.strip()
                         if not (ln.startswith("-") or ln.startswith("*")):
                             continue
-                        ln = ln.lstrip("-*").strip()
-                        if ":" in ln:
-                            name, typ = ln.split(":", 1)
-                            name = name.strip().strip('`')
-                            typ = typ.strip().strip('`')
-                            dmn_inputs.append({"name": name, "type": typ})
-                        else:
-                            field = ln.strip().strip('`')
-                            dmn_inputs.append({"name": field, "type": ""})
+                        parsed = _parse_dmn_io_decl(ln)
+                        # Only include allowedValues if present (backwards compatible)
+                        dmn_inputs.append(parsed)
                 m_outputs = re.search(r"Outputs\s*:\s*\n(?P<block>(?:\s*[-*]\s*.*(?:\n|$))+)", dmn_body, re.IGNORECASE)
                 if m_outputs:
                     for ln in m_outputs.group("block").splitlines():
                         ln = ln.strip()
                         if not (ln.startswith("-") or ln.startswith("*")):
                             continue
-                        ln = ln.lstrip("-*").strip()
-                        if ":" in ln:
-                            name, typ = ln.split(":", 1)
-                            name = name.strip().strip('`')
-                            typ = typ.strip().strip('`')
-                            dmn_outputs.append({"name": name, "type": typ})
-                        else:
-                            field = ln.strip().strip('`')
-                            dmn_outputs.append({"name": field, "type": ""})
+                        parsed = _parse_dmn_io_decl(ln)
+                        dmn_outputs.append(parsed)
                 lines2 = [ln.rstrip() for ln in dmn_body.splitlines()]
                 table_lines, in_table = [], False
                 for ln in lines2:
@@ -912,9 +1129,19 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
             existing = existing_by_name.get(rule_name)
             if existing:
                 old_ts = existing.get("timestamp")
-                if not FORCE_LOAD and old_ts and old_ts >= section_timestamp:
-                    _audit_add("rule", path="section", source="input_doc", decision="rejected", reason="duplicate or older", tests={"key": str(k), "force": FORCE_LOAD}, derived={})
+                # Build new snapshot of DMN-related fields for material change detection
+                _new_fields = {
+                    "dmn_hit_policy": dmn_hit_policy,
+                    "dmn_inputs": dmn_inputs,
+                    "dmn_outputs": dmn_outputs,
+                    "dmn_table": dmn_table,
+                }
+                is_material_change = _has_material_change(existing, _new_fields)
+                if not FORCE_LOAD and old_ts and old_ts >= section_timestamp and not is_material_change:
+                    _audit_add("rule", path="section", source="input_doc", decision="rejected", reason="duplicate or older", tests={"key": str(k), "force": FORCE_LOAD, "material_change": False}, derived={})
                     continue
+                if not FORCE_LOAD and old_ts and old_ts >= section_timestamp and is_material_change:
+                    LOG.info("[info] material change detected for '%s' — updating despite same/older timestamp (allowedValues or DMN changed)", rule_name)
                 rule_id = existing.get("id") or str(uuid.uuid4())
                 updated_count += 1
             else:

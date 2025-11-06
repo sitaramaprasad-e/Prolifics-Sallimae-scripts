@@ -257,6 +257,7 @@ def _log_cmd(cmd: List[str]) -> None:
 # ----------------------------
 
 def _pause_between_rules(seconds: int) -> None:
+    seconds = -1 # waiting is now being done in PCPT itself so disabling this
     """Show a short, elegant countdown before the next pcpt call."""
     if seconds <= 0:
         return
@@ -476,9 +477,6 @@ def main() -> None:
             f"  Per-Rule Log: {log_path}",
             ""
         ])
-        # Pause between pcpt calls to avoid back-to-back invocations
-        if running_index < total_targets:
-            _pause_between_rules(12)
 
     # --- One execution per entire run (for run-log display only) ---
     OUTPUT_PARENT_DIR = os.path.join(OUTPUT_DIR_ARG, os.path.dirname(OUTPUT_FILE_ARG))  # e.g., docs/categorise-rule

@@ -11,7 +11,8 @@
 #       "output-path": "docs/stored_proc",
 #       "domain-hints": "stored_proc.hints",
 #       "filter": "stored_proc.filter",
-#       "mode": "multi"
+#       "mode": "multi",
+#       "default_step": "i"
 #     },
 #     {
 #       "source-path": "code/sf",
@@ -19,6 +20,7 @@
 #       "domain-hints": "sf.hints",
 #       "filter": "sf.filter",
 #       "mode": "multi"
+#       "default_step": "i"
 #     }
 #   ]
 # }
@@ -186,29 +188,71 @@ _STEP_ALIASES = {
     '4': 'categorise',
 }
 
+# Helper to map token to step number (alias, name, or number)
+def _step_num_from_token(token: str) -> int:
+    """Map a token (alias like 'd' or name like 'domain' or number '1') to a step number.
+    Falls back to the default step if unrecognized."""
+    if not token:
+        return _STEP_CHOICES[_DEF_STEP_FOR_PROMPT]
+    t = token.strip().lower()
+    mapped = _STEP_ALIASES.get(t, t)
+    return _STEP_CHOICES.get(mapped, _STEP_CHOICES[_DEF_STEP_FOR_PROMPT])
+
 
 def _prompt_start_steps_for_pairs(spec: Dict[str, Any], selected_indexes: List[int]) -> Dict[int, int]:
     """Return mapping of 1-based pair index -> step number to start from.
     Steps: 1=domain, 2=business, 3=ingest, 4=categorise.
+
+    Behavior:
+    - Ask whether to use each pair's `default_step` from the spec.
+    - If 'yes', offer to apply defaults to all selected pairs.
+    - If not applying to all, allow per-pair confirmation or override.
+    - If 'no', fall back to manual per-pair step selection.
     """
     result: Dict[int, int] = {}
     pairs = spec.get("path-pairs", [])
-    print("\nChoose a starting step for each selected pair.")
-    print("Options: [d]omain | [b]usiness | [i]ngest | [c]ategorise (or 1/2/3/4). Default: domain")
+    if not pairs or not selected_indexes:
+        return result
+
+    print("\nChoose starting steps for the selected pairs.")
+    print("Defaults:")
+    defaults_map = {}
     for idx in selected_indexes:
-        pair = pairs[idx-1]
-        prompt = f"[{idx}] {pair.get('source-path','?')} -> {pair.get('output-path','?')} start at step: "
+        pair = pairs[idx - 1]
+        ds_raw = str(pair.get("default_step", "")).strip()
+        ds_norm = _STEP_ALIASES.get(ds_raw.lower(), ds_raw.lower()) if ds_raw else "domain"
+        ds_label = ds_norm if ds_norm in _STEP_CHOICES else "domain"
+        src = pair.get("source-path", "?")
+        outp = pair.get("output-path", "?")
+        defaults_map[idx] = (ds_raw, ds_label)
+        pretty = f"{ds_raw} ({ds_label})" if ds_raw else "domain"
+        print(f"  [{idx}] {src} -> {outp} • default: {pretty}")
+    print("Options: [d]omain, [b]usiness, [i]ngest, [c]ategorise (or 1/2/3/4)")
+
+    # 1) Offer to use defaults for ALL pairs first
+    use_all_defaults = input("Use defaults for ALL selected pairs? [Y/n]: ").strip().lower()
+    use_all_defaults = (use_all_defaults == "" or use_all_defaults.startswith("y"))
+
+    if use_all_defaults:
+        for idx in selected_indexes:
+            ds = str(defaults_map[idx][0]).strip()
+            result[idx] = _step_num_from_token(ds)
+        return result
+
+    # 2) Per-pair selection: Enter = default for that pair; otherwise pick d/b/i/c or 1/2/3/4
+    for idx in selected_indexes:
+        pair = pairs[idx - 1]
+        src = pair.get('source-path', '?')
+        outp = pair.get('output-path', '?')
+        ds_raw, ds_label = defaults_map[idx]
+        pretty = f"{ds_raw} ({ds_label})" if ds_raw else "domain"
+        prompt = f"[{idx}] {src} -> {outp} start step [d/b/i/c or Enter=default {pretty}]: "
         resp = input(prompt).strip().lower()
-        if not resp:
-            result[idx] = _STEP_CHOICES[_DEF_STEP_FOR_PROMPT]
-            continue
-        # Map single-letter or numeric shortcuts to full step names
-        mapped = _STEP_ALIASES.get(resp, resp)
-        if mapped not in _STEP_CHOICES:
-            print("  (Unrecognized step, defaulting to domain)")
-            result[idx] = _STEP_CHOICES[_DEF_STEP_FOR_PROMPT]
+        if resp == "":
+            # Use the per-pair default (falls back to 'domain' if none)
+            result[idx] = _step_num_from_token(ds_raw)
         else:
-            result[idx] = _STEP_CHOICES[mapped]
+            result[idx] = _step_num_from_token(resp)
     return result
 
 
@@ -337,6 +381,7 @@ def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps:
                     visualize=True,
                     filter_path=filter_path,
                     source_path=source_path,
+                    mode=mode,
                 )
                 _ok("domain-model completed")
                 pair_summary["steps"].append("domain-model: ok")
@@ -358,6 +403,7 @@ def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps:
                     domain_hints=domain_hints,
                     filter_path=filter_path,
                     source_path=source_path,
+                    mode=mode,
                 )
                 _ok("business-logic completed")
                 pair_summary["steps"].append("business-logic: ok")

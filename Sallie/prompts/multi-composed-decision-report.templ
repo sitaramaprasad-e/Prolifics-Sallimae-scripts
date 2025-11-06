@@ -1,0 +1,27 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+Take a look at these decisions, and work out the next level of the decision hierarchy.
+
+1. Identify where decisions have related outputs that should jointly feed into a higher decision.
+2. Create the next level of composed decisions that takes in the outputs of these base decisions and synthesizes into composite decisions.
+3. Make sure the next-level decisions doesn't implement the same logic in the base decisions, but rather takes their outputs as inputs.
+4. This may involve generating one, multiple, or no next-level decisions. If none, just return an empty json.
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Response must be a json in the exact same form as the rules in input 2.
+* Do not put any special characters in the output.
+* Provide blanks for the following json fields: rule_category, ai_categorised, component, owner, category_explanation
+* Set kind to Decision (Composite)

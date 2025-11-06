@@ -33,6 +33,8 @@ import subprocess
 import sys
 from datetime import datetime
 from typing import List, Optional
+import json
+from typing import Any, Dict
 
 # Resolve directory of this script (so we can locate sibling tools reliably)
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -87,6 +89,26 @@ def _copy(src: str, dst: str) -> None:
     raise FileNotFoundError(f"Expected file not found: {src}")
   shutil.copyfile(src, dst)
   _log(f"Copied: {src} -> {dst}")
+
+def _load_json(path: str) -> Any:
+  with open(path, "r", encoding="utf-8") as f:
+    return json.load(f)
+
+def _write_json(path: str, data: Any) -> None:
+  with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _maybe_find_rule_categories(root_path: str, output_dir: str) -> Optional[str]:
+  cand1 = os.path.join(root_path, "rule_categories.json")
+  if os.path.exists(cand1):
+    _log(f"Found rule_categories.json at: {cand1}")
+    return cand1
+  cand2 = os.path.join(output_dir, "rule_categories.json")
+  if os.path.exists(cand2):
+    _log(f"Found rule_categories.json at: {cand2}")
+    return cand2
+  _log("rule_categories.json not found in root or output directory.")
+  return None
 
 
 # ----------------------------
@@ -145,6 +167,11 @@ def main() -> None:
   parser.add_argument("--prompt-name", default=DEFAULT_PROMPT_NAME, help="Custom prompt template name (default: markup-sequence.templ)")
   parser.add_argument("--filter", default=None, help="Filter file (optional). If provided, it will be passed to PCPT.")
   parser.add_argument("--skip-initial-sequence", action="store_true", help="Skip the initial sequence generation step.")
+  parser.add_argument(
+      "--include-all-rules",
+      action="store_true",
+      help="Include all rules in markup. By default, rules whose category group has businessRelevant=false (from rule_categories.json) are excluded."
+  )
   args = parser.parse_args()
 
   code_dir = args.code_dir
@@ -189,6 +216,9 @@ def main() -> None:
       "--trace-limit",
       "500",
   ]
+  # pass-through switches to the export script
+  if args.include_all_rules:
+    export_cmd.append("--include-all-rules")
   _run(export_cmd)
 
   # Sanity check for the exported rules file (some environments might write elsewhere)
@@ -197,6 +227,63 @@ def main() -> None:
       f"Expected exported rules at {TMP_EXPORTED_RULES} not found. "
       f"Ensure tools/export_rules_for_markup.py writes to that path."
     )
+
+  _log("Applying business relevance filter (rule_categories.json)", header=True)
+  if args.include_all_rules:
+    _log("--include-all-rules supplied. Skipping business relevance filtering.")
+  else:
+    rc_path = _maybe_find_rule_categories(root_path, output_dir)
+    if not rc_path:
+      _log("No rule_categories.json found in root or output directory. Proceeding without filtering.")
+    else:
+      try:
+        rc = _load_json(rc_path)
+        groups = {g.get("id"): (g.get("businessRelevant") is not False) for g in rc.get("ruleCategoryGroups", [])}
+        # groups[gid] == True means business relevant, False means NOT business relevant
+        non_biz_group_ids = {gid for gid, is_biz in groups.items() if is_biz is False}
+        non_biz_cat_ids = {c.get("id") for c in rc.get("ruleCategories", []) if c.get("groupId") in non_biz_group_ids}
+        before_count = after_count = 0
+
+        data = _load_json(TMP_EXPORTED_RULES)
+        excluded = 0
+
+        def rule_categories(rule: Dict[str, Any]):
+          cat = rule.get("categoryId") or rule.get("category_id")
+          if cat:
+            return [cat]
+          cats = rule.get("categories")
+          if isinstance(cats, list):
+            return cats
+          return []
+
+        def is_non_biz(rule: Dict[str, Any]) -> bool:
+          cats = rule_categories(rule)
+          return any(c in non_biz_cat_ids for c in cats)
+
+        if isinstance(data, dict) and isinstance(data.get("rules"), list):
+          rules = data["rules"]
+          before_count = len(rules)
+          kept = [r for r in rules if not is_non_biz(r)]
+          after_count = len(kept)
+          excluded = before_count - after_count
+          data["rules"] = kept
+          _write_json(TMP_EXPORTED_RULES, data)
+        elif isinstance(data, list):
+          before_count = len(data)
+          kept = [r for r in data if not is_non_biz(r)]
+          after_count = len(kept)
+          excluded = before_count - after_count
+          _write_json(TMP_EXPORTED_RULES, kept)
+        else:
+          _log("Unrecognized exported rules shape; skipping filtering.")
+
+        if before_count:
+          _log(f"Filtered non-business-relevant rules: excluded={excluded}, before={before_count}, after={after_count}")
+          if non_biz_cat_ids:
+            preview = list(non_biz_cat_ids)[:10]
+            _log(f"Non-business category IDs (sample): {preview}")
+      except Exception as e:
+        _log(f"Failed to apply business relevance filter: {e}. Proceeding without filtering.")
 
   _log("Step 4: Markup sequence description", header=True)
   pcpt_run_custom_prompt(

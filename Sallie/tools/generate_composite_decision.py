@@ -22,10 +22,12 @@ if _REPO_ROOT not in _sys.path:
 # --- end import path bootstrap ---
 
 import json
+import hashlib
 import os
 import sys
 import subprocess
 import uuid
+import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -106,56 +108,179 @@ def _normalize_rule_for_compare(rule: dict) -> dict:
     exclude = {"id", "timestamp", "archived"}
     return {k: v for k, v in rule.items() if k not in exclude}
 
-def _load_top_rule_from_report(report_path: Path) -> dict:
-    """Load the top-level rule JSON from a report file which may be pure JSON or Markdown containing a JSON block."""
-    raw = report_path.read_text(encoding="utf-8").strip()
-    # Try full JSON first
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        # Try to extract the first JSON object
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            snippet = raw[start:end+1]
-            return json.loads(snippet)
-        raise
+# --- DMN snapshot/compare helpers ---
+def _dmn_snapshot(rule: dict) -> dict:
+    def _norm_io(lst):
+        out = []
+        for x in (lst or []):
+            if not isinstance(x, dict):
+                continue
+            out.append({
+                "name": x.get("name", ""),
+                "type": x.get("type", ""),
+                "allowedValues": list(x.get("allowedValues", []) or []),
+            })
+        return out
+    return {
+        "hitPolicy": rule.get("dmn_hit_policy", ""),
+        "inputs": _norm_io(rule.get("dmn_inputs") or []),
+        "outputs": _norm_io(rule.get("dmn_outputs") or []),
+        "table": (rule.get("dmn_table") or "").strip(),
+    }
 
-def merge_top_level_rule_into_model_home(model_home: Path, output_path: Path, selected_model_id: str) -> None:
-    """Merge the generated top-level decision back into business_rules.json and models.json safely.
+def _has_dmn_material_change(old_rule: dict, new_rule: dict) -> bool:
+    """Return True if DMN-relevant fields differ (including allowedValues)."""
+    return _dmn_snapshot(old_rule) != _dmn_snapshot(new_rule)
+
+
+# --- Helper: content fingerprint for rules ---
+def _content_fingerprint(rule: dict) -> str:
+    try:
+        norm = _normalize_rule_for_compare(rule)
+        payload = json.dumps(norm, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()[:12]
+    except Exception:
+        return ""
+
+def _load_rules_from_report(report_path: Path) -> List[dict]:
+    """Load one or more rule JSON objects from a report file.
+    
+    The report may be:
+    - Pure JSON: a dict (single rule), a list of dicts (multiple), or a dict with key "rules".
+    - Markdown with an embedded JSON object/array.
+    Returns a list of rule dicts (possibly length 1).
+    """
+    raw = report_path.read_text(encoding="utf-8").strip()
+
+    def _as_rule_list(obj):
+        # Normalize parsed JSON into a list of rule dicts
+        if isinstance(obj, dict) and "rules" in obj and isinstance(obj["rules"], list):
+            return [r for r in obj["rules"] if isinstance(r, dict)]
+        if isinstance(obj, dict):
+            return [obj]
+        if isinstance(obj, list):
+            return [r for r in obj if isinstance(r, dict)]
+        raise ValueError("Unexpected JSON structure in report.")
+
+    # 1) Try full-document JSON first
+    try:
+        return _as_rule_list(json.loads(raw))
+    except json.JSONDecodeError:
+        pass
+
+    # 2) Try fenced code blocks first (```json ... ``` or ``` ... ```)
+    import re
+    fenced_blocks = re.findall(r"```(?:json|JSON)?\s*([\s\S]*?)```", raw)
+    for block in fenced_blocks:
+        s = block.strip()
+        if not s:
+            continue
+        try:
+            return _as_rule_list(json.loads(s))
+        except Exception:
+            continue
+
+    # 3) Heuristic: extract the first bracketed JSON array/object in the document
+    start_brace = raw.find("{")
+    start_bracket = raw.find("[")
+
+    # Prefer whichever opens first
+    candidates = []
+    if start_bracket != -1:
+        end_bracket = raw.rfind("]")
+        if end_bracket > start_bracket:
+            candidates.append(raw[start_bracket:end_bracket+1] if (start_brace != -1 and start_brace < start_bracket) else raw[start_bracket if start_brace != -1 else start_bracket : end_bracket+1])
+            candidates.append(raw[start_bracket:end_bracket+1])
+    if start_brace != -1:
+        end_brace = raw.rfind("}")
+        if end_brace > start_brace:
+            candidates.append(raw[start_brace:end_brace+1])
+
+    for snippet in candidates:
+        try:
+            return _as_rule_list(json.loads(snippet))
+        except Exception:
+            continue
+
+    # 4) If nothing worked, raise the original error
+    raise ValueError("Could not locate valid JSON rules in report.")
+
+def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, selected_model_id: str, template_base: Optional[str] = None) -> None:
+    """Merge one or more generated rules back into business_rules.json and models.json safely.
 
     Steps:
-    1) Locate the composed-decision report under output_path.
-    2) Parse the JSON for the new rule.
-    3) Generate a new UUID; add timestamp and archived fields if missing.
+    1) Locate the composed-decision report under output_path (supports single and multi templates).
+    2) Parse JSON for one or more rules.
+    3) For each rule, generate a new UUID; add timestamp and archived fields if missing.
     4) Backup and merge into business_rules.json (skip if equivalent by content).
-    5) Backup and update models.json to include the new rule id in the selected model's businessLogicIds.
+    5) Backup and update models.json to include new rule ids in the selected model's businessLogicIds.
     """
-    # Candidate report locations (support both md/json and nested folder)
-    candidates = [
-        output_path / "composed-decision-report" / "composed-decision-report.md",
-        output_path / "composed-decision-report.md",
-        output_path / "composed-decision-report" / "composed-decision-report.json",
-        output_path / "composed-decision-report.json",
-    ]
+    # Candidate report locations (dynamic from template name; support md/json and nested folder)
+    bases: List[str] = []
+    if template_base:
+        bases.append(template_base)
+    # Also try legacy defaults as fallbacks
+    for legacy in ("composed-decision-report", "multi-composed-decision-report"):
+        if legacy not in bases:
+            bases.append(legacy)
+    candidates: List[Path] = []
+    for b in bases:
+        candidates.extend([
+            output_path / b / f"{b}.md",
+            output_path / f"{b}.md",
+            output_path / b / f"{b}.json",
+            output_path / f"{b}.json",
+        ])
     report_file = next((p for p in candidates if p.exists()), None)
     if report_file is None:
-        eprint(f"[WARN] Expected composed decision report not found in: {output_path}")
-        return
+        # Fallback: scan output_path and its immediate subdirs for the most recent plausible report (*.md/*.json)
+        def _iter_candidates(root: Path) -> List[Path]:
+            found: List[Path] = []
+            try:
+                for p in root.iterdir():
+                    if p.is_file() and p.suffix.lower() in {".md", ".json"}:
+                        found.append(p)
+                    elif p.is_dir():
+                        # one level deep
+                        for q in p.iterdir():
+                            if q.is_file() and q.suffix.lower() in {".md", ".json"}:
+                                found.append(q)
+            except Exception:
+                pass
+            return found
+        pool = _iter_candidates(output_path)
+        if not pool:
+            eprint(f"[WARN] No report files (*.md/*.json) found under: {output_path}")
+            return
+        # Sort most recent first
+        pool.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        # Try each until one parses as rules
+        for cand in pool:
+            try:
+                _ = _load_rules_from_report(cand)
+                report_file = cand
+                break
+            except Exception:
+                continue
+        if report_file is None:
+            eprint(f"[WARN] Could not locate a parseable composed decision report under: {output_path}")
+            return
 
     try:
-        new_rule = _load_top_rule_from_report(report_file)
+        new_rules = _load_rules_from_report(report_file)
     except Exception as ex:
-        eprint(f"[WARN] Could not parse top-level rule JSON from report {report_file.name}: {ex}")
+        eprint(f"[WARN] Could not parse rule JSON from report {report_file.name}: {ex}")
         return
 
-    # Enrich with system fields
-    new_rule_id = str(uuid.uuid4())
-    new_rule["id"] = new_rule_id
-    if "timestamp" not in new_rule:
-        new_rule["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if "archived" not in new_rule:
-        new_rule["archived"] = False
+    # Enrich and prepare merge
+    now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for r in new_rules:
+        if "id" in r:
+            # Ensure we don't carry over prior ids
+            r.pop("id", None)
+        r["id"] = str(uuid.uuid4())
+        r.setdefault("timestamp", now_ts)
+        r.setdefault("archived", False)
 
     # --- business_rules.json merge ---
     br_path = (model_home / "business_rules.json").resolve()
@@ -170,16 +295,100 @@ def merge_top_level_rule_into_model_home(model_home: Path, output_path: Path, se
             eprint(f"[WARN] Failed reading existing business_rules.json: {ex}; initializing a new list.")
             business_rules = []
 
-    # Duplicate detection (exclude volatile keys)
-    new_norm = _normalize_rule_for_compare(new_rule)
-    exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
-    if exists:
-        eprint("[INFO] Top-level rule already present in business_rules.json (by content). Skipping add.")
-    else:
-        _safe_backup_json(br_path)
+    # Lookup by name for update-in-place behavior
+    existing_by_name = {}
+    for idx, r in enumerate(business_rules):
+        if isinstance(r, dict):
+            rn = (r.get("rule_name") or r.get("name") or "").strip()
+            if rn:
+                existing_by_name[rn] = {"idx": idx, "rule": r}
+
+    # Build lookup of existing rules by fingerprint
+    existing_by_fp = {}
+    for idx, r in enumerate(business_rules):
+        if not isinstance(r, dict):
+            continue
+        fp = _content_fingerprint(r)
+        if fp:
+            existing_by_fp.setdefault(fp, []).append({
+                "idx": idx,
+                "id": r.get("id"),
+                "name": r.get("rule_name") or r.get("name") or "(unnamed)",
+            })
+    skipped_details: List[Dict[str, Any]] = []
+    added_ids: List[str] = []
+    for new_rule in new_rules:
+        rn = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
+        # If an existing rule with same name exists, prefer update-in-place when DMN changed (incl. allowedValues)
+        ex = existing_by_name.get(rn)
+        if ex:
+            old = ex["rule"]
+            if _has_dmn_material_change(old, new_rule):
+                # Preserve stable fields from existing rule, update DMN fields from new_rule
+                preserved_id = old.get("id")
+                preserved_archived = old.get("archived", False)
+                # Keep new timestamp already set on new_rule
+                new_rule["id"] = preserved_id or new_rule.get("id") or str(uuid.uuid4())
+                new_rule["archived"] = preserved_archived
+                business_rules[ex["idx"]] = new_rule
+                # Update lookups
+                existing_by_name[rn] = {"idx": ex["idx"], "rule": new_rule}
+                print(f"[INFO] Updated rule by name with DMN changes (incl. allowedValues): '{rn}'")
+                continue
+            # If no material DMN change, fall back to duplicate-by-content handling below
+
+        new_norm = _normalize_rule_for_compare(new_rule)
+        fp_new = _content_fingerprint(new_rule)
+        exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
+        if exists:
+            # Try to resolve which existing entry matched, for better diagnostics
+            matches = existing_by_fp.get(fp_new) or []
+            # Fall back to a lightweight search by name if fingerprint wasn’t available
+            if not matches:
+                rn2 = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
+                if rn2:
+                    for idx2, r in enumerate(business_rules):
+                        if isinstance(r, dict) and (r.get("rule_name") == rn2 or r.get("name") == rn2):
+                            matches.append({
+                                "idx": idx2,
+                                "id": r.get("id"),
+                                "name": r.get("rule_name") or r.get("name") or "(unnamed)",
+                            })
+                            break
+            detail = {
+                "new_name": new_rule.get("rule_name") or new_rule.get("name") or "(unnamed)",
+                "fingerprint": fp_new,
+                "matches": matches,
+            }
+            skipped_details.append(detail)
+            # Print a concise inline message for immediate visibility
+            if matches:
+                first = matches[0]
+                eprint(f"[INFO] Skipping duplicate by content: '{detail['new_name']}' → existing id={first.get('id')} (fp={fp_new})")
+            else:
+                eprint(f"[INFO] Skipping duplicate by content: '{detail['new_name']}' (fp={fp_new})")
+            continue
         business_rules.append(new_rule)
+        added_ids.append(new_rule["id"])
+
+    if skipped_details:
+        print(f"Skipped {len(skipped_details)} duplicate rule(s) by content:")
+        for d in skipped_details:
+            name = d.get("new_name")
+            fp = d.get("fingerprint") or ""
+            matches = d.get("matches") or []
+            if matches:
+                tgt = matches[0]
+                print(f"  • {name}  (fp={fp})  → existing id={tgt.get('id')}")
+            else:
+                print(f"  • {name}  (fp={fp})")
+
+    if added_ids:
+        _safe_backup_json(br_path)
         write_json(br_path, business_rules)
-        print(f"Added new rule to business_rules.json with id {new_rule_id}")
+        print(f"Added {len(added_ids)} rule(s) to business_rules.json")
+    else:
+        print("No new rules added to business_rules.json (all duplicates).")
 
     # --- models.json merge ---
     models_path = (model_home / "models.json").resolve()
@@ -204,19 +413,22 @@ def merge_top_level_rule_into_model_home(model_home: Path, output_path: Path, se
         eprint(f"[WARN] Selected model id {selected_model_id} not found in models.json; cannot append businessLogicIds.")
         return
 
-    model_obj = models[sel_idx]
-    ids = model_obj.get("businessLogicIds")
-    if not isinstance(ids, list):
-        ids = []
-    if new_rule_id not in ids:
+    if added_ids:
+        model_obj = models[sel_idx]
+        ids = model_obj.get("businessLogicIds")
+        if not isinstance(ids, list):
+            ids = []
+        # Append unique ids
+        for rid in added_ids:
+            if rid not in ids:
+                ids.append(rid)
         _safe_backup_json(models_path)
-        ids.append(new_rule_id)
         model_obj["businessLogicIds"] = ids
         models[sel_idx] = model_obj
         write_json(models_path, models)
-        print(f"Appended new rule id to model {selected_model_id} in models.json")
+        print(f"Appended {len(added_ids)} new rule id(s) to model {selected_model_id} in models.json")
     else:
-        print("Rule id already present in selected model; no change to models.json")
+        print("No changes to models.json (no new rule ids).")
 
 
 # ---------------------------
@@ -227,7 +439,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]  # project root
 TMP_DIR = REPO_ROOT / ".tmp" / "generate_composite_decision"
 SPEC_DIR = REPO_ROOT / "tools" / "spec"
 TEMPLATES_DIR = REPO_ROOT / "prompts"
-COMPOSED_TEMPLATE = TEMPLATES_DIR / "composed-decision-report.templ"
+COMPOSED_TEMPLATE_ONE = TEMPLATES_DIR / "composed-decision-report.templ"
+COMPOSED_TEMPLATE_NEXT = TEMPLATES_DIR / "multi-composed-decision-report.templ"
+
+def _resolve_template_path(mode: str) -> Path:
+    """
+    mode: 'top'  -> single composed decision template
+          'next' -> multi composed decision template (can emit multiple rules)
+    """
+    m = (mode or "top").strip().lower()
+    if m == "next":
+        return COMPOSED_TEMPLATE_NEXT
+    return COMPOSED_TEMPLATE_ONE
 
 
 def resolve_optional_path(candidate: Optional[str], base_candidates: List[Path]) -> Optional[str]:
@@ -368,8 +591,10 @@ def step_run_pcpt(
     model_info: Dict[str, Any],
     spec_info: Dict[str, Any],
     model_home_prompted: Path,
+    compose_mode: str,
+    skip_generate: bool,
 ) -> None:
-    print("\nSTEP 5: Run PCPT (run-custom-prompt)")
+    print("\nSTEP 5: Run PCPT (run-custom-prompt)" if not skip_generate else "\nSTEP 5: Skip generate – using existing report for ingest")
 
     # Resolve root-directory from spec; if relative, interpret relative to spec file directory
     spec_dir = Path(spec_info["spec_dir"])
@@ -382,7 +607,7 @@ def step_run_pcpt(
     src_rel = pair.get("source-path", "")
     out_rel = pair.get("output-path", "")
     filt_rel = "" #pair.get("filter")
-    mode = pair.get("mode")
+    pcpt_mode = "multi"  # force multi mode; ignore spec-provided mode
 
     source_path = (root_dir / src_rel).resolve()
     output_path = (root_dir / out_rel).resolve()
@@ -397,10 +622,12 @@ def step_run_pcpt(
     rules_file = model_info["rules_out_path"]
     model_file = model_info["selected_model_path"]
 
-    # Ensure template exists
-    if not COMPOSED_TEMPLATE.exists():
-        eprint(f"ERROR: Template not found: {COMPOSED_TEMPLATE}")
+    # Select template
+    template_path = _resolve_template_path(compose_mode)
+    if not template_path.exists():
+        eprint(f"ERROR: Template not found: {template_path}")
         sys.exit(1)
+    template_base = template_path.stem
 
     # Make sure output directory exists
     ensure_dir(output_path)
@@ -410,23 +637,27 @@ def step_run_pcpt(
     print(f"→ Output: {out_rel}")
     if filt_rel:
         print(f"→ Filter: {filt_rel}")
-    if mode:
-        print(f"→ Mode:   {mode}")
+    if pcpt_mode:
+        print(f"→ Mode:   {pcpt_mode}")
     print(f"→ Input 1 (rules): {rules_file}")
     print(f"→ Input 2 (model): {model_file}")
-    print(f"→ Template: {COMPOSED_TEMPLATE.name}")
+    print(f"→ Template: {template_path.name}")
+    print(f"→ Compose Mode: {compose_mode}")
 
-    pcpt_run_custom_prompt(
-        source_path=str(source_path),
-        custom_prompt_template=COMPOSED_TEMPLATE.name,
-        input_file=str(rules_file),
-        input_file2=str(model_file),
-        output_dir_arg=str(output_path),
-        filter_path=filter_path,
-        mode=mode,
-    )
+    if not skip_generate:
+        pcpt_run_custom_prompt(
+            source_path=str(source_path),
+            custom_prompt_template=template_path.name,
+            input_file=str(rules_file),
+            input_file2=str(model_file),
+            output_dir_arg=str(output_path),
+            filter_path=filter_path,
+            mode=pcpt_mode,
+        )
+    else:
+        print("[INFO] --skip-generate supplied: not calling pcpt; proceeding to merge from existing report.")
 
-    # STEP 6: Merge the generated top-level rule back into business_rules.json and models.json
+    # STEP 6: Merge the generated rule(s) back into business_rules.json and models.json
     try:
         selected_model = model_info.get("selected_model") or {}
         sel_model_id = selected_model.get("id")
@@ -442,7 +673,7 @@ def step_run_pcpt(
             print("\nSTEP 6: Merge back to model home")
             print(f"→ Model home: {model_home_prompted}")
             print(f"→ Output path: {output_path}")
-            merge_top_level_rule_into_model_home(Path(model_home_prompted), Path(output_path), sel_model_id)
+            merge_generated_rules_into_model_home(Path(model_home_prompted), Path(output_path), sel_model_id, template_base)
     except Exception as ex:
         eprint(f"[WARN] Merge step failed: {ex}")
 
@@ -451,27 +682,68 @@ def step_run_pcpt(
 
 
 def main() -> None:
-    print("=== Generate Composite Decision ===")
-
-    # Step 0: Prompt for model home (default ~/.model)
-    default_model_home = str(Path("~/.model").expanduser())
-    model_home_str = prompt_with_default(
-        "Enter model home (contains models.json & business_rules.json)",
-        default_model_home,
+    parser = argparse.ArgumentParser(description="Generate a composed decision report (single or multi).")
+    parser.add_argument(
+        "--mode",
+        choices=["top", "next"],
+        help=("Select template behavior: 'top' uses composed-decision-report.templ, "
+              "'next' uses multi-composed-decision-report.templ (may emit multiple rules). If omitted, you'll be prompted.")
     )
-    model_home = Path(model_home_str).expanduser().resolve()
+    parser.add_argument(
+        "--skip-generate",
+        action="store_true",
+        help=(
+            "Skip running PCPT and go straight to merge (ingest) using an existing composed decision report "
+            "under the selected output path."
+        ),
+    )
+    args = parser.parse_args()
+    compose_mode = args.mode
+    skip_generate = args.skip_generate
+    if not compose_mode:
+        choice = choose_from_list(
+            "Select compose mode:",
+            [
+                "top  – single composed decision template",
+                "next – multi composed decision template (can emit multiple rules)",
+            ],
+            default_index=1,
+        )
+        compose_mode = "top" if choice == 1 else "next"
+
+    print("=== Generate Composite Decision ===")
 
     # Create temp dir
     ensure_dir(TMP_DIR)
 
+    # Step 3-4: Select spec and pair (first, so we can check for model-home in spec)
+    spec_info = step_select_sources_spec()
+
+    # Determine model_home_str from spec, or prompt as fallback
+    model_home_from_spec = (spec_info.get("model_home") or "").strip()
+    if model_home_from_spec:
+        # Ensure the spec's model-home points to the actual model directory (~/.model by default)
+        expanded = Path(model_home_from_spec).expanduser()
+        if expanded.name != ".model":
+            expanded = expanded / ".model"
+        model_home_str = str(expanded)
+        print("STEP 0: Using model home from spec")
+        print(f"→ Model home (spec): {model_home_from_spec}")
+        print(f"→ Resolved model home: {model_home_str}")
+    else:
+        default_model_home = str(Path("~/.model").expanduser())
+        model_home_str = prompt_with_default(
+            "Enter model home (contains models.json & business_rules.json)",
+            default_model_home,
+        )
+
+    model_home = Path(model_home_str).expanduser().resolve()
+
     # Steps 1-2: Select model and export its rules
     model_info = step_select_model(model_home)
 
-    # Step 3-4: Select spec and pair
-    spec_info = step_select_sources_spec()
-
     # Step 5-6: Run pcpt and finish
-    step_run_pcpt(model_info, spec_info, model_home)
+    step_run_pcpt(model_info, spec_info, model_home, compose_mode, skip_generate)
 
 if __name__ == "__main__":
     try:
