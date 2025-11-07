@@ -15,7 +15,7 @@ INSTRUCTIONS
 Take a look at these decisions (input 2), and work out what the decision hierarchy is that organizes these decisions from top to botton, and specifically which of the decisions should be at the top-level of that decision hierarchy.
 
 1. Top-level should have decisions flow into them from lower level decisions. There is often only one top-level decision, but could be more.
-2. Top-level decisions should not themselves flow into higher level decisions. They are at the top.
+2. Top-level decisions should not themselves flow into higher level decisions. They are at the top. Note that if a rule is currently marked as a source link for another rule, then it cannot be top-level, and you should look instead at the rule it feeds into.
 3. You need to think carefully about all of the rules, and how they form mini hierarchies of decisions that feed from bottom to top, lower level decisions driving a higher level decision.
 4. For some hierarchies, for them to make sense, we might need to suggest a new top-level decision that doesn't exist yet. For those, create a new decision, and leave its id blank i.e. "".
 5. If there are no top-level decisions, just return an empty json.

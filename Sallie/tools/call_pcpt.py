@@ -89,6 +89,8 @@ def pcpt_sequence(
     visualize: bool = False,
     filter_path: Optional[str] = None,
     source_path: Optional[str] = None,
+    index: Optional[int] = None,
+    total: Optional[int] = None,
 ) -> None:
     """
     Wrapper around:
@@ -115,6 +117,11 @@ def pcpt_sequence(
     if filter_path:
         cmd.extend(["--filter", filter_path])
 
+    if total is not None:
+        cmd.append(f"--total={total}")
+    if index is not None:
+        cmd.append(f"--index={index}")
+
     if source_path:
         cmd.append(source_path)
 
@@ -128,6 +135,8 @@ def pcpt_domain_model(
     filter_path: Optional[str] = None,
     mode: Optional[str] = None,
     source_path: str = None,
+    index: Optional[int] = None,
+    total: Optional[int] = None,
 ) -> None:
     """
     Wrapper around:
@@ -149,6 +158,12 @@ def pcpt_domain_model(
         cmd.extend(["--filter", filter_path])
     if mode:
         cmd.extend(["--mode", mode])
+
+    if total is not None:
+        cmd.append(f"--total={total}")
+    if index is not None:
+        cmd.append(f"--index={index}")
+
     if source_path:
         cmd.append(source_path)
     subprocess.run(cmd, check=True)
@@ -162,6 +177,8 @@ def pcpt_business_logic(
     filter_path: Optional[str] = None,
     mode: Optional[str] = None,
     source_path: str = None,
+    index: Optional[int] = None,
+    total: Optional[int] = None,
 ) -> None:
     """
     Wrapper around:
@@ -176,6 +193,12 @@ def pcpt_business_logic(
         cmd.extend(["--filter", filter_path])
     if mode:
         cmd.extend(["--mode", mode])
+
+    if total is not None:
+        cmd.append(f"--total={total}")
+    if index is not None:
+        cmd.append(f"--index={index}")
+
     if source_path:
         cmd.append(source_path)
     subprocess.run(cmd, check=True)
@@ -225,9 +248,11 @@ def pcpt_run_custom_prompt(
     if mode:
         cmd.extend(["--mode", mode])
 
-    # Pair requirement: only add when both provided
-    if index is not None and total is not None:
-        cmd.extend(["--index", str(index), "--total", str(total)])
+    # Replace pair-based addition with new single-line flags
+    if total is not None:
+        cmd.append(f"--total={total}")
+    if index is not None:
+        cmd.append(f"--index={index}")
 
     # Positional arguments
     cmd.extend([source_path, custom_prompt_template])
@@ -276,8 +301,11 @@ def run_pcpt_for_rule(
         "--output",
         output_dir_arg,
     ]
-    if index is not None and total is not None:
-        cmd.extend(["--index", str(index), "--total", str(total)])
+    # Replace pair-based addition with new single-line flags
+    if total is not None:
+        cmd.append(f"--total={total}")
+    if index is not None:
+        cmd.append(f"--index={index}")
     cmd.extend([dynamic_rule_file, prompt_name])
 
     try:

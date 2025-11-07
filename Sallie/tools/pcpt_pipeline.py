@@ -329,7 +329,7 @@ def _preflight(spec: Dict[str, Any]) -> bool:
 # =========================
 
 
-def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps: Dict[int, int]) -> Dict[str, Any]:
+def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps: Dict[int, int], skip_cat: bool = False) -> Dict[str, Any]:
     # Resolve and adopt repo root as CWD; keep everything else relative to it
     root = os.path.abspath(os.path.expanduser(spec.get("root-directory", os.getcwd())))
     os.chdir(root)
@@ -443,7 +443,7 @@ def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps:
             pair_summary["steps"].append("ingest: skipped")
 
         # 4.4 Categorize
-        if start_step <= 4:
+        if start_step <= 4 and not skip_cat:
             _subhdr("4.4 Categorize")
             try:
                 cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "categorise_rules.py")]
@@ -466,7 +466,7 @@ def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps:
                 pair_summary["steps"].append(f"categorize: fail ({e})")
                 pair_summary["ok"] = False
         else:
-            pair_summary["steps"].append("categorize: skipped")
+            pair_summary["steps"].append("categorize: skipped" + (" (--skip-cat)" if skip_cat else ""))
 
         results.append(pair_summary)
 
@@ -482,6 +482,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Run PCPT pipeline using a spec file under tools/spec")
     parser.add_argument("--spec", help="Path to a spec JSON (if omitted, you will be prompted to choose under tools/spec)")
+    parser.add_argument("--skip-cat", action="store_true", help="Skip the categorize step")
     args = parser.parse_args()
 
     if args.spec:
@@ -509,7 +510,7 @@ def main() -> None:
         sys.exit(1)
     start_steps = _prompt_start_steps_for_pairs(spec, selected)
 
-    summary = run_pipeline(spec, selected, start_steps)
+    summary = run_pipeline(spec, selected, start_steps, skip_cat=args.skip_cat)
 
     # Overall summary
     _hdr("Pipeline Summary")
