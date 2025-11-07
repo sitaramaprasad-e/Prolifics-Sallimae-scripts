@@ -28,6 +28,7 @@ import sys
 import subprocess
 import uuid
 import argparse
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -205,6 +206,77 @@ def _load_rules_from_report(report_path: Path) -> List[dict]:
     # 4) If nothing worked, raise the original error
     raise ValueError("Could not locate valid JSON rules in report.")
 
+
+# ---------------------------
+# Helper: Extract Top-Level decision suggestions from report
+# ---------------------------
+from typing import Tuple, Set
+
+def _extract_top_decision_suggestions_from_report(report_path: Path) -> Tuple[Set[str], Set[str]]:
+    """Parse a suggestion report for MIM pre-step and extract Top-Level decision ids/names.
+
+    Supports two formats:
+      1) New hierarchy JSON:
+         {
+           "hierarchies": [
+             { "top_decision": {"id": "...", "name": "..."}, ... }, ...
+           ]
+         }
+      2) Legacy rules-style JSON or markdown with embedded JSON that can be handled
+         by _load_rules_from_report(), where each object may include id/rule_name/name.
+    Returns (ids, names) as sets.
+    """
+    raw = report_path.read_text(encoding="utf-8").strip()
+
+    # Try direct JSON first (whole doc)
+    def _try_full_json(text: str):
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    obj = _try_full_json(raw)
+
+    # If not full JSON, try fenced code blocks ```json ... ``` or ``` ... ```
+    if obj is None:
+        import re
+        for block in re.findall(r"```(?:json|JSON)?\s*([\s\S]*?)```", raw):
+            cand = _try_full_json(block.strip())
+            if cand is not None:
+                obj = cand
+                break
+
+    ids: Set[str] = set()
+    names: Set[str] = set()
+
+    # Case 1: New hierarchy structure
+    if isinstance(obj, dict) and isinstance(obj.get("hierarchies"), list):
+        for h in obj["hierarchies"]:
+            if not isinstance(h, dict):
+                continue
+            td = h.get("top_decision") or {}
+            tid = (td.get("id") or "").strip()
+            tname = (td.get("name") or td.get("rule_name") or "").strip()
+            if tid:
+                ids.add(tid)
+            if tname:
+                names.add(tname)
+        return ids, names
+
+    # Case 2: Fall back to legacy rules parsing
+    try:
+        rules = _load_rules_from_report(report_path)
+    except Exception:
+        rules = []
+    for r in rules:
+        rid = (r.get("id") or r.get("uuid") or r.get("rule_id") or "").strip()
+        rn = (r.get("rule_name") or r.get("name") or "").strip()
+        if rid:
+            ids.add(rid)
+        if rn:
+            names.add(rn)
+    return ids, names
+
 def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, selected_model_id: str, template_base: Optional[str] = None) -> None:
     """Merge one or more generated rules back into business_rules.json and models.json safely.
 
@@ -278,10 +350,18 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
     # Enrich and prepare merge
     now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for r in new_rules:
-        if "id" in r:
-            # Ensure we don't carry over prior ids
-            r.pop("id", None)
-        r["id"] = str(uuid.uuid4())
+        # We need to distinguish between "new" (empty id) and "existing" (non-empty id)
+        orig_id = (r.get("id") or "").strip()
+        if orig_id:
+            # Preserve id for matching & updates; store it explicitly as the source id
+            r["id"] = orig_id
+            r["__source_orig_id"] = orig_id
+            r["__source_id_blank"] = False
+        else:
+            # Truly new rule requested by PCPT (empty id) → we will create it
+            r["id"] = str(uuid.uuid4())
+            r["__source_orig_id"] = ""
+            r["__source_id_blank"] = True
         r.setdefault("timestamp", now_ts)
         r.setdefault("archived", False)
 
@@ -341,6 +421,7 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
 
     skipped_details: List[Dict[str, Any]] = []
     added_ids: List[str] = []
+    ensure_model_ids: set[str] = set()
     updated_top_links = 0
 
     # Precompute lookups used by both paths
@@ -350,19 +431,41 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
             rn0 = (r.get("rule_name") or r.get("name") or "").strip()
             if rn0:
                 existing_by_name[rn0] = {"idx": idx, "rule": r}
+    # NEW: Precompute lookup by id
+    existing_by_id = {}
+    for idx, r in enumerate(business_rules):
+        if isinstance(r, dict):
+            rid0 = (r.get("id") or "").strip()
+            if rid0:
+                existing_by_id[rid0] = {"idx": idx, "rule": r}
 
     def _process_as_add_update(rule: dict) -> None:
-        nonlocal skipped_details, added_ids, business_rules, existing_by_name
+        nonlocal skipped_details, added_ids, business_rules, existing_by_name, ensure_model_ids, existing_by_id
+        # Drop any internal flags before comparison/persistence
+        rule.pop("__source_id_blank", None)
         rn = (rule.get("rule_name") or rule.get("name") or "").strip()
-        ex = existing_by_name.get(rn)
+        rid = (rule.get("id") or "").strip()
+        ex = None
+        if rid:
+            ex = existing_by_id.get(rid)
+        if not ex and rn:
+            ex = existing_by_name.get(rn)
+
         if ex and _has_dmn_material_change(ex["rule"], rule):
             preserved_id = ex["rule"].get("id")
-            preserved_archived = ex["rule"].get("archived", False)
-            rule["id"] = preserved_id or rule.get("id") or str(uuid.uuid4())
-            rule["archived"] = preserved_archived
+            was_archived = ex["rule"].get("archived", False)
+            rule["id"] = preserved_id or rid or str(uuid.uuid4())
+            if was_archived:
+                rule["archived"] = False
+                print(f"[INFO] Unarchived rule due to update: '{rn}' (id={rule['id']})")
+            else:
+                rule["archived"] = ex["rule"].get("archived", False)
             business_rules[ex["idx"]] = rule
             existing_by_name[rn] = {"idx": ex["idx"], "rule": rule}
-            print(f"[INFO] Updated rule by name with DMN changes (incl. allowedValues): '{rn}'")
+            if rule.get("id"):
+                ensure_model_ids.add(rule["id"])
+                existing_by_id[rule["id"]] = {"idx": ex["idx"], "rule": rule}
+            print(f"[INFO] Updated rule by {'id' if rid else 'name'} with DMN changes (incl. allowedValues): '{rn}'")
             return
         new_norm = _normalize_rule_for_compare(rule)
         exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
@@ -380,6 +483,8 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
             return
         business_rules.append(rule)
         added_ids.append(rule["id"])
+        if rule.get("id"):
+            existing_by_id[rule["id"]] = {"idx": len(business_rules)-1, "rule": rule}
 
     if is_mim_mode:
         composite_rules = [r for r in new_rules if _is_composite(r)]
@@ -394,24 +499,64 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
         for tr in top_rules:
             ln = len(tr.get("links") or [])
             print(f"[TRACE] MIM: Incoming Top-Level candidate '{(tr.get('rule_name') or tr.get('name') or '(unnamed)')}' has {ln} link(s).")
+
         # Now perform the actual merge using the real variable name
         for new_rule in top_rules:
             rn = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
-            ex = existing_by_name.get(rn)
+            rid = (new_rule.get("id") or "").strip()
+            had_blank = bool(new_rule.get("__source_id_blank", False))
+
+            ex = None
+            if rid:
+                ex = existing_by_id.get(rid)
+            if not ex and rn:
+                ex = existing_by_name.get(rn)
+
             if not ex:
-                eprint(f"[WARN] MIM: Top-Level decision '{rn}' not found in business_rules.json; skipping link merge.")
-                continue
-            # Merge links
+                if had_blank:
+                    # Create only when the source explicitly indicated "new" (empty id)
+                    if not _is_top_level(new_rule):
+                        new_rule["Kind"] = "Decision (Top-Level)"
+                        new_rule["kind"] = "Decision (Top-Level)"
+                    # Drop private flags
+                    new_rule.pop("__source_id_blank", None)
+                    new_rule.pop("__source_orig_id", None)
+                    business_rules.append(new_rule)
+                    added_ids.append(new_rule["id"])
+                    new_idx = len(business_rules) - 1
+                    existing_by_name[rn] = {"idx": new_idx, "rule": new_rule}
+                    if rid:
+                        existing_by_id[rid] = {"idx": new_idx, "rule": new_rule}
+                    print(f"[INFO] MIM: Created new Top-Level decision '{rn}' (id={new_rule['id']}).")
+                    continue
+                else:
+                    # Has a non-empty id but we couldn't find it locally — do not create; just warn and skip
+                    eprint(f"[WARN] MIM: Top-Level decision '{rn}' with id={rid} not found locally; skipping update to avoid unintended create.")
+                    continue
+
+            # Merge links into existing Top‑Level
             before_kind = (ex["rule"].get("Kind") or ex["rule"].get("kind") or "").strip()
             added = _merge_links_in_place(ex["rule"], new_rule)
+
             # Elevate kind to Top-Level if incoming is Top-Level
             if _is_top_level(new_rule) and before_kind.lower() != "decision (top-level)":
                 ex["rule"]["Kind"] = "Decision (Top-Level)"
                 ex["rule"]["kind"] = "Decision (Top-Level)"
                 print(f"[INFO] MIM: Elevated kind → Top-Level for '{rn}'.")
-            # Persist the updated rule back into the list
-            if added or before_kind.lower() != "decision (top-level)":
+
+            # Drop any private flags and persist updated rule
+            ex["rule"].pop("__source_id_blank", None)
+            ex["rule"].pop("__source_orig_id", None)
+            changed_kind = (_is_top_level(new_rule) and before_kind.lower() != "decision (top-level)")
+            if ex["rule"].get("archived", False) and (added or changed_kind):
+                ex["rule"]["archived"] = False
+                print(f"[INFO] MIM: Unarchived Top-Level decision due to update: '{rn}'.")
+            if added or changed_kind:
                 business_rules[ex["idx"]] = ex["rule"]
+                rid2 = (ex["rule"].get("id") or "").strip()
+                if rid2:
+                    ensure_model_ids.add(rid2)
+                    existing_by_id[rid2] = {"idx": ex["idx"], "rule": ex["rule"]}
             if added:
                 updated_top_links += added
                 print(f"[INFO] MIM: Added {added} link(s) to Top-Level decision '{rn}'.")
@@ -473,6 +618,11 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
                 print(f"  • {name}  (fp={fp})")
 
     if added_ids or (is_mim_mode and updated_top_links > 0):
+        # Strip internal flags from all rules before persisting
+        for rr in business_rules:
+            if isinstance(rr, dict):
+                rr.pop("__source_id_blank", None)
+                rr.pop("__source_orig_id", None)
         _safe_backup_json(br_path)
         write_json(br_path, business_rules)
         if added_ids:
@@ -505,22 +655,33 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
         eprint(f"[WARN] Selected model id {selected_model_id} not found in models.json; cannot append businessLogicIds.")
         return
 
-    if added_ids:
+    # Add newly created ids and ensure updated existing ids are present in the model
+    to_append = list(added_ids)
+    # Only add ensure_model_ids that aren't already part of added_ids
+    for rid in ensure_model_ids:
+      if rid not in to_append:
+          to_append.append(rid)
+
+    if to_append:
         model_obj = models[sel_idx]
         ids = model_obj.get("businessLogicIds")
         if not isinstance(ids, list):
             ids = []
         # Append unique ids
-        for rid in added_ids:
-            if rid not in ids:
+        before_len = len(ids)
+        for rid in to_append:
+            if rid and rid not in ids:
                 ids.append(rid)
-        _safe_backup_json(models_path)
-        model_obj["businessLogicIds"] = ids
-        models[sel_idx] = model_obj
-        write_json(models_path, models)
-        print(f"Appended {len(added_ids)} new rule id(s) to model {selected_model_id} in models.json")
+        if len(ids) != before_len:
+            _safe_backup_json(models_path)
+            model_obj["businessLogicIds"] = ids
+            models[sel_idx] = model_obj
+            write_json(models_path, models)
+            print(f"Appended {len(ids) - before_len} rule id(s) to model {selected_model_id} in models.json")
+        else:
+            print("No changes to models.json (all relevant rule ids already present).")
     else:
-        print("No changes to models.json (no new rule ids).")
+        print("No changes to models.json (no new or updated rule ids).")
 
 
 # ---------------------------
@@ -529,6 +690,7 @@ def merge_generated_rules_into_model_home(model_home: Path, output_path: Path, s
 
 REPO_ROOT = Path(__file__).resolve().parents[1]  # project root
 TMP_DIR = REPO_ROOT / ".tmp" / "generate_composite_decision"
+TMP_HIER_DIR = REPO_ROOT / ".tmp" / "hierarchy"
 SPEC_DIR = REPO_ROOT / "tools" / "spec"
 TEMPLATES_DIR = REPO_ROOT / "prompts"
 COMPOSED_TEMPLATE_ONE = TEMPLATES_DIR / "composed-decision-report.templ"
@@ -616,6 +778,9 @@ def step_select_model(model_home: Path, keep_ids: bool = False) -> Dict[str, Any
     # Keep order according to model's list
     id_to_rule = {r.get("id"): r for r in rules_all if isinstance(r, dict) and r.get("id")}
     filtered_rules: List[Dict[str, Any]] = [id_to_rule[rid] for rid in wanted_ids if rid in id_to_rule]
+    if not filtered_rules:
+        eprint(f"ERROR: No rules found in the selected model '{selected_model.get('name', '(unnamed)')}'.")
+        sys.exit(1)
 
     missing = [rid for rid in wanted_ids if rid not in id_to_rule]
     if missing:
@@ -729,20 +894,13 @@ def step_run_pcpt(
         sys.exit(1)
     template_base = template_path.stem
 
+    # Default second input to the decision model; MIM may override with suggested hierarchy
+    input2_file = model_file
+    input2_label = "model"
+    suggest_report_path = None
+
     # Make sure output directory exists
     ensure_dir(output_path)
-
-    # Streaming: pcpt_run_custom_prompt uses subprocess.run with check=True (streams to console).
-    print(f"→ Source: {src_rel}")
-    print(f"→ Output: {out_rel}")
-    if filt_rel:
-        print(f"→ Filter: {filt_rel}")
-    if pcpt_mode:
-        print(f"→ Mode:   {pcpt_mode}")
-    print(f"→ Input 1 (rules): {rules_file}")
-    print(f"→ Input 2 (model): {model_file}")
-    print(f"→ Template: {template_path.name}")
-    print(f"→ Compose Mode: {compose_mode}")
 
     if compose_mode == "mim" and not skip_generate:
         print("[MIM] Pre-step: Suggest Top-Level decisions")
@@ -766,23 +924,30 @@ def step_run_pcpt(
             output_path / f"{suggest_base}.md",
         ]
         suggest_report = next((p for p in suggest_candidates if p.exists()), None)
+        if suggest_report:
+            # Copy hierarchy report into the SAME tmp dir as rules to avoid duplicate /input mounts
+            ensure_dir(TMP_DIR)
+            dest_path = TMP_DIR / suggest_report.name
+            try:
+                shutil.copy2(suggest_report, dest_path)
+                suggest_report_path = str(dest_path)
+                input2_file = suggest_report_path
+                input2_label = "hierarchy"
+                print(f"[MIM] Using suggested hierarchy as Input 2 (copied into TMP_DIR): {suggest_report_path}")
+            except Exception as ex:
+                # Fall back to original path if copy fails
+                suggest_report_path = str(suggest_report)
+                input2_file = suggest_report_path
+                input2_label = "hierarchy"
+                eprint(f"[WARN] MIM: Failed to copy hierarchy report into TMP_DIR: {ex}. Using original path.")
         if not suggest_report:
             eprint(f"[WARN] MIM: Could not find suggestion report under {output_path}; proceeding without Top-Level overrides.")
         else:
             try:
-                suggested = _load_rules_from_report(suggest_report)
+                select_ids, select_names = _extract_top_decision_suggestions_from_report(suggest_report)
             except Exception as ex:
-                eprint(f"[WARN] MIM: Failed to parse suggestion report: {ex}; proceeding without Top-Level overrides.")
-                suggested = []
-            select_ids = set()
-            select_names = set()
-            for r in suggested:
-                rid = (r.get("id") or r.get("uuid") or r.get("rule_id") or "").strip()
-                if rid:
-                    select_ids.add(rid)
-                rn = (r.get("rule_name") or r.get("name") or "").strip()
-                if rn:
-                    select_names.add(rn)
+                eprint(f"[WARN] MIM: Failed to parse suggestion report for Top-Level discovery: {ex}; proceeding without Top-Level overrides.")
+                select_ids, select_names = set(), set()
             if select_ids or select_names:
                 try:
                     rules_data = load_json(Path(rules_file))
@@ -804,12 +969,121 @@ def step_run_pcpt(
                 except Exception as ex:
                     eprint(f"[WARN] MIM: Failed to update rules_for_model.json with Top-Level kinds: {ex}")
 
+    # If in MIM and we have a hierarchy doc, process one hierarchy at a time
+    if compose_mode == "mim" and suggest_report_path:
+        from pathlib import Path as _P
+        def _load_hierarchy_doc(path_str: str) -> dict:
+            p = _P(path_str)
+            txt = p.read_text(encoding="utf-8")
+            # JSON file
+            if p.suffix.lower() == ".json":
+                return json.loads(txt)
+            # Attempt to extract first {...} block from markdown
+            start = txt.find("{")
+            end = txt.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return json.loads(txt[start:end+1])
+            raise ValueError(f"Unsupported hierarchy doc format: {p}")
+
+        # Resolve selected model id once for the loop
+        selected_model = model_info.get("selected_model") or {}
+        sel_model_id = selected_model.get("id")
+        if not sel_model_id:
+            sel_model_path = Path(model_info.get("selected_model_path", ""))
+            if sel_model_path.exists():
+                try:
+                    sel_model = load_json(sel_model_path)
+                    if isinstance(sel_model, dict):
+                        sel_model_id = sel_model.get("id")
+                except Exception:
+                    sel_model_id = None
+
+        try:
+            doc = _load_hierarchy_doc(suggest_report_path)
+        except Exception as ex:
+            eprint(f"[WARN] MIM: Failed to load hierarchy doc '{suggest_report_path}': {ex}. Falling back to single-pass.")
+        else:
+            hierarchies = doc.get("hierarchies") or []
+            if isinstance(hierarchies, list) and hierarchies:
+                total = len(hierarchies)
+                for i, hier in enumerate(hierarchies):
+                    tmp_one = TMP_DIR / f"hierarchy_{i+1}.json"
+                    try:
+                        write_json(tmp_one, {"hierarchies": [hier]})
+                    except Exception as ex:
+                        eprint(f"[WARN] MIM: Could not write temp hierarchy file {tmp_one}: {ex}. Skipping this hierarchy.")
+                        continue
+
+                    # Per-iteration: set Input 2 to this single-hierarchy file (kept under TMP_DIR to avoid duplicate mounts)
+                    input2_file = str(tmp_one)
+                    input2_label = "hierarchy"
+
+                    print(f"[MIM] Processing hierarchy {i+1}/{total}: {hier.get('name') or '(unnamed)'}")
+                    print(f"→ Source: {src_rel}")
+                    print(f"→ Output: {out_rel}")
+                    if filt_rel:
+                        print(f"→ Filter: {filt_rel}")
+                    if pcpt_mode:
+                        print(f"→ Mode:   {pcpt_mode}")
+                    print(f"→ Input 1 (rules): {rules_file}")
+                    print(f"→ Input 2 ({input2_label}): {input2_file}")
+                    print(f"→ Template: {template_path.name}")
+                    print(f"→ Compose Mode: {compose_mode}")
+
+                    # Run PCPT for this hierarchy
+                    if not skip_generate:
+                        pcpt_run_custom_prompt(
+                            source_path=str(source_path),
+                            custom_prompt_template=template_path.name,
+                            input_file=str(rules_file),
+                            input_file2=str(input2_file),
+                            output_dir_arg=str(output_path),
+                            filter_path=filter_path,
+                            mode=pcpt_mode,
+                        )
+                    else:
+                        print("[INFO] --skip-generate supplied: not calling pcpt; proceeding to merge from existing report.")
+
+                    # Merge immediately after this iteration
+                    try:
+                        if not sel_model_id:
+                            eprint("[WARN] Could not determine selected model id for merge; skipping merge for this hierarchy.")
+                        else:
+                            print("\nSTEP 6: Merge back to model home (per-hierarchy)")
+                            print(f"→ Model home: {model_home_prompted}")
+                            print(f"→ Output path: {output_path}")
+                            merge_generated_rules_into_model_home(
+                                model_home=model_home_prompted,
+                                output_path=output_path,
+                                selected_model_id=sel_model_id,
+                                template_base=template_path.stem,
+                            )
+                    except Exception as ex:
+                        eprint(f"[WARN] Merge step failed for hierarchy {i+1}/{total}: {ex}")
+
+                # Completed per-hierarchy processing; do not run a single combined pass
+                print("\nSTEP 7: Done ✔")
+                print("Composed decision report generated and merged (per‑hierarchy).")
+                return
+
+    # Streaming: pcpt_run_custom_prompt uses subprocess.run with check=True (streams to console).
+    print(f"→ Source: {src_rel}")
+    print(f"→ Output: {out_rel}")
+    if filt_rel:
+        print(f"→ Filter: {filt_rel}")
+    if pcpt_mode:
+        print(f"→ Mode:   {pcpt_mode}")
+    print(f"→ Input 1 (rules): {rules_file}")
+    print(f"→ Input 2 ({input2_label}): {input2_file}")
+    print(f"→ Template: {template_path.name}")
+    print(f"→ Compose Mode: {compose_mode}")
+
     if not skip_generate:
         pcpt_run_custom_prompt(
             source_path=str(source_path),
             custom_prompt_template=template_path.name,
             input_file=str(rules_file),
-            input_file2=str(model_file),
+            input_file2=str(input2_file),
             output_dir_arg=str(output_path),
             filter_path=filter_path,
             mode=pcpt_mode,

@@ -12,15 +12,86 @@ INPUT 3: DECISION MODEL
 
 INSTRUCTIONS
 
-Take a look at these decisions, and work out what the decision hierarchy is that organizes these decisions from top to botton, and specifically which of the decisions should be at the top-level of that decision hierarchy.
+Take a look at these decisions (input 2), and work out what the decision hierarchy is that organizes these decisions from top to botton, and specifically which of the decisions should be at the top-level of that decision hierarchy.
 
 1. Top-level should have decisions flow into them from lower level decisions. There is often only one top-level decision, but could be more.
 2. Top-level decisions should not themselves flow into higher level decisions. They are at the top.
-3. You need to think carefully about all of the rules, and how they form mini hierarchies of decisions that feed from top to bottom, lower level decisions driving a higher level decision.
-4. Just include the rule uuid in the output.
-5. If none, just return an empty json.
+3. You need to think carefully about all of the rules, and how they form mini hierarchies of decisions that feed from bottom to top, lower level decisions driving a higher level decision.
+4. For some hierarchies, for them to make sense, we might need to suggest a new top-level decision that doesn't exist yet. For those, create a new decision, and leave its id blank i.e. "".
+5. If there are no top-level decisions, just return an empty json.
+6. Here's an example of the output I want, with the top-level decisions as top_decision, quoting the uuid of the decision.
+
+{
+  "hierarchies": [
+    {
+      "name": "Account Processing Strategy",
+      "top_decision": {
+        "id": "520382fe-3e83-45f2-9849-cc8b874aac51",
+        "name": "Decide Account Processing Strategy"
+      },
+      "lower_decisions": [
+        {
+          "id": "599121f1-1ccf-48fc-ae7c-99969b9d862f",
+          "name": "Evaluate Record Eligibility"
+        },
+        {
+          "id": "cae02ad7-b2ce-4c8e-ab76-1cd33e6d297f",
+          "name": "Determine Processing Path (Create vs Update)"
+        },
+        {
+          "id": "b4936363-a963-4bee-90cb-9e3a48e24b9e",
+          "name": "Resolve Conflicts (Merge/Duplicate Handling)"
+        }
+      ],
+      "flow_description": "The process begins by checking whether the account record is eligible for processing. Depending on eligibility, the system determines whether the record should be created or updated. In some cases, conflict resolution runs in parallel and provides input directly to the top-level decision that finalizes the overall processing strategy."
+    },
+    {
+      "name": "Account Visibility & Actions",
+      "top_decision": {
+        "id": "",
+        "name": "Decide Visible Account Actions"
+      },
+      "lower_decisions": [
+        {
+          "id": "18fd29b3-52de-4f46-a3f8-56c5f5815c0a",
+          "name": "Assess Search Results Context"
+        },
+        {
+          "id": "a7dd92f4-0afd-4fef-843c-fd906aa5eef9",
+          "name": "Should Show Create Account Button"
+        },
+        {
+          "id": "f216c11c-8383-4982-baac-7f26863be40e",
+          "name": "Should Enable Edit/Link Actions"
+        }
+      ],
+      "flow_description": "The system first examines the context of the user's account search. Based on that context, one branch decides whether the 'Create Account' button should be shown, while another branch determines if editing or linking options should be available. Both outcomes contribute independently to the top-level decision governing visible account actions."
+    },
+    {
+      "name": "Account Data Readiness",
+      "top_decision": {
+        "id": "e6a06008-7001-4e90-a093-7886e448daf9",
+        "name": "Approve Account for Downstream Use"
+      },
+      "lower_decisions": [
+        {
+          "id": "8cbfaa4d-ece9-445e-8bf1-db5a391aba5a",
+          "name": "Validate Required Fields"
+        },
+        {
+          "id": "38ac6486-efb7-498f-a05c-f8c155b07870",
+          "name": "Standardize & Normalize Attributes"
+        },
+        {
+          "id": "610ecbc0-7b31-4c2d-ad77-5a499b9f355a",
+          "name": "Compute Derived Metrics & Flags"
+        }
+      ],
+      "flow_description": "Validation ensures required data is present. Attribute standardization may depend on validation, while derived metrics are computed separately and feed directly to the top decision. The final approval decision considers both validation and derived calculations to determine readiness for downstream systems."
+    }
+  ]
+}
 
 Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting
-* Response must be a json in the exact same form as the rules in input 2.
 * Do not put any special characters in the output.
