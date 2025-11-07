@@ -1,0 +1,135 @@
+## 🧠 Prompt: Auto-Generated DMN-Compliant DRD (.SVG) from JSON
+
+### 🎯 Goal
+Create an **interactive DMN-standard Decision Requirements Diagram (DRD)** in **SVG format** from a provided **JSON** input containing **decisions** and **Business Knowledge Models (BKMs)**.
+
+The DRD must:
+- Be **DMN 1.4–compliant**
+- Arrange automatically in a **strictly top-down hierarchy**
+- Derive hierarchy **automatically** from the `dependsOn` field
+- Allow clicking each **Decision node** to show its **DMN decision table** (based on JSON)
+- Support **Close (X)** buttons for popups
+
+---
+
+### 📦 Input JSON Format
+```json
+{
+  "decisions": [
+    {
+      "id": "D1",
+      "name": "Loan Eligibility",
+      "dependsOn": ["Credit Score", "Income Check"],
+      "rules": [
+        "Rule 1: Credit > 700",
+        "Rule 2: Income > 50000"
+      ],
+      "table": {
+        "inputs": ["Credit Score", "Income"],
+        "outputs": ["Eligibility"],
+        "rules": [
+          {
+            "if": ["Credit > 700", "Income > 50000"],
+            "then": ["Eligible"]
+          },
+          {
+            "if": ["Credit <= 700", "Income <= 50000"],
+            "then": ["Not Eligible"]
+          }
+        ]
+      }
+    }
+  ],
+  "bkms": [
+    {
+      "id": "BKM1",
+      "name": "Credit Scoring Logic",
+      "description": "Calculates weighted credit score based on customer data."
+    }
+  ]
+}
+```
+
+---
+
+### ⚙️ Logic & Behavior
+
+#### 1️⃣ Parse JSON
+- Extract all `decisions` and `bkms`
+- For each decision:
+  - Collect `id`, `name`, `dependsOn`, `rules`, and `table`
+- For each BKM:
+  - Collect `id`, `name`, `description`
+
+#### 2️⃣ Auto Layout Generation (Top-Down Only)
+- Automatically determine **vertical hierarchy** based on dependencies:
+  - **Top Level:** Root decisions (no other decision depends on them)
+  - **Lower Levels:** Inputs or BKMs referenced by higher levels
+- Position nodes in **centered vertical stacks** for each hierarchy level
+- Maintain **equal spacing** between layers
+- Draw arrows from **dependency → dependent**
+
+#### 3️⃣ Node Rendering
+| Element | Shape | Color | Click Behavior |
+|----------|--------|--------|----------------|
+| **Decision** | Rounded rectangle | Blue | Shows popup with Rules + DMN Table |
+| **BKM** | Rectangle (folded corner) | Yellow | Shows description |
+| **Arrow** | Solid connector | Gray | DMN dependency |
+
+#### 4️⃣ Interactivity
+- **Decision Node On Click:**
+  - Open modal popup displaying:
+    - List of **rules**
+    - **DMN Decision Table** (inputs, outputs, rules)
+  - Include **Close (X)** button at top-right
+
+- **BKM Node On Click:**
+  - Show its **description** and any linked decisions
+  - Include Close button
+
+#### 5️⃣ Example Decision Table Popup
+When clicking **Loan Eligibility**, show:
+
+**Rules:**
+- Rule 1: Credit > 700  
+- Rule 2: Income > 50000  
+
+**Decision Table:**
+| Credit Score | Income | Eligibility |
+|---------------|---------|-------------|
+| > 700 | > 50000 | Eligible |
+| ≤ 700 | ≤ 50000 | Not Eligible |
+
+*(Popup closes when X is clicked.)*
+
+---
+
+### 🎨 Output Requirements
+- Output must be a **DMN-compliant SVG**
+- Diagram layout must be **strictly top-down**
+- Nodes are center-aligned horizontally within each layer
+- Popups rendered using embedded `<foreignObject>` or overlay
+- Include hover tooltips for each node
+
+---
+
+### 🧩 Example Layout (Top-Down)
+```
+           ┌────────────────────────┐
+           │     Loan Eligibility   │
+           └─────────────┬──────────┘
+                         │
+          ┌──────────────┴──────────────┐
+          │                             │
+   ┌───────────────┐            ┌────────────────┐
+   │ Credit Score  │            │  Income Check  │
+   └───────────────┘            └────────────────┘
+```
+
+---
+
+### 💡 Notes
+- No manual coordinates needed.
+- Hierarchy and connections **auto-detected** from `dependsOn`.
+- Diagram is **DMN-valid**, **scalable**, and **exportable**.
+- All interactivity handled inside SVG.
