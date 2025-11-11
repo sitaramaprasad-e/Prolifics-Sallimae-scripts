@@ -722,20 +722,15 @@ def merge_generated_rules_into_model_home(
             existing_rule["links"] = existing_links
             return added
 
-        def _elevate_kind(existing_rule: dict, incoming_rule: dict) -> bool:
-            """Set kind to incoming value if present and different. Returns True if changed."""
-            inc_kind = (incoming_rule.get("Kind") or incoming_rule.get("kind") or "").strip()
-            if not inc_kind:
-                return False
-            prev_kind = (existing_rule.get("Kind") or existing_rule.get("kind") or "").strip()
-            if prev_kind == inc_kind:
-                return False
-            existing_rule["Kind"] = inc_kind
-            existing_rule["kind"] = inc_kind
-            return True
+        # New: Kind detector (does not mutate), for overlay
+        def _detect_incoming_kind(incoming_rule: dict) -> str:
+            """Return normalized incoming kind (does not mutate existing rules)."""
+            return (incoming_rule.get("Kind") or incoming_rule.get("kind") or "").strip()
 
         created_ids: List[str] = []
         updated_ids: List[str] = []
+        created_name_to_id: dict[str, str] = {}
+        # No longer accumulate Top-Level decisions for overlay storage on the model
 
         for incoming in new_rules:
             if not isinstance(incoming, dict):
@@ -762,11 +757,13 @@ def merge_generated_rules_into_model_home(
                 # Reuse generated uuid if already set earlier; otherwise generate now
                 new_id = (incoming.get("id") or "").strip() or str(uuid.uuid4())
                 incoming["id"] = new_id
+                # Record created name→id mapping
+                if incoming_name:
+                    created_name_to_id[incoming_name.casefold()] = new_id
                 incoming["archived"] = False
                 incoming.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-                # Apply optional hierarchy metadata
-                _apply_hierarchy_meta(incoming, incoming_name)
+                # (No longer apply hierarchy metadata to rule)
 
                 business_rules.append(incoming)
                 created_ids.append(new_id)
@@ -776,7 +773,7 @@ def merge_generated_rules_into_model_home(
                 print(f"[INFO] MIM/Create: Created new decision/rule '{incoming_name or '(unnamed)'}' (id={new_id}).")
                 continue
 
-            # --- UPDATE path (kind + links only). If not found locally, skip to avoid implicit create. ---
+            # --- UPDATE path (links only; no Kind mutation). If not found locally, skip to avoid implicit create. ---
             ex = existing_by_id.get(incoming_id)
             if not ex and incoming_name:
                 ex = existing_by_name.get(incoming_name)
@@ -784,21 +781,21 @@ def merge_generated_rules_into_model_home(
                 eprint(f"[WARN] MIM/Update: Rule '{incoming_name or '(unnamed)'}' with id={incoming_id} not found; skipping update to avoid unintended create.")
                 continue
 
-            changed_kind = _elevate_kind(ex["rule"], incoming)
+            # Do not mutate Kind on existing rules (overlay approach). Only merge links.
+            inc_kind = _detect_incoming_kind(incoming)
             added_links = _merge_links_in_place(ex["rule"], incoming)
-            if ex["rule"].get("archived", False) and (changed_kind or added_links):
+            if ex["rule"].get("archived", False) and added_links:
                 ex["rule"]["archived"] = False
-                print(f"[INFO] MIM/Update: Unarchived '{incoming_name or '(unnamed)'}' due to changes.")
+                print(f"[INFO] MIM/Update: Unarchived '{incoming_name or '(unnamed)'}' due to link changes.")
 
-            # Apply optional hierarchy metadata
-            _apply_hierarchy_meta(ex["rule"], incoming_name)
+            # (No longer apply hierarchy metadata to rule)
 
-            if changed_kind or added_links:
+            if added_links:
                 business_rules[ex["idx"]] = ex["rule"]
                 updated_ids.append(ex["rule"].get("id") or "")
-                print(f"[INFO] MIM/Update: Updated '{incoming_name or '(unnamed)'}' (kind{'*' if changed_kind else ''}, +{added_links} link(s)).")
+                print(f"[INFO] MIM/Update: Updated '{incoming_name or '(unnamed)'}' (+{added_links} link(s)).")
             else:
-                print(f"[TRACE] MIM/Update: No changes for '{incoming_name or '(unnamed)'}'.")
+                print(f"[TRACE] MIM/Update: No link changes for '{incoming_name or '(unnamed)'}'.")
 
         # Persist if there were changes
         if created_ids or updated_ids:
@@ -818,7 +815,248 @@ def merge_generated_rules_into_model_home(
             if rid:
                 ensure_model_ids.add(rid)
 
+        # Upgrade hierarchy_meta names → ids using just-created rules (ensures topDecisionId gets written)
+        if hierarchy_meta and isinstance(hierarchy_meta, dict) and created_name_to_id:
+            by_name = hierarchy_meta.get("by_name") or {}
+            if isinstance(by_name, dict) and by_name:
+                for tname, payload in list(by_name.items()):
+                    if not isinstance(payload, dict):
+                        continue
+                    key = (str(tname) or "").strip().casefold()
+                    tid = created_name_to_id.get(key)
+                    if tid:
+                        hierarchy_meta.setdefault("by_id", {})
+                        hierarchy_meta["by_id"][tid] = payload
+                        del by_name[tname]
+                hierarchy_meta["by_name"] = by_name
+
+        # --- models.json merge with Hierarchies only (ditch overlay) ---
+        models_path = (model_home / "models.json").resolve()
+        models = []
+        if models_path.exists():
+            try:
+                models = load_json(models_path)
+                if not isinstance(models, list):
+                    eprint("[WARN] models.json is not a list; initializing a new list.")
+                    models = []
+            except Exception as ex:
+                eprint(f"[WARN] Failed reading models.json: {ex}; initializing a new list.")
+                models = []
+
+        sel_idx = None
+        for idx, m in enumerate(models):
+            if isinstance(m, dict) and m.get("id") == selected_model_id:
+                sel_idx = idx
+                break
+
+        if sel_idx is None:
+            eprint(f"[WARN] Selected model id {selected_model_id} not found in models.json; cannot append businessLogicIds.")
+            return
+
+        # Merge hierarchy records into model_obj['hierarchies']
+        def _merge_hierarchies_into_model(model_obj: dict, hierarchy_meta: Optional[Dict[str, Any]]) -> bool:
+            """
+            Merge hierarchy records into model_obj['hierarchies'] without duplicates.
+            Each record structure:
+              {
+                "topDecisionId": "<id or ''>",
+                "name": "<hierarchy_name>",
+                "description": "<hierarchy_description>"
+              }
+
+            Rules:
+            - Prefer a single record per hierarchy "name".
+            - If we get both an id and a name for the same hierarchy in the same call,
+              update the same record instead of appending a second one.
+            - If a matching record exists (by id OR by hierarchy name, case‑insensitive),
+              update missing fields rather than creating a new record.
+
+            Returns True if the list changed.
+            """
+            if not hierarchy_meta or not isinstance(hierarchy_meta, dict):
+                return False
+
+            by_id = hierarchy_meta.get("by_id") or {}
+            by_name = hierarchy_meta.get("by_name") or {}
+            if not isinstance(by_id, dict):
+                by_id = {}
+            if not isinstance(by_name, dict):
+                by_name = {}
+
+            # Start from current list (normalize)
+            existing = model_obj.get("hierarchies")
+            if not isinstance(existing, list):
+                existing = []
+
+            # Fast indexes over the live 'existing' list (kept up to date as we modify/append)
+            def _norm(s: str) -> str:
+                return (s or "").strip()
+
+            def _ncf(s: str) -> str:
+                return _norm(s).casefold()
+
+            def _rebuild_indexes():
+                idx_by_id = {}
+                idx_by_hname = {}
+                for i, item in enumerate(existing):
+                    if not isinstance(item, dict):
+                        continue
+                    tid = _norm(item.get("topDecisionId", ""))
+                    hname = _norm(item.get("name", ""))
+                    if tid:
+                        idx_by_id[tid] = i
+                    if hname:
+                        idx_by_hname[_ncf(hname)] = i
+                return idx_by_id, idx_by_hname
+
+            idx_by_id, idx_by_hname = _rebuild_indexes()
+
+            changed = False
+
+            def _ensure_record(tid: str, tname: str, hname: str, hdesc: str) -> None:
+                """
+                Find or create a record for this hierarchy. Match order:
+                1) by topDecisionId (exact)
+                2) by hierarchy 'name' (case-insensitive)
+                Then update missing fields on the found record; otherwise append a new record.
+                """
+                nonlocal idx_by_id, idx_by_hname, changed
+
+                tid = _norm(tid)
+                tname = _norm(tname)
+                hname = _norm(hname)
+                hdesc = _norm(hdesc)
+
+                # Try match by id first
+                i = idx_by_id.get(tid) if tid else None
+                # Else match by hierarchy name
+                if i is None and hname:
+                    i = idx_by_hname.get(_ncf(hname))
+
+                if i is not None:
+                    rec = existing[i]
+                    # Update only if values are missing/empty
+                    if tid and not _norm(rec.get("topDecisionId", "")):
+                        rec["topDecisionId"] = tid
+                        changed = True
+                    # Always prefer the latest non-empty description
+                    if hdesc and _norm(rec.get("description", "")) != hdesc:
+                        rec["description"] = hdesc
+                        changed = True
+                    # Ensure the canonical hierarchy name is set
+                    if hname and _norm(rec.get("name", "")) != hname:
+                        rec["name"] = hname
+                        changed = True
+                else:
+                    # Create new
+                    rec = {
+                        "topDecisionId": tid,
+                        "name": hname,
+                        "description": hdesc,
+                    }
+                    existing.append(rec)
+                    changed = True
+
+                # Rebuild indexes after any mutation
+                idx_by_id, idx_by_hname = _rebuild_indexes()
+
+            # 1) Ingest id-keyed entries
+            for tid, payload in by_id.items():
+                if not isinstance(payload, dict):
+                    continue
+                hname = _norm(payload.get("hierarchy_name", ""))
+                if not hname:
+                    continue
+                hdesc = _norm(payload.get("hierarchy_description", ""))
+                _ensure_record(_norm(str(tid)), "", hname, hdesc)
+
+            # 2) Ingest name-keyed entries (may enrich the same records)
+            for tname, payload in by_name.items():
+                if not isinstance(payload, dict):
+                    continue
+                hname = _norm(payload.get("hierarchy_name", ""))
+                if not hname:
+                    continue
+                hdesc = _norm(payload.get("hierarchy_description", ""))
+                _ensure_record("", _norm(str(tname)), hname, hdesc)
+
+            if changed:
+                model_obj["hierarchies"] = existing
+            return changed
+
+        # Build to_append: created ids first
+        to_append_created = list(created_ids)
+
+        # Preserve only those ensured ids that are already in this model (no cross-add)
+        model_obj = models[sel_idx]
+        ids = model_obj.get("businessLogicIds")
+        if not isinstance(ids, list):
+            ids = []
+        filtered_ensure: list[str] = []
+        for rid in ensure_model_ids:
+            if rid in ids and rid not in to_append_created:
+                filtered_ensure.append(rid)
+
+        to_append = list(to_append_created) + filtered_ensure
+
+        # Always attempt hierarchy merge (even if no new businessLogicIds)
+        overlay_changed = False  # overlay is deprecated, always False
+        hierarchy_changed = _merge_hierarchies_into_model(model_obj, hierarchy_meta)
+
+        # Remove the deprecated overlay list from the model object
+        model_obj.pop("topLevelDecisionIds", None)
+
+        # Append new/ensured ids to businessLogicIds with name-based de-dup (one per model)
+        if to_append:
+            # id→name (casefold) map from current business_rules
+            id_to_name_cf = {}
+            for r in business_rules:
+                if isinstance(r, dict):
+                    rid0 = (r.get("id") or "").strip()
+                    rn0 = (r.get("rule_name") or r.get("name") or "").strip()
+                    if rid0 and rn0:
+                        id_to_name_cf[rid0] = rn0.casefold()
+
+            # Swap-by-name for newly created ids
+            for new_id in to_append_created:
+                if not new_id:
+                    continue
+                new_name_cf = id_to_name_cf.get(new_id)
+                if not new_name_cf:
+                    continue
+                ids = [existing_id for existing_id in ids
+                       if id_to_name_cf.get(existing_id) != new_name_cf or existing_id == new_id]
+
+            before_len = len(ids)
+            for rid in to_append:
+                if rid and rid not in ids:
+                    ids.append(rid)
+
+            if len(ids) != before_len:
+                model_obj["businessLogicIds"] = ids
+                ids_changed = True
+            else:
+                ids_changed = False
+        else:
+            ids_changed = False
+
+        # Persist if either ids list or hierarchies changed
+        if overlay_changed or ids_changed or hierarchy_changed:
+            _safe_backup_json(models_path)
+            models[sel_idx] = model_obj
+            write_json(models_path, models)
+            if ids_changed:
+                print(f"Appended {len(model_obj['businessLogicIds']) - before_len} rule id(s) to model {selected_model_id} in models.json")
+            # Only print overlay change if true (never true now)
+            if overlay_changed:
+                print(f"Updated model {selected_model_id} Top-Level overlay.")
+            if hierarchy_changed:
+                print(f"Updated model {selected_model_id} hierarchies list.")
+        else:
+            print("No changes to models.json (businessLogicIds and hierarchies unchanged).")
+
         # Done with MIM-specific path; skip the original mixed add/update logic
+        return
     else:
         # Original behavior for 'top' and 'next'
         existing_by_fp = {}
@@ -915,22 +1153,50 @@ def merge_generated_rules_into_model_home(
         return
 
     # Add newly created ids and ensure updated existing ids are present in the model
-    to_append = list(added_ids)
-    # Only add ensure_model_ids that aren't already part of added_ids
+    # 1) Start with newly created ids
+    to_append_created = list(added_ids)
+
+    # 2) Ensure step should only PRESERVE ids already in this model, not cross-add between models
+    model_obj = models[sel_idx]
+    ids = model_obj.get("businessLogicIds")
+    if not isinstance(ids, list):
+        ids = []
+
+    filtered_ensure: list[str] = []
     for rid in ensure_model_ids:
-      if rid not in to_append:
-          to_append.append(rid)
+        if rid in ids and rid not in to_append_created:
+            filtered_ensure.append(rid)
+
+    # Build final to_append (created + filtered ensure)
+    to_append = list(to_append_created) + filtered_ensure
 
     if to_append:
-        model_obj = models[sel_idx]
-        ids = model_obj.get("businessLogicIds")
-        if not isinstance(ids, list):
-            ids = []
+        # Build a quick id→name map from business_rules for name-based collision handling
+        id_to_name_cf = {}
+        for r in business_rules:
+            if isinstance(r, dict):
+                rid0 = (r.get("id") or "").strip()
+                rn0 = (r.get("rule_name") or r.get("name") or "").strip()
+                if rid0 and rn0:
+                    id_to_name_cf[rid0] = rn0.casefold()
+
+        # Before appending any newly created id, remove any existing ids in this model
+        # that have the same name (case-insensitive), so we keep exactly one per model.
+        for new_id in to_append_created:
+            if not new_id:
+                continue
+            new_name_cf = id_to_name_cf.get(new_id)
+            if not new_name_cf:
+                continue
+            ids = [existing_id for existing_id in ids
+                   if id_to_name_cf.get(existing_id) != new_name_cf or existing_id == new_id]
+
         # Append unique ids
         before_len = len(ids)
         for rid in to_append:
             if rid and rid not in ids:
                 ids.append(rid)
+
         if len(ids) != before_len:
             _safe_backup_json(models_path)
             model_obj["businessLogicIds"] = ids
@@ -1088,7 +1354,7 @@ def build_temp_source_from_model(model_info: Dict[str, Any], spec_info: Dict[str
 # Core steps
 # ---------------------------
 
-def step_select_model(model_home: Path, keep_ids: bool = False) -> Dict[str, Any]:
+def step_select_model(model_home: Path, keep_ids: bool = True) -> Dict[str, Any]:
     step_header(1, "Load models and select one", {"Model home": str(model_home)})
     models_path = model_home / "models.json"
     rules_path = model_home / "business_rules.json"
@@ -1498,8 +1764,8 @@ def run_mim_compose(
                     rid0 = (rr.get("id") or "").strip()
                     #rn0 = (rr.get("rule_name") or rr.get("name") or "").strip()
                     if rid0 and rid0 in select_ids:
-                        rr["Kind"] = "Decision (Top-Level)"
                         rr["kind"] = "Decision (Top-Level)"
+                        rr.pop("Kind", None)
                         changed += 1
                 if changed:
                     write_json(Path(rules_file), rules_data)
@@ -1642,6 +1908,21 @@ def run_mim_compose(
                         td_name = (td.get("name") or td.get("rule_name") or "").strip()
                         h_name = (hier.get("name") or "").strip()
                         h_desc = (hier.get("flow_description") or "").strip()
+                        # Minimal fix: if topDecisionId is missing but we have a name, resolve id from rules_for_model.json
+                        if not td_id and td_name:
+                            try:
+                                all_rules_resolve = load_json(Path(rules_file))
+                            except Exception:
+                                all_rules_resolve = []
+                            td_name_cf = td_name.casefold()
+                            for rr in all_rules_resolve:
+                                if not isinstance(rr, dict):
+                                    continue
+                                rn = (rr.get("rule_name") or rr.get("name") or "").strip()
+                                rid = (rr.get("id") or "").strip()
+                                if rn and rid and rn.casefold() == td_name_cf:
+                                    td_id = rid
+                                    break
                         hier_meta = {"by_id": {}, "by_name": {}}
                         payload = {"hierarchy_name": h_name, "hierarchy_description": h_desc}
                         if td_id:
@@ -1652,10 +1933,10 @@ def run_mim_compose(
                             model_home=model_home_prompted,
                             output_path=output_path,
                             selected_model_id=sel_model_id,
-                            template_base=template_path.stem,
-                            restrict_ids=hier_ids,
-                            restrict_names=None,
-                            hierarchy_meta=hier_meta,
+                            template_base=template_base,     # <- ensures is_mim_mode=True in the callee
+                            restrict_ids=hier_ids,           # <- scope to this hierarchy
+                            restrict_names=hier_names,
+                            hierarchy_meta=hier_meta,        # <- includes top decision (by id OR by name)
                         )
                 except Exception as ex:
                     eprint(f"[WARN] Merge step failed for hierarchy {i+1}/{total}: {ex}")
