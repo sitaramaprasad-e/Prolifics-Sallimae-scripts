@@ -1496,8 +1496,8 @@ def run_mim_compose(
                     if not isinstance(rr, dict):
                         continue
                     rid0 = (rr.get("id") or "").strip()
-                    rn0 = (rr.get("rule_name") or rr.get("name") or "").strip()
-                    if (rid0 and rid0 in select_ids) or (rn0 and rn0 in select_names):
+                    #rn0 = (rr.get("rule_name") or rr.get("name") or "").strip()
+                    if rid0 and rid0 in select_ids:
                         rr["Kind"] = "Decision (Top-Level)"
                         rr["kind"] = "Decision (Top-Level)"
                         changed += 1
@@ -1578,8 +1578,8 @@ def run_mim_compose(
                         if not isinstance(rr, dict):
                             continue
                         rid = (rr.get("id") or "").strip()
-                        rn  = (rr.get("rule_name") or rr.get("name") or "").strip()
-                        if (rid and rid in hier_ids) or (rn and rn in hier_names):
+                        #rn  = (rr.get("rule_name") or rr.get("name") or "").strip()
+                        if rid and rid in hier_ids:
                             per_hier_rules.append(rr)
                     if not per_hier_rules:
                         eprint(f"[WARN] MIM: No matching rules found in rules_for_model.json for hierarchy {i+1}; proceeding with empty subset.")
@@ -1654,7 +1654,7 @@ def run_mim_compose(
                             selected_model_id=sel_model_id,
                             template_base=template_path.stem,
                             restrict_ids=hier_ids,
-                            restrict_names=hier_names,
+                            restrict_names=None,
                             hierarchy_meta=hier_meta,
                         )
                 except Exception as ex:
