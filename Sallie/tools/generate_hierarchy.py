@@ -5,7 +5,7 @@ invoking pcpt.sh run-custom-prompt via the helper wrapper. Supports compose mode
 
 Spec implemented:
 0) Prompt for location of model home (default to ~/.model) where models.json and business_rules.json live.
-1) Read models.json, prompt to select one, and write selected model details to a temp file under .tmp/generate_composite_decision.
+1) Read models.json, prompt to select one, and write selected model details to a temp file under .tmp/generate_hierarchy.
 2) Export all rules for the selected model (cross-reference using rule UUIDs) to a temp file in the same temp dir.
 3) Look for sources_*.json files under tools/spec and allow selection of one.
 4) List the pairs in the selected file and allow selection of one; gather source_path, output_path, filter path, and mode.
@@ -948,7 +948,7 @@ def merge_generated_rules_into_model_home(
 # ---------------------------
 
 REPO_ROOT = Path(__file__).resolve().parents[1]  # project root
-TMP_DIR = REPO_ROOT / ".tmp" / "generate_composite_decision"
+TMP_DIR = REPO_ROOT / ".tmp" / "generate_hierarchy"
 TMP_HIER_DIR = REPO_ROOT / ".tmp" / "hierarchy"
 SPEC_DIR = REPO_ROOT / "tools" / "spec"
 TEMPLATES_DIR = REPO_ROOT / "prompts"
@@ -989,6 +989,99 @@ def resolve_optional_path(candidate: Optional[str], base_candidates: List[Path])
             return str(p)
     # Fallback to original string
     return candidate
+
+
+# ---------------------------
+# Helper: Build temp source dir from model files
+# ---------------------------
+from typing import Any, Dict
+def build_temp_source_from_model(model_info: Dict[str, Any], spec_info: Dict[str, Any]) -> Path:
+    """
+    Build a deterministic temp source directory containing all source/doc files referenced by model's rules.
+    Returns the absolute Path to the temp directory.
+    """
+    temp_dir = TMP_DIR / "pcpt_source_from_model"
+    # Remove if exists, then recreate
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    rules_path = Path(model_info["rules_out_path"])
+    rules = load_json(rules_path)
+    if not isinstance(rules, list):
+        eprint(f"[WARN] build_temp_source_from_model: rules_out_path does not contain a list: {rules_path}")
+        rules = []
+
+    # Collect candidate file paths from rules
+    candidate_paths = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        for k, v in rule.items():
+            # Only include "code_file" and keys ending in "_file" except "doc_file"
+            if k == "code_file" and isinstance(v, str):
+                candidate_paths.append(v)
+            elif k.endswith("_file") and k != "doc_file" and isinstance(v, str):
+                candidate_paths.append(v)
+    # Deduplicate, preserve order
+    seen = set()
+    deduped = []
+    for p in candidate_paths:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    candidate_paths = deduped
+
+    # Bases for resolution
+    repo_root = REPO_ROOT
+    spec_dir = Path(spec_info["spec_dir"])
+    root_dir_str = spec_info.get("root_directory") or ""
+    root_dir = Path(root_dir_str).expanduser()
+    if not root_dir.is_absolute():
+        root_dir = (spec_dir / root_dir).resolve()
+    bases = [repo_root, spec_dir, root_dir]
+
+    def _resolve(p: str) -> Optional[Path]:
+        path_obj = Path(p).expanduser()
+        if path_obj.is_absolute() and path_obj.exists():
+            return path_obj
+        for base in bases:
+            candidate = (base / p).expanduser()
+            if candidate.exists():
+                return candidate
+        eprint(f"[WARN] build_temp_source_from_model: Could not resolve file: {p}")
+        return None
+
+    resolved_files = []
+    for p in candidate_paths:
+        resolved = _resolve(p)
+        if resolved is not None:
+            resolved_files.append((p, resolved))
+
+    copied = 0
+    for orig_p, file_path in resolved_files:
+        # Find first base that is a parent
+        dest_path = None
+        for base in bases:
+            try:
+                rel = file_path.relative_to(base)
+                dest_path = temp_dir / rel
+                break
+            except ValueError:
+                continue
+        if dest_path is None:
+            dest_path = temp_dir / file_path.name
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(file_path, dest_path)
+            copied += 1
+        except Exception as ex:
+            eprint(f"[WARN] build_temp_source_from_model: Failed to copy {file_path} to {dest_path}: {ex}")
+
+    print(f"[TRACE] build_temp_source_from_model: Discovered {len(candidate_paths)} file(s), copied {copied} to temp source: {temp_dir.resolve()}")
+    if copied == 0:
+        eprint(f"[WARN] build_temp_source_from_model: No files copied to temp source for model.")
+    return temp_dir.resolve()
 
 
 # ---------------------------
@@ -1087,6 +1180,7 @@ def step_select_model(model_home: Path, keep_ids: bool = False) -> Dict[str, Any
 
 def step_select_sources_spec() -> Dict[str, Any]:
     step_header(5, "Select a sources spec file", "tools/spec/sources_*.json")
+    # Always require a sources spec; skip the "MODEL FILES (no sources spec)" branch entirely.
     specs = sorted(SPEC_DIR.glob("sources_*.json"))
     if not specs:
         eprint(f"ERROR: No sources_*.json files found under {SPEC_DIR}")
@@ -1109,29 +1203,52 @@ def step_select_sources_spec() -> Dict[str, Any]:
         eprint("ERROR: No 'path-pairs' defined in the selected spec.")
         sys.exit(1)
 
-    step_header(6, "Select a path‑pair from the spec", {"Spec": chosen.name})
-    pair_menu = []
-    for pair in path_pairs:
-        src = pair.get("source-path", "")
-        outp = pair.get("output-path", "")
-        team = pair.get("team", "")
-        comp = pair.get("component", "")
-        pair_menu.append(f"{src} → {outp}  [{team} / {comp}]")
-    pair_idx = choose_from_list("Select a pair:", pair_menu, default_index=1)
-    chosen_pair = path_pairs[pair_idx - 1]
+    # Prompt for source mode BEFORE any path-pair selection
+    source_mode_menu = [
+        "Use source path from spec",
+        "Build from MODEL FILES for selected model"
+    ]
+    source_mode_sel = choose_from_list("Select a source for PCPT:", source_mode_menu, default_index=1)
+    source_mode = "spec" if source_mode_sel == 1 else "model_files"
 
-    step_header(7, "Path‑pair selected", {
-        "Source → Output": f"{chosen_pair.get('source-path','')} → {chosen_pair.get('output-path','')}",
-        "Team / Component": f"{chosen_pair.get('team','')} / {chosen_pair.get('component','')}"
-    })
+    if source_mode == "model_files":
+        # Skip path-pair selection entirely, but still need to return a minimal pair for labels
+        step_header(6, "MODEL FILES mode (skip path‑pair)", {"Spec": chosen.name})
+        chosen_pair = {"source-path": "(model_files)", "output-path": ""}
+        return {
+            "spec_path": str(chosen),
+            "spec_dir": str(chosen.parent),
+            "root_directory": root_dir,
+            "model_home": model_home_from_spec,
+            "pair": chosen_pair,
+            "source_mode": source_mode,
+        }
+    else:
+        # Proceed with path-pair selection as before
+        step_header(6, "Select a path‑pair from the spec", {"Spec": chosen.name})
+        pair_menu = []
+        for pair in path_pairs:
+            src = pair.get("source-path", "")
+            outp = pair.get("output-path", "")
+            team = pair.get("team", "")
+            comp = pair.get("component", "")
+            pair_menu.append(f"{src} → {outp}  [{team} / {comp}]")
+        pair_idx = choose_from_list("Select a pair:", pair_menu, default_index=1)
+        chosen_pair = path_pairs[pair_idx - 1]
 
-    return {
-        "spec_path": str(chosen),
-        "spec_dir": str(chosen.parent),
-        "root_directory": root_dir,
-        "model_home": model_home_from_spec,
-        "pair": chosen_pair,
-    }
+        step_header(7, "Path‑pair selected", {
+            "Source → Output": f"{chosen_pair.get('source-path','')} → {chosen_pair.get('output-path','')}",
+            "Team / Component": f"{chosen_pair.get('team','')} / {chosen_pair.get('component','')}"
+        })
+
+        return {
+            "spec_path": str(chosen),
+            "spec_dir": str(chosen.parent),
+            "root_directory": root_dir,
+            "model_home": model_home_from_spec,
+            "pair": chosen_pair,
+            "source_mode": source_mode,
+        }
 
 
 
@@ -1162,11 +1279,25 @@ def run_simple_compose(
     pair = spec_info["pair"]
     src_rel = pair.get("source-path", "")
     out_rel = pair.get("output-path", "")
+    src_label = src_rel if (spec_info.get("source_mode") or "spec") == "spec" else "(model files)"
     filt_rel = ""  # pair.get("filter")
     pcpt_mode = "multi"  # force multi mode; ignore spec-provided mode
 
-    source_path = (root_dir / src_rel).resolve()
-    output_path = (root_dir / out_rel).resolve()
+    # Determine source_mode
+    source_mode = (spec_info.get("source_mode") or "spec")
+    if source_mode == "model_files":
+        print(f"\n{ANSI_YELLOW}--- MODEL FILES source mode active ---{ANSI_RESET}")
+        temp_source = build_temp_source_from_model(model_info, spec_info)
+        source_path = temp_source.resolve()
+        output_path = (temp_source.parent / f"{temp_source.name}.out").resolve()
+        ensure_dir(output_path)
+        out_label = str(output_path)
+        print(f"→ Source: MODEL FILES → {source_path}")
+    else:
+        source_path = (root_dir / src_rel).resolve()
+        output_path = (root_dir / out_rel).resolve()
+        out_label = out_rel
+        print(f"→ Source: {src_label}")
 
     # Try to resolve filter in likely places: alongside spec file, under repo root, then under root-dir
     filter_path = resolve_optional_path(
@@ -1189,11 +1320,10 @@ def run_simple_compose(
     # Streaming: pcpt_run_custom_prompt uses subprocess.run with check=True (streams to console).
     step_header(9, "Compose decision with PCPT", {
         "Template": template_path.name,
-        "Source": src_rel,
-        "Output": out_rel
+        "Source": src_label,
+        "Output": out_label
     })
-    print(f"→ Source: {src_rel}")
-    print(f"→ Output: {out_rel}")
+    print(f"→ Output: {out_label}")
     if filt_rel:
         print(f"→ Filter: {filt_rel}")
     if pcpt_mode:
@@ -1277,11 +1407,25 @@ def run_mim_compose(
     pair = spec_info["pair"]
     src_rel = pair.get("source-path", "")
     out_rel = pair.get("output-path", "")
+    src_label = src_rel if (spec_info.get("source_mode") or "spec") == "spec" else "(model files)"
     filt_rel = ""  # pair.get("filter")
     pcpt_mode = "multi"
 
-    source_path = (root_dir / src_rel).resolve()
-    output_path = (root_dir / out_rel).resolve()
+    # Determine source_mode
+    source_mode = (spec_info.get("source_mode") or "spec")
+    if source_mode == "model_files":
+        print(f"\n{ANSI_YELLOW}--- MODEL FILES source mode active ---{ANSI_RESET}")
+        temp_source = build_temp_source_from_model(model_info, spec_info)
+        source_path = temp_source.resolve()
+        output_path = (temp_source.parent / f"{temp_source.name}.out").resolve()
+        ensure_dir(output_path)
+        out_label = str(output_path)
+        print(f"→ Source: MODEL FILES → {source_path}")
+    else:
+        source_path = (root_dir / src_rel).resolve()
+        output_path = (root_dir / out_rel).resolve()
+        out_label = out_rel
+        print(f"→ Source: {src_label}")
 
     filter_path = resolve_optional_path(
         filt_rel,
@@ -1453,8 +1597,8 @@ def run_mim_compose(
                     "Index": f"{i+1}/{total}"
                 })
                 print(f"[MIM] Processing hierarchy {i+1}/{total}: {hier.get('name') or '(unnamed)'}")
-                print(f"→ Source: {src_rel}")
-                print(f"→ Output: {out_rel}")
+                print(f"→ Source: {src_label}")
+                print(f"→ Output: {out_label}")
                 if filt_rel:
                     print(f"→ Filter: {filt_rel}")
                 if pcpt_mode:
@@ -1526,11 +1670,11 @@ def run_mim_compose(
     # Fallback: single combined pass if no hierarchy suggestions were found
     step_header(9, "Compose decision with PCPT", {
         "Template": template_path.name,
-        "Source": src_rel,
-        "Output": out_rel
+        "Source": src_label,
+        "Output": out_label
     })
-    print(f"→ Source: {src_rel}")
-    print(f"→ Output: {out_rel}")
+    print(f"→ Source: {src_label}")
+    print(f"→ Output: {out_label}")
     if filt_rel:
         print(f"→ Filter: {filt_rel}")
     if pcpt_mode:
