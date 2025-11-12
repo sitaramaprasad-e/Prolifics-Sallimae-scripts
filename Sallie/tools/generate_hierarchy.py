@@ -166,6 +166,89 @@ def _has_dmn_material_change(old_rule: dict, new_rule: dict) -> bool:
     """Return True if DMN-relevant fields differ (including allowedValues)."""
     return _dmn_snapshot(old_rule) != _dmn_snapshot(new_rule)
 
+def _scrub_links_to_hierarchy_scope(rules: List[dict], allowed_ids: Set[str], allowed_names_cf: Set[str]) -> List[dict]:
+    """
+    Remove links that point to producers outside the current hierarchy scope.
+    Rules:
+      - Keep only links whose from_step_id resolves to one of allowed_ids.
+      - If only a name is present (from_step) and it matches allowed_names_cf, resolve to id; else drop.
+      - Drop any link with empty/unresolvable from_step_id.
+      - Always persist id-only (remove from_step).
+      - Deduplicate by (from_step_id, from_output, to_input, kind).
+    """
+    if not isinstance(rules, list) or not rules:
+        return rules or []
+
+    # Build in-scope name -> id map
+    name_to_id: Dict[str, str] = {}
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        rid = (r.get("id") or "").strip()
+        rn  = (r.get("rule_name") or r.get("name") or "").strip()
+        if rid and rn:
+            name_to_id[rn.casefold()] = rid
+
+    def _looks_like_uuid(s: str) -> bool:
+        s = (s or "").strip()
+        return len(s) == 36 and s.count("-") == 4
+
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        links = r.get("links") or []
+        if not isinstance(links, list) or not links:
+            r["links"] = []
+            continue
+
+        cleaned: List[dict] = []
+        seen = set()
+        for l in links:
+            if not isinstance(l, dict):
+                continue
+            fs = (l.get("from_step") or "").strip()
+            fsid = (l.get("from_step_id") or "").strip()
+
+            # Resolve names -> ids
+            if not fsid and fs:
+                if _looks_like_uuid(fs):
+                    fsid = fs
+                else:
+                    fsid = name_to_id.get(fs.casefold(), "")
+
+            # If fsid looks like a name, try resolve via map
+            if fsid and not _looks_like_uuid(fsid):
+                fsid = name_to_id.get(fsid.casefold(), "")
+
+            # Must resolve to an in-scope id
+            if not fsid or fsid not in allowed_ids:
+                # If we only got a name and it is in-scope by name, try one last resolve
+                if fs and fs.casefold() in allowed_names_cf:
+                    fsid = name_to_id.get(fs.casefold(), "")
+                    if not fsid or fsid not in allowed_ids:
+                        continue
+                else:
+                    continue
+
+            key = (
+                fsid,
+                (l.get("from_output") or "").strip(),
+                (l.get("to_input") or "").strip(),
+                (l.get("kind") or "").strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+
+            l = dict(l)
+            l["from_step_id"] = fsid
+            l.pop("from_step", None)
+            cleaned.append(l)
+
+        r["links"] = cleaned
+
+    return rules
+
 
 # --- Helper: content fingerprint for rules ---
 def _content_fingerprint(rule: dict) -> str:
@@ -694,6 +777,18 @@ def merge_generated_rules_into_model_home(
             if "from_step" in _l:
                 _l.pop("from_step", None)
 
+        # Filter out links whose from_step_id is not resolvable within the in-scope map
+        filtered_incoming = []
+        for _l in incoming_links:
+            if not isinstance(_l, dict):
+                continue
+            _fsid = (_l.get("from_step_id") or "").strip()
+            if not _fsid or _fsid not in (existing_by_id_map or {}):
+                # Skip links that cannot be bound to an in-scope producer
+                continue
+            filtered_incoming.append(_l)
+        incoming_links = filtered_incoming
+
         # Deduplicate and merge
         def _k(link: dict) -> tuple:
             return (
@@ -840,6 +935,8 @@ def merge_generated_rules_into_model_home(
                 existing_by_id[rid0] = {"idx": idx, "rule": r}
         # Filtered id→entry map for only rules in selected model
         existing_by_id_model = {rid: entry for rid, entry in (existing_by_id or {}).items() if rid in allowed_ids_in_model}
+        # Broader map for link resolution during this merge: include all rules, not only those already in the model
+        existing_by_id_for_links = dict(existing_by_id)
 
 
         # New: Kind detector (does not mutate), for overlay
@@ -890,6 +987,8 @@ def merge_generated_rules_into_model_home(
                 if incoming_name:
                     existing_by_name[incoming_name] = {"idx": len(business_rules)-1, "rule": incoming}
                 existing_by_id[new_id] = {"idx": len(business_rules)-1, "rule": incoming}
+                # Ensure newly created rules are available to link resolution in this merge
+                existing_by_id_for_links[new_id] = {"idx": len(business_rules)-1, "rule": incoming}
                 print(f"[INFO] MIM/Create: Created new decision/rule '{incoming_name or '(unnamed)'}' (id={new_id}).")
                 continue
 
@@ -903,7 +1002,7 @@ def merge_generated_rules_into_model_home(
 
             # Do not mutate Kind on existing rules (overlay approach). Only merge links.
             inc_kind = _detect_incoming_kind(incoming)
-            added_links = _merge_links_in_place_generic(ex["rule"], incoming, existing_by_id_model)
+            added_links = _merge_links_in_place_generic(ex["rule"], incoming, existing_by_id_for_links)
             if ex["rule"].get("archived", False) and added_links:
                 ex["rule"]["archived"] = False
                 print(f"[INFO] MIM/Update: Unarchived '{incoming_name or '(unnamed)'}' due to link changes.")
@@ -1994,6 +2093,13 @@ def run_mim_compose(
                     if not per_hier_rules:
                         eprint(f"[WARN] MIM: No matching rules found in rules_for_model.json for hierarchy {i+1}; proceeding with empty subset.")
                     rules_file_for_iter = str(TMP_DIR / f"rules_for_model_h{i+1}.json")
+
+                    # Scrub links so only in-hierarchy producer links remain
+                    _allowed_ids = { (r.get("id") or "").strip() for r in per_hier_rules if isinstance(r, dict) and r.get("id") }
+                    _allowed_names_cf = { (r.get("rule_name") or r.get("name") or "").strip().casefold()
+                                        for r in per_hier_rules if isinstance(r, dict) and (r.get("rule_name") or r.get("name")) }
+                    per_hier_rules = _scrub_links_to_hierarchy_scope(per_hier_rules, _allowed_ids, _allowed_names_cf)
+
                     write_json(Path(rules_file_for_iter), per_hier_rules)
                     print(f"[TRACE] Hierarchy {i+1}: prepared {len(per_hier_rules)} rule(s) for input.")
                 except Exception as ex:
