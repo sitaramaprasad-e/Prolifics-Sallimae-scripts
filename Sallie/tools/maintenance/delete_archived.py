@@ -39,14 +39,52 @@ def main():
             return
 
     before_count = len(rules)
+    # Remove archived rules (existing behavior)
     filtered = [r for r in rules if not r.get("archived", False)]
     removed_count = before_count - len(filtered)
 
-    # Write updated rules
+    # --- Dangling link cleanup ---
+    # Build a set of valid rule IDs from the remaining rules
+    valid_ids = set()
+    for r in filtered:
+        rid = r.get("id")
+        if isinstance(rid, str) and rid.strip():
+            valid_ids.add(rid.strip())
+
+    def _clean_links(rule_obj):
+        links = rule_obj.get("links")
+        if not isinstance(links, list):
+            return 0
+        keep = []
+        removed = 0
+        for l in links:
+            if not isinstance(l, dict):
+                # Non-dict entries are invalid; drop them
+                removed += 1
+                continue
+            fsid = (l.get("from_step_id") or "").strip()
+            # Drop links where from_step_id is missing or not a valid id remaining in the file
+            if not fsid or fsid not in valid_ids:
+                removed += 1
+                continue
+            keep.append(l)
+        rule_obj["links"] = keep
+        return removed
+
+    total_links_removed = 0
+    for r in filtered:
+        try:
+            total_links_removed += _clean_links(r)
+        except Exception:
+            # Be robust; if links are malformed, skip cleaning that rule
+            pass
+
+    # Write updated rules including cleaned links
     with open(business_rules_path, "w", encoding="utf-8") as f:
         json.dump(filtered, f, indent=2, ensure_ascii=False)
 
     print(f"[INFO] Removed {removed_count} archived rule(s).")
+    print(f"[INFO] Removed {total_links_removed} dangling link(s) where from_step_id no longer matches an existing rule id.")
     print(f"[INFO] {len(filtered)} rule(s) remain in {business_rules_path}")
 
 if __name__ == "__main__":

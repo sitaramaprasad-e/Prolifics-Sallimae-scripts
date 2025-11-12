@@ -530,6 +530,102 @@ def merge_generated_rules_into_model_home(
             eprint(f"[WARN] Failed reading existing business_rules.json: {ex}; initializing a new list.")
             business_rules = []
 
+    # --- Limit scope: allowed rule IDs in the selected model ---
+    models_path = (model_home / "models.json").resolve()
+    models = []
+    if models_path.exists():
+        try:
+            models = load_json(models_path)
+        except Exception:
+            models = []
+    allowed_ids_in_model = set()
+    model_obj = None
+    for m in (models if isinstance(models, list) else []):
+        if isinstance(m, dict) and m.get("id") == selected_model_id:
+            model_obj = m
+            break
+    if model_obj:
+        ids = model_obj.get("businessLogicIds")
+        if isinstance(ids, list):
+            allowed_ids_in_model = set(str(i) for i in ids if isinstance(i, str))
+        else:
+            allowed_ids_in_model = set()
+    else:
+        allowed_ids_in_model = set()
+    if not allowed_ids_in_model:
+        print("[TRACE] Name→ID resolution limited to model scope: no ids found for selected model.")
+
+    # --- Post-process incoming links: map from_step (name or uuid) → from_step_id using existing+incoming name→id ---
+    def _pp_looks_like_uuid(s: str) -> bool:
+        s = (s or "").strip()
+        return len(s) == 36 and s.count("-") == 4
+
+    # Build name→id map from existing business_rules, but only for rules in allowed_ids_in_model
+    _pp_name_to_id = {}
+    try:
+        for _r in (business_rules or []):
+            if isinstance(_r, dict):
+                _rid = (_r.get("id") or "").strip()
+                _rn = (_r.get("rule_name") or _r.get("name") or "").strip()
+                if _rid and _rn and _rid in allowed_ids_in_model:
+                    _pp_name_to_id[_rn.casefold()] = _rid
+    except Exception:
+        pass
+    # Also include names from the incoming rules themselves so that links can resolve
+    # to newly-created decisions in this same merge batch (before they're in models.json).
+    try:
+        for _r in (new_rules or []):
+            if not isinstance(_r, dict):
+                continue
+            _rid = (_r.get("id") or "").strip()
+            _rn = (_r.get("rule_name") or _r.get("name") or "").strip()
+            if _rid and _rn:
+                # Do not overwrite an explicit existing mapping; only fill gaps
+                _pp_name_to_id.setdefault(_rn.casefold(), _rid)
+    except Exception:
+        pass
+
+    # Normalize links in all incoming rules: set from_step_id and drop from_step
+    try:
+        for _r in (new_rules or []):
+            if not isinstance(_r, dict):
+                continue
+            _links = _r.get("links") or []
+            if not isinstance(_links, list):
+                continue
+            # NOTE: Upstream PCPT may return links where `from_step_id` contains a NAME instead of a UUID.
+            # We defensively correct this by resolving names to ids using the aggregated name→id map.
+            for _l in _links:
+                if not isinstance(_l, dict):
+                    continue
+                _fs = (_l.get("from_step") or "").strip()
+                _fsid = (_l.get("from_step_id") or "").strip()
+
+                # If PCPT emitted a name in from_step, map to id.
+                if _fs and not _fsid:
+                    if _pp_looks_like_uuid(_fs):
+                        _l["from_step_id"] = _fs
+                    else:
+                        _mid = _pp_name_to_id.get(_fs.casefold(), "")
+                        if _mid:
+                            _l["from_step_id"] = _mid
+
+                # NEW: Guard for bad inputs where from_step_id itself is actually a NAME.
+                # Sometimes upstream tools write the decision NAME into from_step_id.
+                # We correct that here by checking if the value matches any known rule name
+                # and swapping it for the corresponding UUID.
+                _fsid = (_l.get("from_step_id") or "").strip()
+                if _fsid and not _pp_looks_like_uuid(_fsid):
+                    _mid = _pp_name_to_id.get(_fsid.casefold(), "")
+                    if _mid:
+                        _l["from_step_id"] = _mid
+
+                # Always drop from_step to enforce id‑only persistence
+                if "from_step" in _l:
+                    _l.pop("from_step", None)
+    except Exception:
+        pass
+
     # Helpers for MIM mode and kind classification
     def _norm_kind(val: Optional[str]) -> str:
         return (val or "").strip().lower()
@@ -540,34 +636,85 @@ def merge_generated_rules_into_model_home(
     def _is_top_level(rule: dict) -> bool:
         return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (top-level)".lower()
 
-    def _link_key(link: dict) -> tuple:
-        # Use tuple of selected fields to detect duplicates
-        return (
-            (link.get("from_step") or "").strip(),
-            (link.get("from_output") or "").strip(),
-            (link.get("to_input") or "").strip(),
-            (link.get("kind") or "").strip(),
-        )
 
-    def _merge_links_in_place(existing_rule: dict, incoming_rule: dict) -> int:
-        """Merge unique links from incoming_rule into existing_rule. Returns number of links added."""
+    def _merge_links_in_place_generic(existing_rule: dict, incoming_rule: dict, existing_by_id_map: dict) -> int:
+        """
+        Merge unique links from incoming_rule into existing_rule. Returns number of links added.
+
+        This shared helper normalizes incoming links so that:
+        - from_step or from_step_id that contains a NAME is mapped to the correct UUID using existing_by_id_map.
+        - 'from_step' is dropped; only 'from_step_id' persists.
+        - Duplicate links (by from_step_id, from_output, to_input, kind) are ignored.
+        """
         existing_links = existing_rule.get("links") or []
         if not isinstance(existing_links, list):
             existing_links = []
         incoming_links = incoming_rule.get("links") or []
         if not isinstance(incoming_links, list):
             incoming_links = []
-        seen = { _link_key(l) for l in existing_links if isinstance(l, dict) }
+
+        def _looks_like_uuid(s: str) -> bool:
+            s = (s or "").strip()
+            return len(s) == 36 and s.count('-') == 4
+
+        # Build a name->id map from existing rules (best‑effort)
+        name_to_id = {}
+        try:
+            for _rid, _entry in (existing_by_id_map or {}).items():
+                rn = (_entry.get("rule", {}).get("rule_name") or _entry.get("rule", {}).get("name") or "").strip()
+                if _rid and rn:
+                    name_to_id[rn.casefold()] = _rid
+        except Exception:
+            pass
+
+        # Normalize incoming links in-place
+        for _l in incoming_links:
+            if not isinstance(_l, dict):
+                continue
+            fs = (_l.get("from_step") or "").strip()
+            fsid = (_l.get("from_step_id") or "").strip()
+
+            # Map name/id in from_step → from_step_id
+            if not fsid and fs:
+                if _looks_like_uuid(fs):
+                    _l["from_step_id"] = fs
+                else:
+                    _id = name_to_id.get(fs.casefold(), "")
+                    if _id:
+                        _l["from_step_id"] = _id
+
+            # Guard: from_step_id might actually be a NAME; resolve it
+            fsid = (_l.get("from_step_id") or "").strip()
+            if fsid and not _looks_like_uuid(fsid):
+                _id = name_to_id.get(fsid.casefold(), "")
+                if _id:
+                    _l["from_step_id"] = _id
+
+            # Enforce id‑only persistence
+            if "from_step" in _l:
+                _l.pop("from_step", None)
+
+        # Deduplicate and merge
+        def _k(link: dict) -> tuple:
+            return (
+                (link.get("from_step_id") or "").strip(),
+                (link.get("from_output") or "").strip(),
+                (link.get("to_input") or "").strip(),
+                (link.get("kind") or "").strip(),
+            )
+
+        seen = {_k(l) for l in existing_links if isinstance(l, dict)}
         added = 0
         for l in incoming_links:
             if not isinstance(l, dict):
                 continue
-            k = _link_key(l)
-            if k in seen:
+            key = _k(l)
+            if key in seen:
                 continue
             existing_links.append(l)
-            seen.add(k)
+            seen.add(key)
             added += 1
+
         existing_rule["links"] = existing_links
         return added
 
@@ -691,36 +838,9 @@ def merge_generated_rules_into_model_home(
                 existing_by_name[rn0] = {"idx": idx, "rule": r}
             if rid0:
                 existing_by_id[rid0] = {"idx": idx, "rule": r}
+        # Filtered id→entry map for only rules in selected model
+        existing_by_id_model = {rid: entry for rid, entry in (existing_by_id or {}).items() if rid in allowed_ids_in_model}
 
-        def _merge_links_in_place(existing_rule: dict, incoming_rule: dict) -> int:
-            existing_links = existing_rule.get("links") or []
-            if not isinstance(existing_links, list):
-                existing_links = []
-            incoming_links = incoming_rule.get("links") or []
-            if not isinstance(incoming_links, list):
-                incoming_links = []
-
-            def _k(link: dict) -> tuple:
-                return (
-                    (link.get("from_step") or "").strip(),
-                    (link.get("from_output") or "").strip(),
-                    (link.get("to_input") or "").strip(),
-                    (link.get("kind") or "").strip(),
-                )
-
-            seen = { _k(l) for l in existing_links if isinstance(l, dict) }
-            added = 0
-            for l in incoming_links:
-                if not isinstance(l, dict):
-                    continue
-                key = _k(l)
-                if key in seen:
-                    continue
-                existing_links.append(l)
-                seen.add(key)
-                added += 1
-            existing_rule["links"] = existing_links
-            return added
 
         # New: Kind detector (does not mutate), for overlay
         def _detect_incoming_kind(incoming_rule: dict) -> str:
@@ -743,7 +863,7 @@ def merge_generated_rules_into_model_home(
 
             # Determine newness strictly from the enrichment flag. Items with an existing 'id' (even if rule_id is empty) are EXISTING.
             is_new = bool(incoming.get("__source_id_blank", False))
-            print(f"[TRACE] MIM classify: {(incoming.get('rule_name') or incoming.get('name') or '(unnamed)')} → {'NEW' if is_new else 'EXISTING'} (id='{incoming_id}', rule_id='{incoming.get('rule_id','')}')")
+            print(f"[TRACE] MIM classify: {(incoming.get('rule_name') or incoming.get('name') or '(unnamed)')} → {'NEW' if is_new else 'EXISTING'} (id='{incoming_id}')")
 
             if is_new:
                 # --- CREATE path ---
@@ -783,7 +903,7 @@ def merge_generated_rules_into_model_home(
 
             # Do not mutate Kind on existing rules (overlay approach). Only merge links.
             inc_kind = _detect_incoming_kind(incoming)
-            added_links = _merge_links_in_place(ex["rule"], incoming)
+            added_links = _merge_links_in_place_generic(ex["rule"], incoming, existing_by_id_model)
             if ex["rule"].get("archived", False) and added_links:
                 ex["rule"]["archived"] = False
                 print(f"[INFO] MIM/Update: Unarchived '{incoming_name or '(unnamed)'}' due to link changes.")
@@ -854,6 +974,7 @@ def merge_generated_rules_into_model_home(
             return
 
         # Merge hierarchy records into model_obj['hierarchies']
+        model_obj = models[sel_idx]
         def _merge_hierarchies_into_model(model_obj: dict, hierarchy_meta: Optional[Dict[str, Any]]) -> bool:
             """
             Merge hierarchy records into model_obj['hierarchies'] without duplicates.
@@ -1808,6 +1929,29 @@ def run_mim_compose(
             doc = {}
 
         hierarchies = doc.get("hierarchies") or []
+
+        # One-time clear of existing hierarchies for this model at the start of a MIM run
+        if isinstance(hierarchies, list) and hierarchies and sel_model_id:
+            try:
+                models_path = (model_home_prompted / "models.json").resolve()
+                models = load_json(models_path) if models_path.exists() else []
+                if isinstance(models, list):
+                    sel_idx = None
+                    for idx, m in enumerate(models):
+                        if isinstance(m, dict) and m.get("id") == sel_model_id:
+                            sel_idx = idx
+                            break
+                    if sel_idx is not None:
+                        _safe_backup_json(models_path)
+                        model_obj = models[sel_idx]
+                        model_obj["hierarchies"] = []
+                        models[sel_idx] = model_obj
+                        write_json(models_path, models)
+                        print(f"[INFO] Cleared existing hierarchies for model {sel_model_id} at start of MIM run")
+            except Exception as ex:
+                eprint(f"[WARN] Could not clear existing hierarchies for model {sel_model_id}: {ex}")
+
+        # Call validation before merging
         if isinstance(hierarchies, list) and hierarchies:
             total = len(hierarchies)
             for i, hier in enumerate(hierarchies):

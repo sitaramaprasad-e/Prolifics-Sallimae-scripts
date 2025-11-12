@@ -983,6 +983,13 @@ existing_by_name = {
     if "rule_name" in r and "timestamp" in r
 }
 
+# Session map of rule name -> id (prefill from existing rules)
+NAME_TO_ID: Dict[str, str] = {
+    n: r.get("id")
+    for n, r in existing_by_name.items()
+    if isinstance(r, dict) and r.get("id")
+}
+
 # Build set of seen (rule_name, timestamp) pairs from existing rules (normalized)
 seen = set()
 for rule in existing_rules:
@@ -1035,6 +1042,23 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
     global updated_count, new_count, considered_count
     t = _normalize_rule_doc_text(doc_text or "")
     rule_sections = re.split(r"(?m)^\s{0,3}#{1,6}\s+", t.strip())[1:]
+    # Pre-seed NAME_TO_ID for all rule headings in this document (or the allowed subset)
+    try:
+        _all_names_in_doc = _extract_rule_names(t)
+    except Exception:
+        _all_names_in_doc = []
+    if allowed_names is not None:
+        _seed_names = [n for n in _all_names_in_doc if n in allowed_names]
+    else:
+        _seed_names = _all_names_in_doc
+    for _nm in _seed_names:
+        if _nm in NAME_TO_ID and NAME_TO_ID.get(_nm):
+            continue
+        ex = existing_by_name.get(_nm)
+        if isinstance(ex, dict) and ex.get("id"):
+            NAME_TO_ID[_nm] = ex.get("id")
+        else:
+            NAME_TO_ID[_nm] = str(uuid.uuid4())
     for section in rule_sections:
         considered_count += 1
         try:
@@ -1142,10 +1166,13 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                     continue
                 if not FORCE_LOAD and old_ts and old_ts >= section_timestamp and is_material_change:
                     LOG.info("[info] material change detected for '%s' — updating despite same/older timestamp (allowedValues or DMN changed)", rule_name)
-                rule_id = existing.get("id") or str(uuid.uuid4())
+                rule_id = existing.get("id") or NAME_TO_ID.get(rule_name) or str(uuid.uuid4())
+                NAME_TO_ID[rule_name] = rule_id
                 updated_count += 1
             else:
-                rule_id = str(uuid.uuid4())
+                # Use pre-seeded ID if present so links that referenced this rule by name resolve to the same ID
+                rule_id = NAME_TO_ID.get(rule_name) or str(uuid.uuid4())
+                NAME_TO_ID[rule_name] = rule_id
                 new_count += 1
             seen.add(k)
             # code_file
@@ -1200,15 +1227,33 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                             _from_output = mm.group(2).strip()
                             rhs = mm.group(3).strip()
                             _kind = mm.group(4).strip()
-                            links.append({
-                                "from_step": _from_step,
-                                "from_output": _from_output,
-                                "to_input": rhs,               # full RHS preserved (may contain dots)
-                                "kind": _kind
-                            })
+                            # Resolve from rule name to id if possible
+                            _from_id = NAME_TO_ID.get(_from_step)
+                            if not _from_id:
+                                ex = existing_by_name.get(_from_step)
+                                if isinstance(ex, dict):
+                                    _from_id = ex.get("id")
+                            # Only add the link if _from_id is present, else skip
+                            if _from_id:
+                                links.append({
+                                    "from_step_id": _from_id,
+                                    "from_output": _from_output,
+                                    "to_input": rhs,               # full RHS preserved (may contain dots)
+                                    "kind": _kind
+                                })
+                            # If _from_id is missing, skip this link entirely (do not use name fallback)
+                            # Add TRACE log when a link is skipped due to a missing ID
+                            # (inserted after the if _from_id: block)
+                            # (see else below)
+                            # (but only if _from_id is missing)
+                            #
                         else:
                             # keep raw line for diagnostics if it doesn't match
                             links.append({"raw": ln})
+                        # After if _from_id: ... else: ... for the matched link line
+                        if mm:
+                            if not _from_id:
+                                LOG.trace("[trace] skipped link: could not resolve id for from_step='%s' (owner rule='%s')", _from_step, rule_name)
             rule_rec = {
                 "rule_name": rule_name,
                 "rule_purpose": rule_purpose,
@@ -1249,7 +1294,7 @@ def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: O
                 decision="accepted",
                 reason=("updated" if existing else "new"),
                 tests={"has_code_block": bool(code_block)},
-                derived={"rule_id": rule_id, "rule_name": rule_name, "kind": kind, "links": len(links)}
+                derived={"id": rule_id, "rule_name": rule_name, "kind": kind, "links": len(links)}
             )
             LOG.info("[info] ✓ %s rule: %s", ("updated" if existing else "new"), rule_name)
             new_rules.append(rule_rec)
