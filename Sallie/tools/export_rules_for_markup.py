@@ -77,7 +77,6 @@ def _count(reason: str) -> None:
 DEFAULT_FORMAT = "json"
 DEFAULT_OUTPUT = "./.tmp/rules-for-markup/exported-rules.json"
 DEFAULT_RULES_FILE = "~/.model/business_rules.json"
-DEFAULT_RUNS_FILE = "~/.model/runs.json"
 
 def normalize_posix(p: str) -> str:
     """Normalize to POSIX-style path without leading './'."""
@@ -115,62 +114,6 @@ def load_rules(rules_file: Path) -> List[Dict[str, Any]]:
         print(f"ERROR: failed to parse JSON ({rules_file}): {e}", file=sys.stderr)
         sys.exit(1)
 
-def load_runs(runs_file: Path) -> List[Dict[str, Any]]:
-    try:
-        with runs_file.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            raise ValueError("runs.json must contain a top-level JSON array.")
-        return data
-    except FileNotFoundError:
-        print(f"[warn] runs file not found: {runs_file}")
-        return []
-    except json.JSONDecodeError as e:
-        print(f"[warn] failed to parse JSON ({runs_file}): {e}")
-        return []
-
-def normalize_fs_path(p: str) -> str:
-    return os.path.realpath(os.path.abspath(os.path.expanduser(p)))
-
-# Helper to format a run id for trace lines
-def format_run_id(run: Dict[str, Any]) -> str:
-    """Human-friendly identifier for a run (used in trace output)."""
-    b = run.get("build")
-    ts = run.get("timestamp")
-    if b is not None and ts:
-        return f"build={b} ts={ts}"
-    if b is not None:
-        return f"build={b}"
-    if ts:
-        return f"ts={ts}"
-    return "(no-id)"
-
-def collect_rule_ids_for_root(runs: List[Dict[str, Any]], root_path: str) -> set[str]:
-    target = normalize_fs_path(root_path).lower()
-    _tprint(f"[trace] root target: {target}")
-    allowed: set[str] = set()
-    for run in runs:
-        rd = run.get("root_dir") or run.get("root_path")
-        run_id_str = format_run_id(run)
-        if not rd:
-            _tprint(f"[trace] run skipped (no root_dir) (run={run_id_str})")
-            _count("StageA:run missing root_dir")
-            continue
-        normalized = normalize_fs_path(rd).lower()
-        if normalized == target:
-            rids = (run.get("rule_ids") or [])
-            _tprint(f"[trace] run matched root_dir: {rd} (run={run_id_str}, rule_ids={len(rids)})")
-            # list all rule ids for this run (so you can manually compare)
-            for rid in rids:
-                _tprint(f"[trace]   run-linked rule_id: {rid}")
-                if rid is not None:
-                    allowed.add(str(rid).strip().lower())
-        else:
-            _tprint(f"[trace] run skipped (root_dir mismatch): {rd} (run={run_id_str})")
-    if TRACE_ENABLED:
-        sample = ", ".join(list(allowed)[:5])
-        _tprint(f"[trace] allowed_ids sample (first 5): {sample}")
-    return allowed
 
 def dedupe_in_order(items: Iterable[str]) -> List[str]:
     seen = set()
@@ -197,30 +140,44 @@ def group_rules_by_file(
     kept_total = 0
     for r in rules:
         considered_total += 1
-        if not include_archived and r.get("archived") is True:
-            _tprint(f"[trace] reject (Stage B) rule_id={extract_rule_id(r)} — archived and include_archived=False")
-            _count("StageB:archived excluded")
-            continue
+        rule_name = r.get("rule_name") or "(unnamed rule)"
         code_file = r.get("code_file")
-        rule_name = r.get("rule_name")
         code_function = r.get("code_function")
+
+        # Archived filter
+        if not include_archived and r.get("archived") is True:
+            _tprint(
+                f"[trace] SKIP: rule='{rule_name}' file='{code_file or '(no code_file)'}' "
+                f"archived (include_archived=False)"
+            )
+            _count("archived_excluded")
+            continue
+
+        # Basic required fields
         if not code_file or not rule_name:
             missing = "code_file" if not code_file else "rule_name"
-            _tprint(f"[trace] reject (Stage B) rule_id={extract_rule_id(r)} — missing {missing}")
-            _count(f"StageB:missing {missing}")
+            _tprint(
+                f"[trace] SKIP: rule='{rule_name}' file='{code_file or '(no code_file)'}' "
+                f"missing {missing}"
+            )
+            _count("missing_field")
             continue
+
         cf_norm = normalize_posix(code_file)
         if path_is_under(source_prefix, cf_norm, case_insensitive):
             kept_total += 1
-            _tprint(f"[trace] keep (Stage B: path under source) rule_id={extract_rule_id(r)} file={cf_norm}")
+            _tprint(
+                f"[trace] MATCH: rule='{rule_name}' file='{cf_norm}' "
+                f"under source_prefix '{source_prefix}'"
+            )
             if cf_norm not in grouped:
                 grouped[cf_norm] = []
             grouped[cf_norm].append({
                 "rule_name": rule_name,
                 "code_function": code_function,
                 "archived": r.get("archived"),
-                "rule_id": extract_rule_id(r),
             })
+            _count("matched")
         else:
             # Record up to MAX_MISMATCH_SAMPLES clear examples for troubleshooting
             if len(MISMATCH_SAMPLES) < MAX_MISMATCH_SAMPLES:
@@ -230,10 +187,23 @@ def group_rules_by_file(
                     "code_file": str(cf_norm),
                     "original_code_file": str(code_file),
                 })
-            _tprint(f"[trace] reject (Stage B) rule_id={extract_rule_id(r)} file={cf_norm} — not under {source_prefix}")
-            _count("StageB:not under source_prefix")
+            _tprint(
+                f"[trace] SKIP: rule='{rule_name}' file='{cf_norm}' "
+                f"not under source_prefix '{source_prefix}'"
+            )
+            _count("not_under_source_prefix")
     if TRACE_ENABLED:
-        print(f"[trace] Stage B considered={considered_total} kept={kept_total}")
+        matched = REASONS_COUNT.get("matched", 0)
+        skipped_archived = REASONS_COUNT.get("archived_excluded", 0)
+        skipped_missing = REASONS_COUNT.get("missing_field", 0)
+        skipped_path = REASONS_COUNT.get("not_under_source_prefix", 0)
+        print(
+            "[trace] selection summary: "
+            f"considered={considered_total}, matched={matched}, "
+            f"skipped_archived={skipped_archived}, "
+            f"skipped_missing={skipped_missing}, "
+            f"skipped_path_mismatch={skipped_path}"
+        )
 
     # de-duplicate rule records per file by rule_name, preserving order,
     # but prefer non-archived over archived when both exist.
@@ -266,13 +236,11 @@ def group_rules_by_file(
                 # Otherwise keep the first (non-archived already wins or both archived)
         grouped[cf] = deduped
 
-    # Strip internal-only fields from output (do not expose archived/code_file in the result)
+    # Strip internal-only fields from output (do not expose archived in the result)
     for cf in grouped:
         for item in grouped[cf]:
             if "archived" in item:
                 del item["archived"]
-            if not TRACE_ENABLED and "rule_id" in item:
-                del item["rule_id"]
 
     return grouped
 
@@ -356,11 +324,6 @@ def main():
         help=f"Path to business_rules.json (default: {DEFAULT_RULES_FILE}; '~' will be expanded)"
     )
     parser.add_argument(
-        "--runs-file",
-        default=DEFAULT_RUNS_FILE,
-        help=f"Path to runs.json (default: {DEFAULT_RUNS_FILE}; '~' will be expanded)"
-    )
-    parser.add_argument(
         "--format",
         choices=["plain", "md", "json"],
         default=DEFAULT_FORMAT,
@@ -370,11 +333,6 @@ def main():
         "--output",
         default=DEFAULT_OUTPUT,
         help=f"Write output to this file (default: {DEFAULT_OUTPUT})."
-    )
-    parser.add_argument(
-        "--case-insensitive",
-        action="store_true",
-        help="Match paths case-insensitively."
     )
     parser.add_argument(
         "--include-archived",
@@ -387,20 +345,10 @@ def main():
         help="Include all rules regardless of business relevance (overrides rule_categories.json filtering)."
     )
     parser.add_argument(
-        "--root-path",
-        default=None,
-        help="Absolute project root path to filter rules by runs.json root_dir; if omitted, no run-based filtering is applied."
-    )
-    parser.add_argument(
-        "--no-strict-root",
-        action="store_true",
-        help="Disable strict root behavior. By default, when --root-path is provided and no matching runs/rule_ids are found, the result will be empty. Use this flag to fall back to exporting all rules."
-    )
-    parser.add_argument(
         "--trace",
         action="store_true",
         default=True,
-        help="Enable verbose per-item tracing of why each rule/run was accepted or rejected (ON by default)."
+        help="Enable verbose per-item tracing of why each rule was accepted or rejected (ON by default)."
     )
     parser.add_argument(
         "--trace-limit",
@@ -422,12 +370,22 @@ def main():
 
     source_prefix = normalize_posix(args.source_path)
     rules_file = Path(args.rules_file).expanduser()
-    print(f"[info] Using rules file: {rules_file}")
-    print(f"[info] Source prefix: {source_prefix} (case_insensitive={args.case_insensitive})")
-    print(f"[info] Trace: {'ON' if TRACE_ENABLED else 'OFF'} (limit={TRACE_REMAINING})")
+
+    print("[info] ================= Export rules for markup: input summary =================")
+    print(f"[info] Source path          : {source_prefix}")
+    print(f"[info] Rules file           : {rules_file}")
+    print(f"[info] Output file          : {args.output or '(stdout)'}")
+    print(f"[info] Format               : {args.format}")
+    print(f"[info] Include archived     : {args.include_archived}")
+    print(f"[info] Include all rules    : {args.include_all_rules}  (skip business relevance filter if True)")
+    print(f"[info] Trace                : {'ON' if TRACE_ENABLED else 'OFF'} (limit={TRACE_REMAINING})")
+    print("[info] ========================================================================")
 
     rules = load_rules(rules_file)
-    print(f"[info] Loaded {len(rules)} rules")
+    print(
+        f"[info] Loaded {len(rules)} rules from {rules_file} "
+        f"(before business relevance, archived, and source-path filters)"
+    )
 
     # Prepare rule category lookups (for printing names) even if we don't filter
     rc_path = (Path(args.rules_file).expanduser().parent) / "rule_categories.json"
@@ -603,102 +561,10 @@ def main():
             print(f"[info] No rule_categories.json next to business_rules.json ({rc_path}); proceeding without business relevance filter")
     # --------------------------------------------------------
 
-    # Write out rule ids before any run-based filtering (for manual comparison)
-    if TRACE_ENABLED:
-        _tprint("[trace] rules file inventory (all rule_ids before run filter):")
-        for r in rules:
-            rid = extract_rule_id(r)
-            cats_formatted = _format_rule_categories(r)
-            cats_str = f" cats=[{', '.join(cats_formatted)}]" if cats_formatted else " cats=[]"
-            _tprint(f"[trace]   rule_id={rid} name={r.get('rule_name')} file={r.get('code_file')}{cats_str}")
-
-    # Keep a copy for tracing
-    original_rules = rules[:]
-
-    # Optional run-based filtering by root path
-    if args.root_path:
-        runs_file = Path(args.runs_file).expanduser()
-        runs = load_runs(runs_file)
-        # Diagnostics: how many runs and what roots exist
-        print(f"[info] Scanned {len(runs)} runs from {runs_file}")
-        distinct_roots = []
-        seen_roots = set()
-        for r in runs:
-            rd = r.get("root_dir") or r.get("root_path")
-            if not rd:
-                continue
-            norm_rd = normalize_fs_path(str(rd)).lower()
-            if norm_rd not in seen_roots:
-                seen_roots.add(norm_rd)
-                distinct_roots.append(rd)
-        if distinct_roots:
-            sample_roots = ", ".join(distinct_roots[:3])
-            more = "" if len(distinct_roots) <= 3 else f" (+{len(distinct_roots)-3} more)"
-            print(f"[info] runs.json distinct roots (sample): {sample_roots}{more}")
-        allowed_ids = collect_rule_ids_for_root(runs, args.root_path)
-        # Show normalized root target
-        print(f"[info] Root-path filter target: {normalize_fs_path(args.root_path)}")
-        if allowed_ids:
-            before = len(rules)
-            filtered_rules = []
-            for r in rules:
-                rid = extract_rule_id(r)
-                if rid and rid in allowed_ids:
-                    _tprint(f"[trace] keep (Stage A: root match) rule_id={rid}")
-                    filtered_rules.append(r)
-                else:
-                    why = "no rule_id" if not rid else "rule_id not in runs for root"
-                    _tprint(f"[trace] reject (Stage A) rule_id={rid} — {why}")
-                    _count(f"StageA:{why}")
-            rules = filtered_rules
-            print(f"[info] Filtered by root-path: {args.root_path}")
-            print(f"[info] runs.json: {runs_file}")
-            print(f"[info] Allowed rule_ids: {len(allowed_ids)}; rules kept: {len(rules)} (from {before})")
-            # Print a small sample of allowed ids to help troubleshoot
-            sample_ids = ", ".join(list(sorted(allowed_ids))[:10])
-            print(f"[info] Sample of allowed rule_ids: {sample_ids if sample_ids else '(none)'}")
-        else:
-            # No matching allowed IDs found for the provided root
-            msg = (
-                f"[warn] No matching runs/rule_ids found for root-path: {args.root_path}. "
-                "If you expected matches, check that runs.json has rule_ids for the desired root and that the paths match after realpath/expanduser."
-            )
-            print(msg)
-            # Strict mode is the default when --root-path is provided, unless --no-strict-root is passed
-            strict_mode = not args.no_strict_root
-            if strict_mode:
-                print("[info] Strict root (default) active: producing an empty result due to no matches. Use --no-strict-root to disable.")
-                rules = []
-            else:
-                print("[info] Proceeding without root filter (--no-strict-root was specified).")
-    else:
-        original_rules = rules[:]
-
-    grouped = group_rules_by_file(rules, source_prefix, args.case_insensitive, args.include_archived)
+    grouped = group_rules_by_file(rules, source_prefix, False, args.include_archived)
     print(f"[info] Found {len(grouped)} files under {source_prefix}")
     total_rules = sum(len(rules) for rules in grouped.values())
     print(f"[info] Exported {total_rules} rules across {len(grouped)} files")
-    # If any rules were rejected due to path-prefix mismatch, show first few examples clearly
-    mismatch_total = REASONS_COUNT.get("StageB:not under source_prefix", 0)
-    if mismatch_total:
-        sample_count = len(MISMATCH_SAMPLES)
-        header = (
-            f"[diag] First {sample_count} rules rejected for path-prefix mismatch "
-            f"(not under '{source_prefix}', case_insensitive={args.case_insensitive}).\n"
-            f"[diag] Total mismatches: {mismatch_total}. Examples:"
-        )
-        print(header)
-        for i, s in enumerate(MISMATCH_SAMPLES, start=1):
-            rid = s.get("rule_id", "")
-            rname = s.get("rule_name", "")
-            cfile = s.get("code_file", "")
-            ocfile = s.get("original_code_file", "")
-            print(
-                f"  {i}. rule_id={rid} | name='{rname}'\n"
-                f"     code_file(normalized)='{cfile}'\n"
-                f"     code_file(original) ='{ocfile}'"
-            )
-        print("[diag] Hint: Broaden --source_path, add --case-insensitive, or normalize absolute vs relative paths if needed.")
     # Show a small sample of files and their rule counts to aid troubleshooting
     if grouped:
         preview_items = []
@@ -716,13 +582,17 @@ def main():
         text = format_json(grouped)
 
     if TRACE_ENABLED:
-        # Print a compact reasons tally to help diagnose why rules were dropped
-        if REASONS_COUNT:
-            print("[trace] rejection summary:")
-            for reason, cnt in sorted(REASONS_COUNT.items(), key=lambda x: (-x[1], x[0])):
-                print(f"[trace]   {reason}: {cnt}")
-        else:
-            print("[trace] no rejections recorded (after filters)")
+        matched = REASONS_COUNT.get("matched", 0)
+        skipped_archived = REASONS_COUNT.get("archived_excluded", 0)
+        skipped_missing = REASONS_COUNT.get("missing_field", 0)
+        skipped_path = REASONS_COUNT.get("not_under_source_prefix", 0)
+        print("[trace] final selection summary:")
+        print(f"[trace]   matched           : {matched}")
+        print(f"[trace]   skipped_archived  : {skipped_archived}")
+        print(f"[trace]   skipped_missing   : {skipped_missing}")
+        print(f"[trace]   skipped_path_mismatch: {skipped_path}")
+        if matched == 0 and (skipped_archived or skipped_missing or skipped_path):
+            print("[trace]   note: no rules matched; consider broadening source_path or relaxing filters")
 
     if args.output:
         print(f"[info] Writing output to {args.output}")
