@@ -172,8 +172,15 @@ def group_rules_by_file(
             )
             if cf_norm not in grouped:
                 grouped[cf_norm] = []
+            # Build a display name that prefixes the last three hex chars of the rule id (if available)
+            rid = extract_rule_id(r)
+            display_name = rule_name
+            if rid and len(rid) >= 3:
+                suffix = rid[-3:].upper()
+                display_name = f"{suffix}· {rule_name}"
             grouped[cf_norm].append({
-                "rule_name": rule_name,
+                "rule_name": display_name,
+                "rule_name_base": rule_name,
                 "code_function": code_function,
                 "archived": r.get("archived"),
             })
@@ -219,28 +226,31 @@ def group_rules_by_file(
         index_by_rule = {}
         deduped = []
         for item in grouped[cf]:
-            rn = item["rule_name"]
+            base_name = item.get("rule_name_base") or item["rule_name"]
             is_arch = _is_archived_flag(item.get("archived"))
-            if rn not in index_by_rule:
-                index_by_rule[rn] = len(deduped)
+            if base_name not in index_by_rule:
+                index_by_rule[base_name] = len(deduped)
                 deduped.append(item)
             else:
-                idx = index_by_rule[rn]
+                idx = index_by_rule[base_name]
                 existing = deduped[idx]
                 existing_arch = _is_archived_flag(existing.get("archived"))
                 # If the existing is archived and the new one is not, replace.
                 if existing_arch and not is_arch:
-                    _tprint(f"[trace] prefer non-archived over archived for rule_name='{rn}' in file={cf}")
+                    _tprint(
+                        f"[trace] prefer non-archived over archived for rule_name='{base_name}' in file={cf}"
+                    )
                     deduped[idx] = item
-                    # index remains the same; mapping already points to idx
                 # Otherwise keep the first (non-archived already wins or both archived)
         grouped[cf] = deduped
 
-    # Strip internal-only fields from output (do not expose archived in the result)
+    # Strip internal-only fields from output (do not expose internal flags in the result)
     for cf in grouped:
         for item in grouped[cf]:
             if "archived" in item:
                 del item["archived"]
+            if "rule_name_base" in item:
+                del item["rule_name_base"]
 
     return grouped
 
