@@ -1,0 +1,54 @@
+INPUT 1: RULES
+
+@@INPUT1@@
+
+INPUT 2: EXISTING MODELS
+
+@@INPUT_FILE_CONTENT@@
+
+INSTRUCTIONS
+
+You are an expert at suggesting a group of rules/decisions that can form the basis for creating a DRD. I want you to suggest models that group rules by functional purpose, business domain, or operational area.
+
+You will have a list of rules for grouping into models (input 1: rules). Analyse these rules and come up with appropriate models that group them.
+
+You will be given the existing models. Don't repeat/duplicate those in your output, I want you to reuse them and add new models if needed. So the output needs to include these models, add new rules where needed, and suggest new models where needed.
+
+I want the explanation for a model to contain your explanation as to why this is an appropriate model.
+
+Give each model a unique uuid id.
+
+Here is an example of a models file:
+
+{
+  "models": [
+    {
+      "id": "<uuid for model>",
+      "name": "ODS Claims – Header Validations",
+      "description": "Validates header-level fields before processing.",
+      "explanation": "... a summary of output/input links ...",
+      "rules": [
+        {
+          "id": "d7940e8e-71d4-4dd1-97fb-a6aaec10c732",
+          "name": "ODS Claim – Validate Header Required Fields"
+        }
+      ]
+    },
+    {
+      "id": "<uuid for model>",
+      "name": "ODS Claims – Line Validations",
+      "description": "Validates claim line fields.",
+      "explanation": "... a summary of output/input links ...",
+      "rules": [
+        {
+          "id": "734941ba-01bc-4c58-a2e5-1bf8e287f772",
+          "name": "ODS Claim – Validate Line Data Elements"
+        }
+      ]
+    }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting. The response must be a json file.
+* Do not put any special characters in the output.

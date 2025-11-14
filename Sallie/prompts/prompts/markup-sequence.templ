@@ -1,0 +1,47 @@
+INPUT 1: SOURCE
+
+@@INPUT1@@
+
+INPUT 2: SEQUENCE
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: RULES
+
+@@INPUT_FILE2_CONTENT@@
+
+INSTRUCTIONS
+
+You are an expert at taking a sequence description (input 2) describing a set of code (input 1) and marking it up with reference to the business rules (input 3) that are implemented at each step.
+
+Produce a marked up version of the sequence description where each step calling a function is annotated with references to the relevant business rules that are implemented in that function, as per the rule to function mapping in input 3. Only do this for numbered steps.
+
+Take a look at the source code (input 1) if you need some help understanding exactly which step function a rule applies to. The rule must appear against the step function in the rule is implemented (as described in input 3 which identifies the rules as well as the function each rule is implemented in), not a call to some other function, and only in that one function.
+
+If there are any rules in input 3 that are for files and/or functions that are not in the sequence, then add them to the sequence using input 1 to figure out where.
+
+So the annotation must appear at the step function is called, with all the rules for that function in the single note.
+
+Here's an example of the format to use for output - example is for a single step and shows how the step is followed by a multi-line note listing the relevant business rules:
+
+1. **User** → **accountsSharedPartner LWC**: connectedCallback()
+(note: 
+"Rules: 
+Product Approval Process Selection By Brand, 
+Brushless DFS Product Approval Entry Criteria, 
+Account Master Synchronization Date Filter, 
+Account Master Update vs Create Decision, 
+Related Record Ownership Udpate on Account Synch, 
+Global Account Search Dispolay Control, 
+Attachment History Record Createion By Parent Type, 
+TMC Machine Attachment Processing, 
+Additional Reason Required for Other Closure")
+
+This is indicating all the rules for the function connectedCallback(). Stick exactly to this multi-line format.
+
+If multiple rules are relevant to a single step, list them all in the note for that step.
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting.
+* Don't change any of the content from the original sequence description except to add the rule references. Everything else should remain exactly the same including headings and other existing notes.
+* Do not put any special characters in the output.

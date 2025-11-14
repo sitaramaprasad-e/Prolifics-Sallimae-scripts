@@ -1,0 +1,76 @@
+INPUT 1: RULES
+
+@@INPUT1@@
+
+INPUT 2: EXISTING MODELS
+
+@@INPUT_FILE_CONTENT@@
+
+You are an expert at analyzing rule definitions and detecting duplicated rules. Ignore any concept of “models.” Your job is to find rules that appear to be duplicates of one another and explain why.
+
+Looking at input 1, consider a rule a potential duplicate of another if ALL of the following hold, and confirm each of the below checks with reasons:
+- Effectively the same rule logic operating on the same data.
+- Identical code_file and code_function.
+- Identical dmn_inputs names. Not a duplicate if names are obviously different things.
+- Identical dmn_inputs types.
+- Identical dmn_outputs names. Not a duplicate if names are obviously different things.
+- Identical dmn_outputs types.
+- Same component.
+
+Important:
+- A rule can have more than one duplicate. List all of them.
+- Ignore archived rules.
+- The output must be a JSON file only (no prose, no markdown fences, no special characters beyond valid JSON).
+- Do not invent fields that are not present in the inputs; if a field is missing for a rule, simply omit it in the reasons.
+- Reasons must be clear and concise.
+- It is possible that there are no duplicates.
+- Do not consider two rules to be duplicates if you are not 100% convinced that they dmn_inputs names are actually the same thing and not just similar things.
+
+OUTPUT FORMAT (JSON ONLY):
+
+{
+  "duplicate_rules": [
+    {
+      "id": "d7940e8e-71d4-4dd1-97fb-a6aaec10c732",
+      "name": "ODS Claim – Validate Header Required Fields",
+      "duplicates": [
+        {
+          "id": "b53e7537-9da6-4b22-9418-2cc7c0f232e1",
+          "name": "ODS Claim – Validate Header Formatting",
+          "reasons": [
+            "Similar rule_spec content after normalization",
+            "Same component and rule_category",
+            "Overlapping dmn_inputs: header_context, claim_id"
+          ]
+        },
+        {
+          "id": "c12a4b1e-2215-4f9a-9c0e-8b0f3a2e9d77",
+          "name": "ODS Claim – Validate Header Presence",
+          "reasons": [
+            "Same code_file and code_function",
+            "Identical dmn_outputs: validated_header"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "734941ba-01bc-4c58-a2e5-1bf8e287f772",
+      "name": "ODS Claim – Validate Line Data Elements",
+      "duplicates": [
+        {
+          "id": "f0656d76-b83c-4e8a-a4aa-72979e4fa111",
+          "name": "ODS Claim – Validate Line Pricing Inputs",
+          "reasons": [
+            "High similarity in rule_spec wording",
+            "Overlapping dmn_inputs: line_context",
+            "Same component"
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting. The response must be a json file.
+* Do not put any special characters in the output.

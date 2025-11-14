@@ -1,0 +1,72 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+You are an expert at generating the top-level composed decision in a DRD that a set of base decisions and BKMs feed into. 
+
+I have given you the base decisions and BKMs for the DRD (those are listed in input 2). Also you can refer to the source code from which these base decisions and BKMs were extracted from (provided in input 1) to understand overall what the code is doing. 
+
+I want you to think about these base decisions and BKMs at the bottom of the DRD, and then I want you to synthesize the top-level composed decision that these feed into, with a clear output-to-input mapping from those base decision/BKM ouputs to this new top-level composed decision inputs. 
+
+It is critical that the new synthesized top-level composed decision does not repeat the logic of the base decisions and BKMs, but rather take their outputs as inputs, and synthesize those into the top-level ultimate output(s).
+
+Give me a report of this top ultimate top-level composed decision, which shows the its details and the links that form the hierarchy of decisions as per DRD thinking and standards.
+
+For the top decision I want
+1) heading with the top-level composed decision name (### Name: <name>) with no formatting in the name. Must be phrased as a business question whose answer is the output.
+2) the kind which will always be Decision with a qualifier of (Top-Level) (**Kind:** Decision (Top-Level))
+3) description of the decision purpose (** Purpose:** <description>) 
+4) a full spec of the logic in plain english that decribes the decision's behaviour (** Spec:** <spec>) 
+5) include the most revelant code block (it might cover the crux of this top-level composed decision rather than the entirety of its behaviour) quoting the lines it appears in, formatted exactly as follows (each item on a new line):
+**Code Block:** <file name including the path>
+Lines: <start>-<end>
+Function: <name of the most specific function or class or similar where the top level decision logic appears which would be appropriate to represent on a sequence diagram, including signature>
+<the code block itself enclosed in triple backticks> 
+6) an example of the top level decision being applied (**Example:** <example>) 
+7) the logic step(s) expressed in a DMN decision table with input conditions and output conclusions (**DMN:** <DMN decision table which must include Inputs/Outputs (names + types, where name can be from domain model or from another decisions outputs) with side effects as signals, an explicit and appropriate hit policy, and pure FEEL constructs in cells>))
+8) for the decisions or BKMs that link to this top-level decision you must add wiring lines immediately under the “Links:” heading: (Each on its own line, using this exact format. Do not hallucinate links. Do not list a link unless the source output and the target input are identical. Use the exact logic step names and input/output names. The source <from_output> must exist in the source step’s Outputs list. kind must be one of: depends_on (another decision to this decision), invokes_bkm (a decision to this bkm). One link per line; no bullets or commas. If no links, write: none. Leave one blank line after the last link.):
+**Links:**
+<from_step_name>.<from_output> -> <to_input_on_this_step> [kind=<depends_on|invokes_bkm>]
+
+If the source code in 1 has no business logic, then just return an empty report rather than telling me why you couldn't find business logic.
+
+Hints
+* The decision model listed in input 3 defines the scope for the DRD and the top-level composed decision.
+* Give the decision a short, natural-language business name, phrased as a business question (e.g., “Is Claim Valid?”).
+* The business logic should reference the domain types from the domain model.
+* Leave a line between each line in the report to improve formatting.
+* When you quote the code, include the file name, and actually provide the code listing for the lines quoted.
+* Input and output names should quote the domain model in the form type.attribute or quote another decisions output, but if and only if they correspond to those things.
+* Focus more on the business relevant logic rather than just technical logic.
+* Don't give an intro/outro to the document. 
+* Use Markdown format.
+* Here is an example of a top-level DMN decision table:
+Hit Policy: PRIORITY
+
+Inputs:
+- Claim.MemberStatus:string
+- Claim.CoverageStatus:string
+- Claim.FraudRisk:number
+
+Outputs:
+- ClaimDecision.Decision:string
+- Signal.RequestFraudReview:boolean
+
+Priority Order for ClaimDecision.Decision: "Pay" > "Manual Review" > "Deny"
+
+| Claim.MemberStatus condition     | Claim.CoverageStatus condition         | Claim.FraudRisk condition | ClaimDecision.Decision | Signal.RequestFraudReview |
+|----------------------------------|----------------------------------------|---------------------------|------------------------|---------------------------|
+| "Inactive"                       | -                                      | -                         | "Deny"                 | false                     |
+| "Active"                         | "Excluded","LimitExceeded"             | -                         | "Deny"                 | false                     |
+| "Active"                         | "Covered"                              | >= 70                     | "Manual Review"        | true                      |
+| "Active"                         | "Covered"                              | < 70                      | "Pay"                  | false                     |
