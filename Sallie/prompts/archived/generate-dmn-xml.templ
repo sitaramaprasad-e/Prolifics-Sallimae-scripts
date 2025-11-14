@@ -1,0 +1,1005 @@
+INPUT 1: DOCUMENT
+
+@@INPUT1@@
+
+INSTRUCTIONS
+
+You are an expert at taking a set of DMN rules and turning them into a complete DMN XML file.
+
+Take the provided DMN rules in the document, and produce a complete DMN XML file that includes the provided rules. Use this example for inspiration.
+
+Example:
+
+"<?xml version="1.0" encoding="UTF-8"?>
+<dmn:definitions xmlns:dmn="http://www.omg.org/spec/DMN/20180521/MODEL/"
+                 xmlns:dmndi="http://www.omg.org/spec/DMN/20180521/DMNDI/"
+                 xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+                 xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+                 xmlns:feel="http://www.omg.org/spec/DMN/20180521/FEEL/"
+                 xmlns:kie="http://www.drools.org/kie/dmn/1.2"
+                 id="order-processing-rules"
+                 name="Order Processing Rules"
+                 typeLanguage="http://www.omg.org/spec/DMN/20180521/FEEL/"
+                 namespace="http://www.drools.org/kie/dmn/1.2">
+  
+  <!-- Input Data Elements -->
+  <dmn:inputData id="_customer_data" name="Customer">
+    <dmn:extensionElements>
+      <kie:ComponentWidthsExtension>
+        <kie:ComponentWidths dmnElementRef="_customer_data" />
+      </kie:ComponentWidthsExtension>
+    </dmn:extensionElements>
+    <dmn:variable id="_customer_data_var" name="Customer" typeRef="tCustomer"/>
+  </dmn:inputData>
+  
+  <dmn:inputData id="_order_data" name="Order">
+    <dmn:extensionElements>
+      <kie:ComponentWidthsExtension>
+        <kie:ComponentWidths dmnElementRef="_order_data" />
+      </kie:ComponentWidthsExtension>
+    </dmn:extensionElements>
+    <dmn:variable id="_order_data_var" name="Order" typeRef="tOrder"/>
+  </dmn:inputData>
+  
+  <dmn:inputData id="_inventory_data" name="Inventory">
+    <dmn:variable id="_inventory_data_var" name="Inventory" typeRef="tInventory"/>
+  </dmn:inputData>
+  
+  <!-- Business Knowledge Model - Reusable Function -->
+  <dmn:businessKnowledgeModel id="_discount_calculation" name="Discount Calculation">
+    <dmn:extensionElements>
+      <kie:ComponentWidthsExtension>
+        <kie:ComponentWidths dmnElementRef="_discount_calculation" />
+      </kie:ComponentWidthsExtension>
+    </dmn:extensionElements>
+    <dmn:variable id="_discount_calculation_var" name="Discount Calculation" typeRef="number"/>
+    <dmn:encapsulatedLogic id="_discount_calculation_logic" kind="FEEL">
+      <dmn:formalParameter id="_customerTier_param" name="customerTier" typeRef="string"/>
+      <dmn:formalParameter id="_orderAmount_param" name="orderAmount" typeRef="number"/>
+      <dmn:literalExpression id="_discount_calculation_expr">
+        <dmn:text>
+          if customerTier = "PLATINUM" then
+            if orderAmount > 10000 then 0.20
+            else if orderAmount > 5000 then 0.15
+            else 0.10
+          else if customerTier = "GOLD" then
+            if orderAmount > 10000 then 0.15
+            else if orderAmount > 5000 then 0.10
+            else 0.05
+          else if customerTier = "SILVER" then
+            if orderAmount > 10000 then 0.10
+            else if orderAmount > 5000 then 0.05
+            else 0.02
+          else 0
+        </dmn:text>
+      </dmn:literalExpression>
+    </dmn:encapsulatedLogic>
+  </dmn:businessKnowledgeModel>
+  
+  <!-- Decision 1: Customer Eligibility Check -->
+  <dmn:decision id="_customer_eligibility" name="Customer Eligibility">
+    <dmn:extensionElements>
+      <kie:ComponentWidthsExtension>
+        <kie:ComponentWidths dmnElementRef="_customer_eligibility" />
+      </kie:ComponentWidthsExtension>
+    </dmn:extensionElements>
+    <dmn:variable id="_customer_eligibility_var" name="Customer Eligibility" typeRef="tEligibilityResult"/>
+    <dmn:informationRequirement id="_req_customer_data">
+      <dmn:requiredInput href="#_customer_data"/>
+    </dmn:informationRequirement>
+    <dmn:decisionTable id="_customer_eligibility_table" hitPolicy="FIRST" preferredOrientation="Rule-as-Row" outputLabel="Customer Eligibility">
+      <dmn:input id="_customer_status_input">
+        <dmn:inputExpression id="_customer_status_expr" typeRef="string">
+          <dmn:text>Customer.status</dmn:text>
+        </dmn:inputExpression>
+        <dmn:inputValues>
+          <dmn:text>"ACTIVE", "NEW", "SUSPENDED", "BLACKLISTED"</dmn:text>
+        </dmn:inputValues>
+      </dmn:input>
+      <dmn:input id="_credit_score_input">
+        <dmn:inputExpression id="_credit_score_expr" typeRef="number">
+          <dmn:text>Customer.creditScore</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_account_age_input">
+        <dmn:inputExpression id="_account_age_expr" typeRef="number">
+          <dmn:text>Customer.accountAgeMonths</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_outstanding_balance_input">
+        <dmn:inputExpression id="_outstanding_balance_expr" typeRef="number">
+          <dmn:text>Customer.outstandingBalance</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      
+      <dmn:output id="_eligible_output" name="eligible" typeRef="boolean"/>
+      <dmn:output id="_reason_output" name="reason" typeRef="string"/>
+      <dmn:output id="_credit_limit_output" name="creditLimit" typeRef="number"/>
+      
+      <dmn:annotation name="Description"/>
+      
+      <!-- Rules -->
+      <dmn:rule id="_rule1">
+        <dmn:inputEntry id="_rule1_input1">
+          <dmn:text>"BLACKLISTED"</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule1_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule1_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule1_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_rule1_output1">
+          <dmn:text>false</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule1_output2">
+          <dmn:text>"Customer is blacklisted"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule1_output3">
+          <dmn:text>0</dmn:text>
+        </dmn:outputEntry>
+        <dmn:annotationEntry>
+          <dmn:text>Blacklisted customers always rejected</dmn:text>
+        </dmn:annotationEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_rule2">
+        <dmn:inputEntry id="_rule2_input1">
+          <dmn:text>"SUSPENDED"</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule2_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule2_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule2_input4">
+          <dmn:text>&gt; 5000</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_rule2_output1">
+          <dmn:text>false</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule2_output2">
+          <dmn:text>"Account suspended with high balance"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule2_output3">
+          <dmn:text>0</dmn:text>
+        </dmn:outputEntry>
+        <dmn:annotationEntry>
+          <dmn:text>Suspended with debt</dmn:text>
+        </dmn:annotationEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_rule3">
+        <dmn:inputEntry id="_rule3_input1">
+          <dmn:text>"NEW"</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule3_input2">
+          <dmn:text>&gt;= 700</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule3_input3">
+          <dmn:text>&lt; 3</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule3_input4">
+          <dmn:text>&lt;= 1000</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_rule3_output1">
+          <dmn:text>true</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule3_output2">
+          <dmn:text>"New customer with good credit"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule3_output3">
+          <dmn:text>5000</dmn:text>
+        </dmn:outputEntry>
+        <dmn:annotationEntry>
+          <dmn:text>New customer approved</dmn:text>
+        </dmn:annotationEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_rule4">
+        <dmn:inputEntry id="_rule4_input1">
+          <dmn:text>"ACTIVE"</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule4_input2">
+          <dmn:text>&gt;= 750</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule4_input3">
+          <dmn:text>&gt;= 12</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule4_input4">
+          <dmn:text>&lt;= 5000</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_rule4_output1">
+          <dmn:text>true</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule4_output2">
+          <dmn:text>"Excellent customer"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule4_output3">
+          <dmn:text>50000</dmn:text>
+        </dmn:outputEntry>
+        <dmn:annotationEntry>
+          <dmn:text>Premium customer</dmn:text>
+        </dmn:annotationEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_rule5">
+        <dmn:inputEntry id="_rule5_input1">
+          <dmn:text>"ACTIVE"</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule5_input2">
+          <dmn:text>[650..750)</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule5_input3">
+          <dmn:text>&gt;= 6</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule5_input4">
+          <dmn:text>&lt;= 3000</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_rule5_output1">
+          <dmn:text>true</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule5_output2">
+          <dmn:text>"Good standing customer"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule5_output3">
+          <dmn:text>25000</dmn:text>
+        </dmn:outputEntry>
+        <dmn:annotationEntry>
+          <dmn:text>Standard customer</dmn:text>
+        </dmn:annotationEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_rule6">
+        <dmn:inputEntry id="_rule6_input1">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule6_input2">
+          <dmn:text>&lt; 650</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule6_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_rule6_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_rule6_output1">
+          <dmn:text>false</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule6_output2">
+          <dmn:text>"Credit score too low"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_rule6_output3">
+          <dmn:text>0</dmn:text>
+        </dmn:outputEntry>
+        <dmn:annotationEntry>
+          <dmn:text>Low credit score</dmn:text>
+        </dmn:annotationEntry>
+      </dmn:rule>
+    </dmn:decisionTable>
+  </dmn:decision>
+  
+  <!-- Decision 2: Customer Tier Classification -->
+  <dmn:decision id="_customer_tier" name="Customer Tier">
+    <dmn:variable id="_customer_tier_var" name="Customer Tier" typeRef="string"/>
+    <dmn:informationRequirement id="_req_customer_tier">
+      <dmn:requiredInput href="#_customer_data"/>
+    </dmn:informationRequirement>
+    <dmn:literalExpression id="_customer_tier_expr">
+      <dmn:text>
+        if Customer.totalPurchases > 100000 and Customer.accountAgeMonths > 24 then "PLATINUM"
+        else if Customer.totalPurchases > 50000 and Customer.accountAgeMonths > 12 then "GOLD"
+        else if Customer.totalPurchases > 10000 and Customer.accountAgeMonths > 6 then "SILVER"
+        else "BRONZE"
+      </dmn:text>
+    </dmn:literalExpression>
+  </dmn:decision>
+  
+  <!-- Decision 3: Order Validation -->
+  <dmn:decision id="_order_validation" name="Order Validation">
+    <dmn:variable id="_order_validation_var" name="Order Validation" typeRef="tValidationResult"/>
+    <dmn:informationRequirement id="_req_order_data">
+      <dmn:requiredInput href="#_order_data"/>
+    </dmn:informationRequirement>
+    <dmn:informationRequirement id="_req_inventory_data">
+      <dmn:requiredInput href="#_inventory_data"/>
+    </dmn:informationRequirement>
+    <dmn:decisionTable id="_order_validation_table" hitPolicy="COLLECT" aggregation="SUM" preferredOrientation="Rule-as-Row" outputLabel="Order Validation">
+      <dmn:input id="_order_amount_input">
+        <dmn:inputExpression id="_order_amount_expr" typeRef="number">
+          <dmn:text>Order.totalAmount</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_item_count_input">
+        <dmn:inputExpression id="_item_count_expr" typeRef="number">
+          <dmn:text>Order.itemCount</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_shipping_method_input">
+        <dmn:inputExpression id="_shipping_method_expr" typeRef="string">
+          <dmn:text>Order.shippingMethod</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_inventory_available_input">
+        <dmn:inputExpression id="_inventory_available_expr" typeRef="boolean">
+          <dmn:text>Inventory.available</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      
+      <dmn:output id="_validation_score_output" name="validationScore" typeRef="number" defaultOutputEntry="0"/>
+      
+      <dmn:rule id="_validation_rule1">
+        <dmn:inputEntry id="_validation_rule1_input1">
+          <dmn:text>&lt; 0</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule1_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule1_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule1_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_validation_rule1_output">
+          <dmn:text>-100</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_validation_rule2">
+        <dmn:inputEntry id="_validation_rule2_input1">
+          <dmn:text>&gt; 100000</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule2_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule2_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule2_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_validation_rule2_output">
+          <dmn:text>50</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_validation_rule3">
+        <dmn:inputEntry id="_validation_rule3_input1">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule3_input2">
+          <dmn:text>&gt; 100</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule3_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule3_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_validation_rule3_output">
+          <dmn:text>20</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_validation_rule4">
+        <dmn:inputEntry id="_validation_rule4_input1">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule4_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule4_input3">
+          <dmn:text>"EXPRESS"</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule4_input4">
+          <dmn:text>false</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_validation_rule4_output">
+          <dmn:text>-30</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_validation_rule5">
+        <dmn:inputEntry id="_validation_rule5_input1">
+          <dmn:text>[0..100000]</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule5_input2">
+          <dmn:text>[1..100]</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule5_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_validation_rule5_input4">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_validation_rule5_output">
+          <dmn:text>100</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+    </dmn:decisionTable>
+  </dmn:decision>
+  
+  <!-- Decision 4: Pricing Calculation -->
+  <dmn:decision id="_pricing_decision" name="Pricing Decision">
+    <dmn:variable id="_pricing_decision_var" name="Pricing Decision" typeRef="tPricingResult"/>
+    <dmn:informationRequirement id="_req_order_pricing">
+      <dmn:requiredInput href="#_order_data"/>
+    </dmn:informationRequirement>
+    <dmn:informationRequirement id="_req_tier_pricing">
+      <dmn:requiredDecision href="#_customer_tier"/>
+    </dmn:informationRequirement>
+    <dmn:knowledgeRequirement id="_req_discount_calc">
+      <dmn:requiredKnowledge href="#_discount_calculation"/>
+    </dmn:knowledgeRequirement>
+    <dmn:context id="_pricing_context">
+      <dmn:contextEntry>
+        <dmn:variable id="_base_price_var" name="basePrice" typeRef="number"/>
+        <dmn:literalExpression id="_base_price_expr">
+          <dmn:text>Order.totalAmount</dmn:text>
+        </dmn:literalExpression>
+      </dmn:contextEntry>
+      <dmn:contextEntry>
+        <dmn:variable id="_discount_percentage_var" name="discountPercentage" typeRef="number"/>
+        <dmn:invocation id="_discount_invocation">
+          <dmn:literalExpression id="_discount_func_ref">
+            <dmn:text>Discount Calculation</dmn:text>
+          </dmn:literalExpression>
+          <dmn:binding>
+            <dmn:parameter id="_discount_param1" name="customerTier"/>
+            <dmn:literalExpression id="_discount_param1_expr">
+              <dmn:text>Customer Tier</dmn:text>
+            </dmn:literalExpression>
+          </dmn:binding>
+          <dmn:binding>
+            <dmn:parameter id="_discount_param2" name="orderAmount"/>
+            <dmn:literalExpression id="_discount_param2_expr">
+              <dmn:text>Order.totalAmount</dmn:text>
+            </dmn:literalExpression>
+          </dmn:binding>
+        </dmn:invocation>
+      </dmn:contextEntry>
+      <dmn:contextEntry>
+        <dmn:variable id="_discount_amount_var" name="discountAmount" typeRef="number"/>
+        <dmn:literalExpression id="_discount_amount_expr">
+          <dmn:text>basePrice * discountPercentage</dmn:text>
+        </dmn:literalExpression>
+      </dmn:contextEntry>
+      <dmn:contextEntry>
+        <dmn:variable id="_shipping_cost_var" name="shippingCost" typeRef="number"/>
+        <dmn:decisionTable id="_shipping_cost_table" hitPolicy="UNIQUE">
+          <dmn:input id="_shipping_method_cost_input">
+            <dmn:inputExpression id="_shipping_method_cost_expr" typeRef="string">
+              <dmn:text>Order.shippingMethod</dmn:text>
+            </dmn:inputExpression>
+          </dmn:input>
+          <dmn:input id="_order_amount_cost_input">
+            <dmn:inputExpression id="_order_amount_cost_expr" typeRef="number">
+              <dmn:text>Order.totalAmount</dmn:text>
+            </dmn:inputExpression>
+          </dmn:input>
+          <dmn:output id="_shipping_cost_output" typeRef="number"/>
+          
+          <dmn:rule id="_shipping_rule1">
+            <dmn:inputEntry id="_shipping_rule1_input1">
+              <dmn:text>"STANDARD"</dmn:text>
+            </dmn:inputEntry>
+            <dmn:inputEntry id="_shipping_rule1_input2">
+              <dmn:text>&lt; 50</dmn:text>
+            </dmn:inputEntry>
+            <dmn:outputEntry id="_shipping_rule1_output">
+              <dmn:text>9.99</dmn:text>
+            </dmn:outputEntry>
+          </dmn:rule>
+          <dmn:rule id="_shipping_rule2">
+            <dmn:inputEntry id="_shipping_rule2_input1">
+              <dmn:text>"STANDARD"</dmn:text>
+            </dmn:inputEntry>
+            <dmn:inputEntry id="_shipping_rule2_input2">
+              <dmn:text>&gt;= 50</dmn:text>
+            </dmn:inputEntry>
+            <dmn:outputEntry id="_shipping_rule2_output">
+              <dmn:text>0</dmn:text>
+            </dmn:outputEntry>
+          </dmn:rule>
+          <dmn:rule id="_shipping_rule3">
+            <dmn:inputEntry id="_shipping_rule3_input1">
+              <dmn:text>"EXPRESS"</dmn:text>
+            </dmn:inputEntry>
+            <dmn:inputEntry id="_shipping_rule3_input2">
+              <dmn:text>-</dmn:text>
+            </dmn:inputEntry>
+            <dmn:outputEntry id="_shipping_rule3_output">
+              <dmn:text>19.99</dmn:text>
+            </dmn:outputEntry>
+          </dmn:rule>
+          <dmn:rule id="_shipping_rule4">
+            <dmn:inputEntry id="_shipping_rule4_input1">
+              <dmn:text>"OVERNIGHT"</dmn:text>
+            </dmn:inputEntry>
+            <dmn:inputEntry id="_shipping_rule4_input2">
+              <dmn:text>-</dmn:text>
+            </dmn:inputEntry>
+            <dmn:outputEntry id="_shipping_rule4_output">
+              <dmn:text>39.99</dmn:text>
+            </dmn:outputEntry>
+          </dmn:rule>
+        </dmn:decisionTable>
+      </dmn:contextEntry>
+      <dmn:contextEntry>
+        <dmn:variable id="_tax_var" name="tax" typeRef="number"/>
+        <dmn:literalExpression id="_tax_expr">
+          <dmn:text>(basePrice - discountAmount) * 0.08</dmn:text>
+        </dmn:literalExpression>
+      </dmn:contextEntry>
+      <dmn:contextEntry>
+        <dmn:variable id="_final_price_var" name="finalPrice" typeRef="number"/>
+        <dmn:literalExpression id="_final_price_expr">
+          <dmn:text>basePrice - discountAmount + shippingCost + tax</dmn:text>
+        </dmn:literalExpression>
+      </dmn:contextEntry>
+      <dmn:contextEntry>
+        <dmn:literalExpression id="_pricing_result_expr">
+          <dmn:text>
+            {
+              basePrice: basePrice,
+              discount: discountAmount,
+              discountPercentage: discountPercentage,
+              shippingCost: shippingCost,
+              tax: tax,
+              finalPrice: finalPrice
+            }
+          </dmn:text>
+        </dmn:literalExpression>
+      </dmn:contextEntry>
+    </dmn:context>
+  </dmn:decision>
+  
+  <!-- Decision 5: Fraud Risk Score -->
+  <dmn:decision id="_fraud_risk" name="Fraud Risk Score">
+    <dmn:variable id="_fraud_risk_var" name="Fraud Risk Score" typeRef="number"/>
+    <dmn:informationRequirement id="_req_customer_fraud">
+      <dmn:requiredInput href="#_customer_data"/>
+    </dmn:informationRequirement>
+    <dmn:informationRequirement id="_req_order_fraud">
+      <dmn:requiredInput href="#_order_data"/>
+    </dmn:informationRequirement>
+    <dmn:decisionTable id="_fraud_risk_table" hitPolicy="COLLECT" aggregation="SUM">
+      <dmn:input id="_orders_last_hour_input">
+        <dmn:inputExpression id="_orders_last_hour_expr" typeRef="number">
+          <dmn:text>Customer.ordersLastHour</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_address_change_input">
+        <dmn:inputExpression id="_address_change_expr" typeRef="boolean">
+          <dmn:text>Customer.recentAddressChange</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_order_ratio_input">
+        <dmn:inputExpression id="_order_ratio_expr" typeRef="number">
+          <dmn:text>Order.totalAmount / Customer.averageOrderAmount</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_payment_method_input">
+        <dmn:inputExpression id="_payment_method_expr" typeRef="string">
+          <dmn:text>Order.paymentMethod</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      
+      <dmn:output id="_risk_score_output" name="riskScore" typeRef="number" defaultOutputEntry="0"/>
+      
+      <dmn:rule id="_fraud_rule1">
+        <dmn:inputEntry id="_fraud_rule1_input1">
+          <dmn:text>&gt; 5</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule1_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule1_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule1_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_fraud_rule1_output">
+          <dmn:text>30</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_fraud_rule2">
+        <dmn:inputEntry id="_fraud_rule2_input1">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule2_input2">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule2_input3">
+          <dmn:text>&gt; 3</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule2_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_fraud_rule2_output">
+          <dmn:text>25</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_fraud_rule3">
+        <dmn:inputEntry id="_fraud_rule3_input1">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule3_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule3_input3">
+          <dmn:text>&gt; 10</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule3_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_fraud_rule3_output">
+          <dmn:text>40</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_fraud_rule4">
+        <dmn:inputEntry id="_fraud_rule4_input1">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule4_input2">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule4_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule4_input4">
+          <dmn:text>"PREPAID_CARD"</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_fraud_rule4_output">
+          <dmn:text>20</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_fraud_rule5">
+        <dmn:inputEntry id="_fraud_rule5_input1">
+          <dmn:text>[3..5]</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule5_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule5_input3">
+          <dmn:text>[2..3]</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_fraud_rule5_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_fraud_rule5_output">
+          <dmn:text>15</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+    </dmn:decisionTable>
+  </dmn:decision>
+  
+  <!-- Decision 6: Final Order Processing Decision -->
+  <dmn:decision id="_final_order_decision" name="Final Order Decision">
+    <dmn:variable id="_final_order_decision_var" name="Final Order Decision" typeRef="tFinalDecision"/>
+    <dmn:informationRequirement id="_req_eligibility_final">
+      <dmn:requiredDecision href="#_customer_eligibility"/>
+    </dmn:informationRequirement>
+    <dmn:informationRequirement id="_req_validation_final">
+      <dmn:requiredDecision href="#_order_validation"/>
+    </dmn:informationRequirement>
+    <dmn:informationRequirement id="_req_pricing_final">
+      <dmn:requiredDecision href="#_pricing_decision"/>
+    </dmn:informationRequirement>
+    <dmn:informationRequirement id="_req_fraud_final">
+      <dmn:requiredDecision href="#_fraud_risk"/>
+    </dmn:informationRequirement>
+    <dmn:decisionTable id="_final_decision_table" hitPolicy="FIRST" preferredOrientation="Rule-as-Row" outputLabel="Final Order Decision">
+      <dmn:input id="_cust_eligible_input">
+        <dmn:inputExpression id="_cust_eligible_expr" typeRef="boolean">
+          <dmn:text>Customer Eligibility.eligible</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_order_valid_input">
+        <dmn:inputExpression id="_order_valid_expr" typeRef="boolean">
+          <dmn:text>Order Validation.validationScore >= 0</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_fraud_score_input">
+        <dmn:inputExpression id="_fraud_score_expr" typeRef="number">
+          <dmn:text>Fraud Risk Score</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      <dmn:input id="_final_amount_input">
+        <dmn:inputExpression id="_final_amount_expr" typeRef="number">
+          <dmn:text>Pricing Decision.finalPrice</dmn:text>
+        </dmn:inputExpression>
+      </dmn:input>
+      
+      <dmn:output id="_decision_output" name="decision" typeRef="string"/>
+      <dmn:output id="_processing_path_output" name="processingPath" typeRef="string"/>
+      <dmn:output id="_notification_output" name="notificationRequired" typeRef="string"/>
+      
+      <dmn:rule id="_final_rule1">
+        <dmn:inputEntry id="_final_rule1_input1">
+          <dmn:text>false</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule1_input2">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule1_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule1_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_final_rule1_output1">
+          <dmn:text>"REJECT"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule1_output2">
+          <dmn:text>"NONE"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule1_output3">
+          <dmn:text>"CUSTOMER_INELIGIBLE"</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_final_rule2">
+        <dmn:inputEntry id="_final_rule2_input1">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule2_input2">
+          <dmn:text>false</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule2_input3">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule2_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_final_rule2_output1">
+          <dmn:text>"REJECT"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule2_output2">
+          <dmn:text>"NONE"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule2_output3">
+          <dmn:text>"ORDER_INVALID"</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_final_rule3">
+        <dmn:inputEntry id="_final_rule3_input1">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule3_input2">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule3_input3">
+          <dmn:text>&gt; 70</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule3_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_final_rule3_output1">
+          <dmn:text>"MANUAL_REVIEW"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule3_output2">
+          <dmn:text>"FRAUD_REVIEW"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule3_output3">
+          <dmn:text>"HIGH_FRAUD_RISK"</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_final_rule4">
+        <dmn:inputEntry id="_final_rule4_input1">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule4_input2">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule4_input3">
+          <dmn:text>[30..70]</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule4_input4">
+          <dmn:text>-</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_final_rule4_output1">
+          <dmn:text>"APPROVE_WITH_VERIFICATION"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule4_output2">
+          <dmn:text>"ENHANCED_VERIFICATION"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule4_output3">
+          <dmn:text>"MEDIUM_RISK"</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_final_rule5">
+        <dmn:inputEntry id="_final_rule5_input1">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule5_input2">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule5_input3">
+          <dmn:text>&lt; 30</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule5_input4">
+          <dmn:text>&gt; 10000</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_final_rule5_output1">
+          <dmn:text>"APPROVE"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule5_output2">
+          <dmn:text>"EXPRESS_PREMIUM"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule5_output3">
+          <dmn:text>"HIGH_VALUE_ORDER"</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+      
+      <dmn:rule id="_final_rule6">
+        <dmn:inputEntry id="_final_rule6_input1">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule6_input2">
+          <dmn:text>true</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule6_input3">
+          <dmn:text>&lt; 30</dmn:text>
+        </dmn:inputEntry>
+        <dmn:inputEntry id="_final_rule6_input4">
+          <dmn:text>&lt;= 10000</dmn:text>
+        </dmn:inputEntry>
+        <dmn:outputEntry id="_final_rule6_output1">
+          <dmn:text>"APPROVE"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule6_output2">
+          <dmn:text>"STANDARD"</dmn:text>
+        </dmn:outputEntry>
+        <dmn:outputEntry id="_final_rule6_output3">
+          <dmn:text>"NONE"</dmn:text>
+        </dmn:outputEntry>
+      </dmn:rule>
+    </dmn:decisionTable>
+  </dmn:decision>
+  
+  <!-- Type Definitions -->
+  <dmn:itemDefinition id="tCustomer" name="tCustomer" isCollection="false">
+    <dmn:itemComponent id="_customer_status" name="status" isCollection="false">
+      <dmn:typeRef>string</dmn:typeRef>
+      <dmn:allowedValues>
+        <dmn:text>"ACTIVE", "NEW", "SUSPENDED", "BLACKLISTED"</dmn:text>
+      </dmn:allowedValues>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_customer_creditScore" name="creditScore" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_customer_accountAgeMonths" name="accountAgeMonths" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_customer_outstandingBalance" name="outstandingBalance" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_customer_totalPurchases" name="totalPurchases" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_customer_ordersLastHour" name="ordersLastHour" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_customer_recentAddressChange" name="recentAddressChange" isCollection="false">
+      <dmn:typeRef>boolean</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_customer_averageOrderAmount" name="averageOrderAmount" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+  </dmn:itemDefinition>
+  
+  <dmn:itemDefinition id="tOrder" name="tOrder" isCollection="false">
+    <dmn:itemComponent id="_order_totalAmount" name="totalAmount" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_order_itemCount" name="itemCount" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_order_shippingMethod" name="shippingMethod" isCollection="false">
+      <dmn:typeRef>string</dmn:typeRef>
+      <dmn:allowedValues>
+        <dmn:text>"STANDARD", "EXPRESS", "OVERNIGHT"</dmn:text>
+      </dmn:allowedValues>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_order_paymentMethod" name="paymentMethod" isCollection="false">
+      <dmn:typeRef>string</dmn:typeRef>
+    </dmn:itemComponent>
+  </dmn:itemDefinition>
+  
+  <dmn:itemDefinition id="tInventory" name="tInventory" isCollection="false">
+    <dmn:itemComponent id="_inventory_available" name="available" isCollection="false">
+      <dmn:typeRef>boolean</dmn:typeRef>
+    </dmn:itemComponent>
+  </dmn:itemDefinition>
+  
+  <dmn:itemDefinition id="tEligibilityResult" name="tEligibilityResult" isCollection="false">
+    <dmn:itemComponent id="_eligibility_eligible" name="eligible" isCollection="false">
+      <dmn:typeRef>boolean</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_eligibility_reason" name="reason" isCollection="false">
+      <dmn:typeRef>string</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_eligibility_creditLimit" name="creditLimit" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+  </dmn:itemDefinition>
+  
+  <dmn:itemDefinition id="tValidationResult" name="tValidationResult" isCollection="false">
+    <dmn:itemComponent id="_validation_score" name="validationScore" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+  </dmn:itemDefinition>
+  
+  <dmn:itemDefinition id="tPricingResult" name="tPricingResult" isCollection="false">
+    <dmn:itemComponent id="_pricing_basePrice" name="basePrice" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_pricing_discount" name="discount" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_pricing_discountPercentage" name="discountPercentage" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_pricing_shippingCost" name="shippingCost" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_pricing_tax" name="tax" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_pricing_finalPrice" name="finalPrice" isCollection="false">
+      <dmn:typeRef>number</dmn:typeRef>
+    </dmn:itemComponent>
+  </dmn:itemDefinition>
+  
+  <dmn:itemDefinition id="tFinalDecision" name="tFinalDecision" isCollection="false">
+    <dmn:itemComponent id="_final_decision" name="decision" isCollection="false">
+      <dmn:typeRef>string</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_final_processingPath" name="processingPath" isCollection="false">
+      <dmn:typeRef>string</dmn:typeRef>
+    </dmn:itemComponent>
+    <dmn:itemComponent id="_final_notification" name="notificationRequired" isCollection="false">
+      <dmn:typeRef>string</dmn:typeRef>
+    </dmn:itemComponent>
+  </dmn:itemDefinition>
+  
+  <!-- DMNDI Diagram Information (Optional but helps with visualization in Drools Workbench) -->
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="_diagram" name="Order Processing Rules Diagram">
+      <di:extension>
+        <kie:ComponentsWidthsExtension>
+          <kie:ComponentWidths dmnElementRef="_customer_eligibility_table">
+            <kie:width>50</kie:width>
+            <kie:width>150</kie:width>
+            <kie:width>100</kie:width>
+            <kie:width>100</kie:width>
+            <kie:width>100</kie:width>
+            <kie:width>100</kie:width>
+            <kie:width>200</kie:width>
+            <kie:width>100</kie:width>
+            <kie:width>200</kie:width>
+          </kie:ComponentWidths>
+        </kie:ComponentsWidthsExtension>
+      </di:extension>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</dmn:definitions>"
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Produce as an XML document
+* Do not put any special characters in the output.

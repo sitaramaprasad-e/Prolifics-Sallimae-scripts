@@ -1,11 +1,15 @@
-
-
 #!/usr/bin/env python3
 import json
 import os
 from pathlib import Path
 from datetime import datetime
 import zipfile
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--report-only", action="store_true")
+args = parser.parse_args()
+report_only = args.report_only
 
 def main():
     default_home = Path(os.path.expanduser("~/.model"))
@@ -38,52 +42,78 @@ def main():
             print(f"[ERROR] Failed to parse JSON: {e}")
             return
 
+    archived_rules = [r for r in rules if r.get("archived", False)]
+
     before_count = len(rules)
     # Remove archived rules (existing behavior)
     filtered = [r for r in rules if not r.get("archived", False)]
     removed_count = before_count - len(filtered)
 
-    # --- Dangling link cleanup ---
-    # Build a set of valid rule IDs from the remaining rules
-    valid_ids = set()
-    for r in filtered:
+    # Precompute IDs for archived rules (those we are deleting)
+    archived_ids = set()
+    for r in archived_rules:
         rid = r.get("id")
         if isinstance(rid, str) and rid.strip():
-            valid_ids.add(rid.strip())
+            archived_ids.add(rid.strip())
 
-    def _clean_links(rule_obj):
+    # --- Dangling link cleanup ---
+    # Build a set of ALL rule IDs (including archived).
+    all_ids = set()
+    for r in rules:
+        rid = r.get("id")
+        if isinstance(rid, str) and rid.strip():
+            all_ids.add(rid.strip())
+
+    def _clean_links(rule_obj, all_ids, archived_ids, dry_run=False):
         links = rule_obj.get("links")
         if not isinstance(links, list):
-            return 0
-        keep = []
-        removed = 0
+            return [], 0
+        removed_links = []
         for l in links:
             if not isinstance(l, dict):
-                # Non-dict entries are invalid; drop them
-                removed += 1
+                removed_links.append(l)
                 continue
             fsid = (l.get("from_step_id") or "").strip()
-            # Drop links where from_step_id is missing or not a valid id remaining in the file
-            if not fsid or fsid not in valid_ids:
-                removed += 1
+            # Always treat links whose source ID does not exist in all_ids as dangling
+            if not fsid or fsid not in all_ids:
+                removed_links.append(l)
                 continue
-            keep.append(l)
-        rule_obj["links"] = keep
-        return removed
+            # When we are actually deleting archived rules (not report-only),
+            # also remove links whose source points at an archived rule ID,
+            # because those rules will no longer exist after this script runs.
+            if not dry_run and fsid in archived_ids:
+                removed_links.append(l)
+        if not dry_run:
+            rule_obj["links"] = [l for l in links if l not in removed_links]
+        return removed_links, len(removed_links)
 
     total_links_removed = 0
     for r in filtered:
         try:
-            total_links_removed += _clean_links(r)
+            removed_links, count = _clean_links(r, all_ids, archived_ids, dry_run=report_only)
+            total_links_removed += count
+            if report_only and count > 0:
+                if "id" in r:
+                    print(f"[REPORT] Rule {r['id']} has {count} dangling link(s):")
+                    for dl in removed_links:
+                        print(f"         from_step_id={dl.get('from_step_id')} to_input={dl.get('to_input')}")
         except Exception:
             # Be robust; if links are malformed, skip cleaning that rule
             pass
+
+    if report_only:
+        print("[INFO] --report-only mode: no changes written.")
+        print(f"[INFO] {len(archived_rules)} rule(s) would be deleted:")
+        for r in archived_rules:
+            print(f"       {r.get('id')}  {r.get('rule_name')}")
+        print(f"[INFO] {total_links_removed} link(s) would be cleaned up where the from_step_id no longer matches an existing rule id or would refer to a rule being deleted.")
+        return
 
     # Write updated rules including cleaned links
     with open(business_rules_path, "w", encoding="utf-8") as f:
         json.dump(filtered, f, indent=2, ensure_ascii=False)
 
-    print(f"[INFO] Removed {removed_count} archived rule(s).")
+    print(f"[INFO] Deleted {removed_count} archived rule(s).")
     print(f"[INFO] Removed {total_links_removed} dangling link(s) where from_step_id no longer matches an existing rule id.")
     print(f"[INFO] {len(filtered)} rule(s) remain in {business_rules_path}")
 
