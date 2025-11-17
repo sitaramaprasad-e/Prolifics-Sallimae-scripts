@@ -158,8 +158,6 @@ def step_select_model(model_home: Path, keep_ids: bool = True, compose_mode: Opt
     for r in filtered_rules:
         rc = dict(r)
         drop_keys = ["timestamp", "doc_rule_id", "business_area", "doc_match_score", "archived"]
-        if not keep_ids:
-            drop_keys.append("id")
         for k in drop_keys:
             rc.pop(k, None)
         cleaned_rules.append(rc)

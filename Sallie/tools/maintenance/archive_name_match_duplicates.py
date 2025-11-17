@@ -13,6 +13,8 @@ def main():
     parser.add_argument("--report-only", action="store_true", help="Only report duplicate names; do not archive.")
     args = parser.parse_args()
 
+    print("[DEPRECATED] This script is deprecated and now operates in report-only mode. No changes will be made.")
+
     default_home = Path(os.path.expanduser("~/.model"))
     # No prompt when using argparse; always use default or env overrides
     model_home = default_home
@@ -24,16 +26,6 @@ def main():
 
     if args.report_only:
         print("[INFO] Running in report-only mode. No changes will be written.")
-    # Create a timestamped ZIP backup (same style as delete_archived.py)
-    if not args.report_only:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_backup_path = business_rules_path.parent / f"business_rules_backup_{timestamp}.zip"
-        try:
-            with zipfile.ZipFile(zip_backup_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                zipf.write(business_rules_path, arcname="business_rules.json")
-            print(f"[INFO] ZIP backup created: {zip_backup_path}")
-        except Exception as e:
-            print(f"[WARN] Could not create ZIP backup: {e}")
 
     # Load rules
     try:
@@ -60,31 +52,50 @@ def main():
         print("[INFO] No duplicate rule names found. Nothing archived.")
         return
 
-    # Archive all rules whose name appears more than once
-    total_matched = 0
-    newly_archived = 0
-
-    for r in rules:
+    # For each duplicate name, keep the newest occurrence (last in the file)
+    # and count only the older versions.
+    name_to_indices = {}
+    for idx, r in enumerate(rules):
         if not isinstance(r, dict):
             continue
         rn = r.get("rule_name")
         if rn in duplicate_names:
-            total_matched += 1
-            if not args.report_only:
-                if not r.get("archived", False):
-                    r["archived"] = True
-                    newly_archived += 1
+            name_to_indices.setdefault(rn, []).append(idx)
 
-    if not args.report_only:
-        with open(business_rules_path, "w", encoding="utf-8") as f:
-            json.dump(rules, f, indent=2, ensure_ascii=False)
+    total_groups = len(duplicate_names)
+    total_older_versions = 0
 
-    print(f"[INFO] Duplicate rule names detected: {len(duplicate_names)}")
-    print(f"[INFO] Rules matched by duplicate names: {total_matched}")
-    print(f"[INFO] Newly archived rules: {newly_archived}")
-    if args.report_only:
-        print("[INFO] No rules were modified due to --report-only mode.")
-    print(f"[INFO] Updated file: {business_rules_path}")
+    for rn, idx_list in name_to_indices.items():
+        idx_list = sorted(idx_list)
+        if not idx_list:
+            continue
+        older_idxs = idx_list[:-1]
+        total_older_versions += len(older_idxs)
+
+    # Detailed listing of each duplicate group
+    print("[INFO] Detailed duplicate groups (short id = last 3 hex chars of UUID):")
+    for rn in sorted(name_to_indices.keys()):
+        print(f"  - Rule name: {rn}")
+        idx_list = sorted(name_to_indices[rn])
+        for idx in idx_list:
+            rule = rules[idx] if isinstance(rules[idx], dict) else {}
+            raw_id = (
+                rule.get("id")
+                or rule.get("rule_id")
+                or rule.get("uuid")
+                or "<no-id>"
+            )
+            short_id = "???"
+            if isinstance(raw_id, str):
+                hex_only = "".join(ch for ch in raw_id if ch.lower() in "0123456789abcdef")
+                if len(hex_only) >= 3:
+                    short_id = hex_only[-3:]
+            ts = rule.get("timestamp") or rule.get("modified_at") or rule.get("updated_at") or "<no-timestamp>"
+            print(f"      {short_id}\u00b7 {raw_id}  [ts: {ts}]")
+
+    print(f"[INFO] Duplicate rule names detected (groups): {total_groups}")
+    print(f"[INFO] Older versions identified (would have been archived): {total_older_versions}")
+    print("[INFO] No changes were made due to deprecation.")
 
     # Optionally, list the duplicate names (brief)
     try:

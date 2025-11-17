@@ -12,11 +12,15 @@ INPUT 3: DECISION MODEL
 
 INSTRUCTIONS
 
-I have a provided a list of decisions (input 2) and the source code that corresponds to these decisions (input 1).
+I have a provided a list of business logic (aka rules/decisions) (input 2) and the source code that corresponds to these rules/decisions (input 1).
 
-I have also indicated in input 3 which of these decisions is the top-level decision.
+I have also indicated in input 3 which of these rules/decisions is my desired top-level decision.
 
-Add links to the top-level decision that links in all base decisions and BKMs that contribute to this top-level decision. Only add links where it is clear from the source code (input 1) that the decision feeds into this top-level decision. 
+I want you to think about which business logic/rules/decisions contribute directly to making the top-level decision in input 3.
+
+You must add links to that top-level decision from all base rules/decisions/BKMs that contribute to this top-level decision. Only add links where it is clear from the source code (input 1) that the rule/decision/bkm is depended on by the top-level decision. 
+
+The return json must only contain the top-level decision with its links added.
 
 Reponse must be in this json structure:
 
@@ -185,4 +189,4 @@ Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting
 * Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_step_id rather than from_step, you should use from_step as per the example and populate it with the name of the step.
 * Do not put any special characters in the output.
-* Do not modify any of the rule details other than adding links. This is especially true of the id fields.
+* Do not modify any of the rule details other than adding links. This is especially true of the id and kind fields.

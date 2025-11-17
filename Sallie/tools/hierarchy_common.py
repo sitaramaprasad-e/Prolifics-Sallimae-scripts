@@ -14,7 +14,7 @@ import shutil
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from tools.call_pcpt import pcpt_run_custom_prompt
 
@@ -181,6 +181,7 @@ def merge_generated_rules_into_model_home(
     bases: List[str] = []
     if template_base:
         bases.append(template_base)
+
     # Also try legacy defaults as fallbacks
     for legacy in (HIERARCHY_TEMPLATE_TOP, HIERARCHY_TEMPLATE_COMP):
         if legacy not in bases:
@@ -440,15 +441,15 @@ def merge_generated_rules_into_model_home(
     except Exception:
         pass
 
-    # Helpers for MIM mode and kind classification
-    def _norm_kind(val: Optional[str]) -> str:
-        return (val or "").strip().lower()
+    # # Helpers for MIM mode and kind classification
+    # def _norm_kind(val: Optional[str]) -> str:
+    #     return (val or "").strip().lower()
 
-    def _is_composite(rule: dict) -> bool:
-        return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (composite)".lower()
+    # def _is_composite(rule: dict) -> bool:
+    #     return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (composite)".lower()
 
-    def _is_top_level(rule: dict) -> bool:
-        return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (top-level)".lower()
+    # def _is_top_level(rule: dict) -> bool:
+    #     return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (top-level)".lower()
 
 
     def _merge_links_in_place_generic(existing_rule: dict, incoming_rule: dict, existing_by_id_map: dict) -> int:
@@ -548,6 +549,8 @@ def merge_generated_rules_into_model_home(
     added_ids: List[str] = []
     ensure_model_ids: set[str] = set()
     updated_top_links = 0
+    # Track whether simple (non-MIM) mode performed any link-only updates
+    simple_links_updated = False
 
     # Precompute lookups used by both paths
     existing_by_name = {}
@@ -588,81 +591,81 @@ def merge_generated_rules_into_model_home(
         """Return True if DMN-relevant fields differ (including allowedValues)."""
         return _dmn_snapshot(old_rule) != _dmn_snapshot(new_rule)
 
-    def _process_as_add_update(rule: dict) -> None:
-        nonlocal skipped_details, added_ids, business_rules, existing_by_name, ensure_model_ids, existing_by_id
-        # Drop any internal flags before comparison/persistence
-        rule.pop("__source_id_blank", None)
-        rn = (rule.get("rule_name") or rule.get("name") or "").strip()
-        rid = (rule.get("id") or "").strip()
-        ex = None
-        if rid:
-            ex = existing_by_id.get(rid)
-        if not ex and rn:           
-            ex = existing_by_name.get(rn)
+    # def _process_as_add_update(rule: dict) -> None:
+    #     nonlocal skipped_details, added_ids, business_rules, existing_by_name, ensure_model_ids, existing_by_id
+    #     # Drop any internal flags before comparison/persistence
+    #     rule.pop("__source_id_blank", None)
+    #     rn = (rule.get("rule_name") or rule.get("name") or "").strip()
+    #     rid = (rule.get("id") or "").strip()
+    #     ex = None
+    #     if rid:
+    #         ex = existing_by_id.get(rid)
+    #     if not ex and rn:           
+    #         ex = existing_by_name.get(rn)
 
-        # If existing rule found and there are no DMN material changes,
-        # check for full content duplicate, else update in place with non-DMN changes
-        if ex and not _has_dmn_material_change(ex["rule"], rule):
-            new_norm = _normalize_rule_for_compare(rule)
-            ex_norm = _normalize_rule_for_compare(ex["rule"])
-            if new_norm == ex_norm:
-                fp_new = _content_fingerprint(rule)
-                matches = []
-                matches.append({"idx": ex["idx"], "id": ex["rule"].get("id"), "name": rn})
-                skipped_details.append({"new_name": rn or "(unnamed)", "fingerprint": fp_new, "matches": matches})
-                if matches:
-                    first = matches[0]
-                    eprint(f"[INFO] Skipping duplicate by content: '{rn}' → existing id={first.get('id')} (fp={fp_new})")
-                else:
-                    eprint(f"[INFO] Skipping duplicate by content: '{rn}' (fp={fp_new})")
-                return
-            # Otherwise, update in place (preserving id and archived)
-            preserved_id = ex["rule"].get("id")
-            preserved_archived = ex["rule"].get("archived", False)
-            rule["id"] = preserved_id or rid or str(uuid.uuid4())
-            rule["archived"] = preserved_archived
-            business_rules[ex["idx"]] = rule
-            existing_by_name[rn] = {"idx": ex["idx"], "rule": rule}
-            if rule.get("id"):
-                ensure_model_ids.add(rule["id"])
-                existing_by_id[rule["id"]] = {"idx": ex["idx"], "rule": rule}
-            print(f"[INFO] Updated rule by {'id' if rid else 'name'} with non-DMN changes")
-            return
+    #     # If existing rule found and there are no DMN material changes,
+    #     # check for full content duplicate, else update in place with non-DMN changes
+    #     if ex and not _has_dmn_material_change(ex["rule"], rule):
+    #         new_norm = _normalize_rule_for_compare(rule)
+    #         ex_norm = _normalize_rule_for_compare(ex["rule"])
+    #         if new_norm == ex_norm:
+    #             fp_new = _content_fingerprint(rule)
+    #             matches = []
+    #             matches.append({"idx": ex["idx"], "id": ex["rule"].get("id"), "name": rn})
+    #             skipped_details.append({"new_name": rn or "(unnamed)", "fingerprint": fp_new, "matches": matches})
+    #             if matches:
+    #                 first = matches[0]
+    #                 eprint(f"[INFO] Skipping duplicate by content: '{rn}' → existing id={first.get('id')} (fp={fp_new})")
+    #             else:
+    #                 eprint(f"[INFO] Skipping duplicate by content: '{rn}' (fp={fp_new})")
+    #             return
+    #         # Otherwise, update in place (preserving id and archived)
+    #         preserved_id = ex["rule"].get("id")
+    #         preserved_archived = ex["rule"].get("archived", False)
+    #         rule["id"] = preserved_id or rid or str(uuid.uuid4())
+    #         rule["archived"] = preserved_archived
+    #         business_rules[ex["idx"]] = rule
+    #         existing_by_name[rn] = {"idx": ex["idx"], "rule": rule}
+    #         if rule.get("id"):
+    #             ensure_model_ids.add(rule["id"])
+    #             existing_by_id[rule["id"]] = {"idx": ex["idx"], "rule": rule}
+    #         print(f"[INFO] Updated rule by {'id' if rid else 'name'} with non-DMN changes")
+    #         return
 
-        if ex and _has_dmn_material_change(ex["rule"], rule):
-            preserved_id = ex["rule"].get("id")
-            was_archived = ex["rule"].get("archived", False)
-            rule["id"] = preserved_id or rid or str(uuid.uuid4())
-            if was_archived:
-                rule["archived"] = False
-                print(f"[INFO] Unarchived rule due to update: '{rn}' (id={rule['id']})")
-            else:
-                rule["archived"] = ex["rule"].get("archived", False)
-            business_rules[ex["idx"]] = rule
-            existing_by_name[rn] = {"idx": ex["idx"], "rule": rule}
-            if rule.get("id"):
-                ensure_model_ids.add(rule["id"])
-                existing_by_id[rule["id"]] = {"idx": ex["idx"], "rule": rule}
-            print(f"[INFO] Updated rule by {'id' if rid else 'name'} with DMN changes (incl. allowedValues): '{rn}'")
-            return
-        new_norm = _normalize_rule_for_compare(rule)
-        exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
-        if exists:
-            fp_new = _content_fingerprint(rule)
-            matches = []
-            if ex:
-                matches.append({"idx": ex["idx"], "id": ex["rule"].get("id"), "name": rn})
-            skipped_details.append({"new_name": rn or "(unnamed)", "fingerprint": fp_new, "matches": matches})
-            if matches:
-                first = matches[0]
-                eprint(f"[INFO] Skipping duplicate by content: '{rn}' → existing id={first.get('id')} (fp={fp_new})")
-            else:
-                eprint(f"[INFO] Skipping duplicate by content: '{rn}' (fp={fp_new})")
-            return
-        business_rules.append(rule)
-        added_ids.append(rule["id"])
-        if rule.get("id"):
-            existing_by_id[rule["id"]] = {"idx": len(business_rules)-1, "rule": rule}
+    #     if ex and _has_dmn_material_change(ex["rule"], rule):
+    #         preserved_id = ex["rule"].get("id")
+    #         was_archived = ex["rule"].get("archived", False)
+    #         rule["id"] = preserved_id or rid or str(uuid.uuid4())
+    #         if was_archived:
+    #             rule["archived"] = False
+    #             print(f"[INFO] Unarchived rule due to update: '{rn}' (id={rule['id']})")
+    #         else:
+    #             rule["archived"] = ex["rule"].get("archived", False)
+    #         business_rules[ex["idx"]] = rule
+    #         existing_by_name[rn] = {"idx": ex["idx"], "rule": rule}
+    #         if rule.get("id"):
+    #             ensure_model_ids.add(rule["id"])
+    #             existing_by_id[rule["id"]] = {"idx": ex["idx"], "rule": rule}
+    #         print(f"[INFO] Updated rule by {'id' if rid else 'name'} with DMN changes (incl. allowedValues): '{rn}'")
+    #         return
+    #     new_norm = _normalize_rule_for_compare(rule)
+    #     exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
+    #     if exists:
+    #         fp_new = _content_fingerprint(rule)
+    #         matches = []
+    #         if ex:
+    #             matches.append({"idx": ex["idx"], "id": ex["rule"].get("id"), "name": rn})
+    #         skipped_details.append({"new_name": rn or "(unnamed)", "fingerprint": fp_new, "matches": matches})
+    #         if matches:
+    #             first = matches[0]
+    #             eprint(f"[INFO] Skipping duplicate by content: '{rn}' → existing id={first.get('id')} (fp={fp_new})")
+    #         else:
+    #             eprint(f"[INFO] Skipping duplicate by content: '{rn}' (fp={fp_new})")
+    #         return
+    #     business_rules.append(rule)
+    #     added_ids.append(rule["id"])
+    #     if rule.get("id"):
+    #         existing_by_id[rule["id"]] = {"idx": len(business_rules)-1, "rule": rule}
 
     if is_mim_mode:
         # === New strict MIM semantics ===
@@ -690,7 +693,6 @@ def merge_generated_rules_into_model_home(
         existing_by_id_model = {rid: entry for rid, entry in (existing_by_id or {}).items() if rid in allowed_ids_in_model}
         # Broader map for link resolution during this merge: include all rules, not only those already in the model
         existing_by_id_for_links = dict(existing_by_id)
-
 
         # New: Kind detector (does not mutate), for overlay
         def _detect_incoming_kind(incoming_rule: dict) -> str:
@@ -1032,7 +1034,7 @@ def merge_generated_rules_into_model_home(
         # Done with MIM-specific path; skip the original mixed add/update logic
         return
     else:
-        # Original behavior for 'top' and 'next'
+        # Original behavior for 'top' and 'comp'
         existing_by_fp = {}
         for idx, r in enumerate(business_rules):
             if not isinstance(r, dict):
@@ -1058,8 +1060,30 @@ def merge_generated_rules_into_model_home(
                 continue
             new_norm = _normalize_rule_for_compare(new_rule)
             fp_new = _content_fingerprint(new_rule)
-            exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
+            rid_new = (new_rule.get("id") or "").strip()
+            if rid_new:
+                # If PCPT returned an id, treat existence by id instead of by content
+                exists = any(((r.get("id") or "").strip() == rid_new) for r in business_rules if isinstance(r, dict))
+            else:
+                # Fallback to content-based duplicate detection when there is no id
+                exists = any(_normalize_rule_for_compare(r) == new_norm for r in business_rules if isinstance(r, dict))
             if exists:
+                # If this rule exists by id, attempt to merge in any new links instead of creating a duplicate.
+                merged_links = False
+                if rid_new:
+                    ex_by_id = existing_by_id.get(rid_new)
+                    if ex_by_id:
+                        added_links = _merge_links_in_place_generic(ex_by_id["rule"], new_rule, existing_by_id)
+                        if added_links:
+                            business_rules[ex_by_id["idx"]] = ex_by_id["rule"]
+                            print(f"[INFO] Updated rule by id with {added_links} new link(s): '{rn or '(unnamed)'}'")
+                            merged_links = True
+                            simple_links_updated = True
+                if merged_links:
+                    # We treated this as a link-only update; do not record as a skipped duplicate.
+                    continue
+
+                # Otherwise, treat as a pure duplicate and skip adding a new rule.
                 matches = existing_by_fp.get(fp_new) or []
                 if not matches and rn:
                     for idx2, r in enumerate(business_rules):
@@ -1088,7 +1112,7 @@ def merge_generated_rules_into_model_home(
             else:
                 print(f"  • {name}  (fp={fp})")
 
-    if added_ids or (is_mim_mode and updated_top_links > 0):
+    if added_ids or simple_links_updated or (is_mim_mode and updated_top_links > 0):
         # Strip internal flags from all rules before persisting
         for rr in business_rules:
             if isinstance(rr, dict):
