@@ -1,0 +1,63 @@
+INPUT 1: SOURCE
+
+@@INPUT1@@
+
+INPUT 2: DOMAIN
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: RULES
+
+@@INPUT_FILE2_CONTENT@@
+
+INSTRUCTIONS
+
+You are an expert at taking a domain description (input 2) describing a set of code (input 1) and marking it up with reference to the business rules (input 3) that operate on each domain type.
+
+Produce a marked up version of the domain description where each domain type is annotated with references to the relevant business rules that operate on that domain type, as per the rules in input 3.
+
+Take a look at the source code (input 1) if you need some help understanding exactly which domain types a rule operates on. The rule must appear against the domain type on which the rule operates.
+
+If there are any rules in input 3 do not operate on the domain types in input 2, then leave those out.
+
+So the annotation must appear at the domain type it operates on, with all the rules for that domain type in the single note.
+
+Here's an example of the format to use for output - example:
+
+# Domain Model Overview
+
+This Lightning Web Component represents a partner portal interface for managing account access and discovery within the AMETEK organization. The system operates on a dual-access model where partners can view accounts specifically shared with their firm while also having the ability to search the global AMETEK account database. The component facilitates account discovery through filtered search capabilities and provides account creation functionality when existing accounts cannot be found. The underlying data model supports organizational hierarchy, geographic segmentation, and partner-based access control for account management.
+
+## Entities
+
+### Account
+**Description**: Core business entity representing companies or organizations within the AMETEK system.
+(note: 
+"Rules: 
+Should Account Shared List Be Displayed, 
+Generate Account URL Link, 
+Should Account Master Update Existing Account,
+Generate Account Key Customer Field,
+Create Note for Account,
+Determine Parent Object Type from Attachment")
+
+**Attributes**:
+- `Id`: Unique system identifier for the account record
+- `Name`: Official company or organization name
+- `Account_Descriptor__c`: Additional descriptive information about the account
+- `Billing_State_Province__c`: Geographic location for billing purposes
+- `Ametek_ID__c`: Internal AMETEK identification number
+- `Phone`: Primary contact telephone number
+
+**Relationships**:
+- Has many Account Shares (one-to-many)
+
+
+This is indicating all the rules for the domain type Account. Stick exactly to this multi-line format.
+
+If multiple rules are relevant to a single domain type, list them all in the note for that domain type.
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting.
+* Don't change any of the content from the original domain description except to add the rule references. Everything else should remain exactly the same including headings and other existing notes.
+* Do not put any special characters in the output.

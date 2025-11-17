@@ -5,6 +5,7 @@ import os
 import uuid
 import glob
 import hashlib
+from helpers.rule_ingest_core import add_rules_from_text, heading_text
 
 # ===== Lightweight TRACE logger (inline; no external files) =====
 import logging
@@ -403,94 +404,6 @@ def _normalize_text(s: str) -> str:
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
 
-# Helper: Parse DMN Inputs/Outputs line with optional Allowed Values
-def _parse_dmn_io_decl(line: str) -> dict:
-    """
-    Parse a single DMN Inputs/Outputs line of the form:
-      - Name : Type [Allowed Values: v1, v2, "v 3"]
-    Returns a dict with keys: name, type, and optional allowedValues (list).
-    Backwards compatible with lines that omit type or allowed values.
-    """
-    s = (line or "").strip()
-    # Strip bullet markers if present
-    s = s.lstrip("-*").strip()
-    # Try full pattern with Allowed Values
-    m = re.match(
-        r'^(?P<name>[^:]+?)\s*:\s*(?P<type>[^\[\]]+?)(?:\s*\[\s*Allowed\s*Values\s*:\s*(?P<values>.+?)\s*\])?\s*$',
-        s,
-        flags=re.IGNORECASE
-    )
-    if m:
-        name = m.group("name").strip().strip('`')
-        typ = (m.group("type") or "").strip().strip('`')
-        out = {"name": name, "type": typ}
-        vals = m.group("values")
-        if vals:
-            # Split by comma, strip whitespace and surrounding quotes
-            parts = []
-            for tok in vals.split(","):
-                t = tok.strip()
-                # remove surrounding single/double quotes if present
-                if (len(t) >= 2) and ((t[0] == t[-1]) and t[0] in {'"', "'"}):
-                    t = t[1:-1]
-                if t:
-                    parts.append(t)
-            if parts:
-                out["allowedValues"] = parts
-        return out
-    # Fallbacks for legacy forms:
-    # 1) "Name : Type"
-    if ":" in s:
-        name, typ = s.split(":", 1)
-        return {"name": name.strip().strip('`'), "type": typ.strip().strip('`')}
-    # 2) Only a field name
-    field = s.strip().strip('`')
-    return {"name": field, "type": ""}
-
-
-# Helper: detect material change in DMN-relevant fields (hit policy, inputs, outputs, table)
-def _has_material_change(existing: dict, new_fields: dict) -> bool:
-    """
-    Determine whether DMN-relevant fields have materially changed.
-    Compares hit policy, inputs, outputs (including allowedValues), and table text.
-    Returns True if different; False if effectively the same or if existing is missing.
-    """
-    if not isinstance(existing, dict):
-        return True
-    def _norm_io(lst):
-        out = []
-        for x in (lst or []):
-            if not isinstance(x, dict):
-                continue
-            out.append({
-                "name": str(x.get("name", "")),
-                "type": str(x.get("type", "")),
-                # Normalize allowedValues to a list of strings
-                "allowedValues": [str(v) for v in (x.get("allowedValues") or [])]
-            })
-        # Keep deterministic order
-        return out
-    # Build comparable snapshots
-    ex_hp   = str(existing.get("dmn_hit_policy", "") or "")
-    ex_in   = _norm_io(existing.get("dmn_inputs"))
-    ex_out  = _norm_io(existing.get("dmn_outputs"))
-    ex_tbl  = str(existing.get("dmn_table", "") or "").strip()
-
-    new_hp  = str(new_fields.get("dmn_hit_policy", "") or "")
-    new_in  = _norm_io(new_fields.get("dmn_inputs"))
-    new_out = _norm_io(new_fields.get("dmn_outputs"))
-    new_tbl = str(new_fields.get("dmn_table", "") or "").strip()
-
-    if ex_hp != new_hp:
-        return True
-    if ex_in != new_in:
-        return True
-    if ex_out != new_out:
-        return True
-    if ex_tbl != new_tbl:
-        return True
-    return False
-
 def _parse_pcpt_header_block(lines):
     data = {}
     for line in lines:
@@ -694,7 +607,7 @@ def _extract_rule_names(doc_text: str) -> List[str]:
     parts = re.split(r"(?m)^\s{0,3}#{1,6}\s+", t.strip())
     for sec in parts[1:]:
         first = (sec.splitlines() or [""])[0]
-        nm = _heading_text(first)
+        nm = heading_text(first)  # from rule_ingest_core
         if nm and nm.lower() not in {"rule name", "rule-name", "name"}:
             names.append(nm)
     # de-dupe while preserving order
@@ -949,21 +862,6 @@ def _all_logs() -> list:
     return sorted(results)
 
 
-def _heading_text(line: str) -> str:
-    """Extract clean heading text from a markdown heading line.
-    Removes leading/trailing '#' and surrounding whitespace/markers.
-    """
-    s = (line or "").strip()
-    # remove leading hashes and spaces
-    s = re.sub(r"^\s*#{1,6}\s*", "", s)
-    # remove trailing hashes and spaces
-    s = re.sub(r"\s*#{1,6}\s*$", "", s)
-    s = s.strip(" *-\t")
-    # If the heading still includes a leading label like "Rule Name:", strip it.
-    s = re.sub(r"^(?:Rule\s+Name|Name):\s*", "", s, flags=re.IGNORECASE)
-    return s
-
-
 output_file = f"{MODEL_HOME}/.model/business_rules.json"
 
 # Read existing rules if output file already exists and is not empty
@@ -1015,296 +913,25 @@ new_count = 0
 considered_count = 0
 new_rules = []
 
-def _normalize_rule_doc_text(t: str) -> str:
-    # Normalize various "Rule Name" heading formats to a consistent "## " heading
-    t = re.sub(r"#{2,6}\s*\d+\.\s*\*\*Rule Name:\*\*\s*", "## ", t)   # e.g., "### 1. **Rule Name:**"
-    t = re.sub(r"#{2,6}\s*\*\*Rule Name:\*\*\s*", "## ", t)            # e.g., "### **Rule Name:**"
-    t = re.sub(r"#{2,6}\s*\d+\.\s*Rule Name:\s*", "## ", t)            # e.g., "### 1. Rule Name:"
-    t = re.sub(r"#{2,6}\s*Rule Name:\s*", "## ", t)                    # e.g., "### Rule Name:"
-
-    # Newer "Name:" heading variants → also normalize to "## "
-    t = re.sub(r"#{2,6}\s*\d+\.\s*\*\*Name:\*\*\s*", "## ", t)         # e.g., "### 1. **Name:**"
-    t = re.sub(r"#{2,6}\s*\*\*Name:\*\*\s*", "## ", t)                 # e.g., "### **Name:**"
-    t = re.sub(r"#{2,6}\s*\d+\.\s*Name:\s*", "## ", t)                 # e.g., "### 1. Name:"
-    t = re.sub(r"#{2,6}\s*Name:\s*", "## ", t)                         # e.g., "### Name:"
-
-    t = re.sub(r"\n---+\n", "\n", t)                                   # Remove separators
-
-    # Also handle non-heading inline forms
-    t = re.sub(r"(?m)^\s*\*\*Rule Name:\*\*\s*", "## ", t)
-    t = re.sub(r"(?m)^\s*Rule Name:\s*", "## ", t)
-    t = re.sub(r"(?m)^\s*\*\*Name:\*\*\s*", "## ", t)
-    t = re.sub(r"(?m)^\s*Name:\s*", "## ", t)
-
-    return t
-
-def _add_rules_from_text(doc_text: str, section_timestamp: str, allowed_names: Optional[set] = None):
-    global updated_count, new_count, considered_count
-    t = _normalize_rule_doc_text(doc_text or "")
-    rule_sections = re.split(r"(?m)^\s{0,3}#{1,6}\s+", t.strip())[1:]
-    # Pre-seed NAME_TO_ID for all rule headings in this document (or the allowed subset)
-    try:
-        _all_names_in_doc = _extract_rule_names(t)
-    except Exception:
-        _all_names_in_doc = []
-    if allowed_names is not None:
-        _seed_names = [n for n in _all_names_in_doc if n in allowed_names]
-    else:
-        _seed_names = _all_names_in_doc
-    for _nm in _seed_names:
-        if _nm in NAME_TO_ID and NAME_TO_ID.get(_nm):
-            continue
-        ex = existing_by_name.get(_nm)
-        if isinstance(ex, dict) and ex.get("id"):
-            NAME_TO_ID[_nm] = ex.get("id")
-        else:
-            NAME_TO_ID[_nm] = str(uuid.uuid4())
-    for section in rule_sections:
-        considered_count += 1
-        try:
-            lines = section.strip().splitlines()
-            rule_name = _heading_text(lines[0])
-            if not rule_name or rule_name.lower() in {"rule name", "rule-name"}:
-                rn_match = re.search(r"\*\*Rule Name:\*\*\s*(.+)", section)
-                if rn_match:
-                    rule_name = rn_match.group(1).strip()
-            
-            if (not rule_name or rule_name.lower() in {"rule name", "rule-name"}):
-                rn2 = re.search(r"\*\*Name:\*\*\s*(.+)", section)
-                if rn2:
-                    rule_name = rn2.group(1).strip()
-
-            # New optional Kind field (Decision | BKM)
-            kind = ""
-            m_kind = re.search(r"\*\*Kind:\*\*\s*([A-Za-z]+)", section)
-            if m_kind:
-                kind = m_kind.group(1).strip()
-            
-            # If an allowlist is provided (used for prior-runs mode), skip names not in the set
-            if allowed_names is not None and rule_name not in allowed_names:
-                continue
-            # Purpose: accept "**Rule Purpose:**" or "**Purpose:**"
-            purpose_match = re.search(
-                r"\*\*(?:Rule\s+)?Purpose:\*\*\s*\n?(.*?)(?=\n\*\*(?:Rule\s+)?Spec|\n\*\*Specification|\n\*\*Code Block|\n\*\*Example|$)",
-                section, re.DOTALL | re.IGNORECASE
-            )
-            rule_purpose = purpose_match.group(1).strip() if purpose_match else ""
-
-            # Spec: accept "**Rule Spec:**" or "**Spec:**" or "**Specification:**"
-            spec_marker = re.search(r"\*\*(?:Rule\s+)?Spec:\*\*|\*\*Specification:\*\*", section, re.IGNORECASE)
-            if spec_marker:
-                start = spec_marker.end()
-                next_marker = re.search(r"\n\*\*(Code Block|Example):\*\*|\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", section[start:], re.DOTALL | re.IGNORECASE)
-                end = next_marker.start() + start if next_marker else len(section)
-                rule_spec = section[start:end].strip()
-            else:
-                rule_spec = ""
-            code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", section, re.DOTALL)
-            code_block = code_match.group(1).strip() if code_match else ""
-            example_match = re.search(r"\*\*Example:\*\*\s*\n?(.*?)(?=\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?|\n## |\Z)", section, re.DOTALL | re.IGNORECASE)
-            example = example_match.group(1).strip() if example_match else ""
-            if example:
-                example = re.split(r"\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", example, flags=re.IGNORECASE)[0].strip()
-            dmn_hit_policy = ""
-            dmn_inputs, dmn_outputs = [], []
-            dmn_table = ""
-            dmn_match = re.search(r"(?:^|\n)(?:\*{0,2}\s*)?DMN\s*:\s*\n?(.*?)(?=\n## |\Z)", section, re.DOTALL | re.IGNORECASE)
-            if dmn_match:
-                raw_dmn = dmn_match.group(1).strip()
-                m_code = re.search(r"```.*?\n(.*?)```", raw_dmn, re.DOTALL)
-                dmn_body = m_code.group(1).strip() if m_code else raw_dmn
-                dmn_body = re.sub(r"`+", "", dmn_body)
-                dmn_body = re.sub(r"\*\*", "", dmn_body)
-                m_hp = re.search(r"Hit\s*Policy\s*:\s*([A-Za-z_]+)", dmn_body, re.IGNORECASE)
-                if m_hp:
-                    dmn_hit_policy = m_hp.group(1).strip()
-                m_inputs = re.search(r"Inputs\s*:\s*\n(?P<block>(?:\s*[-*]\s*.*(?:\n|$))+)", dmn_body, re.IGNORECASE)
-                if m_inputs:
-                    for ln in m_inputs.group("block").splitlines():
-                        ln = ln.strip()
-                        if not (ln.startswith("-") or ln.startswith("*")):
-                            continue
-                        parsed = _parse_dmn_io_decl(ln)
-                        # Only include allowedValues if present (backwards compatible)
-                        dmn_inputs.append(parsed)
-                m_outputs = re.search(r"Outputs\s*:\s*\n(?P<block>(?:\s*[-*]\s*.*(?:\n|$))+)", dmn_body, re.IGNORECASE)
-                if m_outputs:
-                    for ln in m_outputs.group("block").splitlines():
-                        ln = ln.strip()
-                        if not (ln.startswith("-") or ln.startswith("*")):
-                            continue
-                        parsed = _parse_dmn_io_decl(ln)
-                        dmn_outputs.append(parsed)
-                lines2 = [ln.rstrip() for ln in dmn_body.splitlines()]
-                table_lines, in_table = [], False
-                for ln in lines2:
-                    if ("|" in ln) or ("+" in ln) or re.search(r"-{2,}", ln):
-                        table_lines.append(ln.rstrip())
-                        in_table = True
-                    else:
-                        if in_table:
-                            break
-                dmn_table = "\n".join(table_lines).strip()
-            # Dedup key uses the per-section timestamp now
-            k = _dedupe_key(rule_name, section_timestamp)
-            if k in seen and not FORCE_LOAD:
-                _audit_add("rule", path="section", source="input_doc", decision="rejected", reason="duplicate or older", tests={"key": str(k), "force": FORCE_LOAD}, derived={})
-                continue
-            existing = existing_by_name.get(rule_name)
-            if existing:
-                old_ts = existing.get("timestamp")
-                # Build new snapshot of DMN-related fields for material change detection
-                _new_fields = {
-                    "dmn_hit_policy": dmn_hit_policy,
-                    "dmn_inputs": dmn_inputs,
-                    "dmn_outputs": dmn_outputs,
-                    "dmn_table": dmn_table,
-                }
-                is_material_change = _has_material_change(existing, _new_fields)
-                if not FORCE_LOAD and old_ts and old_ts >= section_timestamp and not is_material_change:
-                    _audit_add("rule", path="section", source="input_doc", decision="rejected", reason="duplicate or older", tests={"key": str(k), "force": FORCE_LOAD, "material_change": False}, derived={})
-                    continue
-                if not FORCE_LOAD and old_ts and old_ts >= section_timestamp and is_material_change:
-                    LOG.info("[info] material change detected for '%s' — updating despite same/older timestamp (allowedValues or DMN changed)", rule_name)
-                rule_id = existing.get("id") or NAME_TO_ID.get(rule_name) or str(uuid.uuid4())
-                NAME_TO_ID[rule_name] = rule_id
-                updated_count += 1
-            else:
-                # Use pre-seeded ID if present so links that referenced this rule by name resolve to the same ID
-                rule_id = NAME_TO_ID.get(rule_name) or str(uuid.uuid4())
-                NAME_TO_ID[rule_name] = rule_id
-                new_count += 1
-            seen.add(k)
-            # code_file
-            code_file = ""
-            code_lines = None
-            m_codefile_inline = re.search(r"\*\*Code\s*Block:\*\*\s*`?([^`\n]+)`?", section, re.IGNORECASE)
-            if m_codefile_inline:
-                code_file = m_codefile_inline.group(1).strip()
-            else:
-                m_codefile_fileline = re.search(r"(?mi)^\s*File:\s*`?([^`\n]+)`?", section)
-                if m_codefile_fileline:
-                    code_file = m_codefile_fileline.group(1).strip()
-            if code_file:
-                code_file = code_file.replace("`", "").strip()
-            m_codelines = re.search(r"\bLine(?:s)?\s*:??\s*(\d+)(?:\s*[\-\u2013\u2014]\s*(\d+))?", section, re.IGNORECASE)
-            if m_codelines:
-                try:
-                    start_line = int(m_codelines.group(1))
-                    end_line = m_codelines.group(2)
-                    if end_line is not None:
-                        end_line = int(end_line)
-                    else:
-                        end_line = start_line
-                    code_lines = [start_line, end_line]
-                except Exception:
-                    code_lines = None
-            code_function = ""
-            m_codefunc = re.search(r"(?mi)^\s*Function\b\s*[:\-\u2013\u2014]*\s*`?([^`\n]+)`?", section)
-            if m_codefunc:
-                code_function = m_codefunc.group(1).strip()
-                code_function = re.sub(r"^[\s:;\-\u2013\u2014]+", "", code_function).strip()
-            # New: parse **Links:** block (optional)
-            links = []
-            m_links = re.search(r"(?mi)^\s*\*\*Links:\*\*\s*\n(?P<body>.*?)(?=\n## |\Z)", section, re.DOTALL)
-            if m_links:
-                body = m_links.group("body").strip()
-                if body.lower() == "none":
-                    links = []
-                else:
-                    for ln in [x.strip() for x in body.splitlines() if x.strip()]:
-                        # Accept two forms (case-insensitive):
-                        #  A) Implicit to_step (preferred):
-                        #     <from_step>.<from_output> -> <to_input> [kind=...]
-                        #     (to_step is inferred as the current rule_name)
-                        #  B) Legacy explicit to_step:
-                        #     <from_step>.<from_output> -> <to_step>.<to_input> [kind=...]
-                        # We do NOT store to_step; it is implied by the owning rule. The entire RHS
-                        # is treated as to_input. If RHS starts with "<rule_name>." we strip that prefix.
-                        mm = re.match(r"^(.+?)\.(.+?)\s*->\s*(.+?)\s*\[kind=([^\]]+)\]\s*$", ln, flags=re.IGNORECASE)
-                        if mm:
-                            _from_step = mm.group(1).strip()
-                            _from_output = mm.group(2).strip()
-                            rhs = mm.group(3).strip()
-                            _kind = mm.group(4).strip()
-                            # Resolve from rule name to id if possible
-                            _from_id = NAME_TO_ID.get(_from_step)
-                            if not _from_id:
-                                ex = existing_by_name.get(_from_step)
-                                if isinstance(ex, dict):
-                                    _from_id = ex.get("id")
-                            # Only add the link if _from_id is present, else skip
-                            if _from_id:
-                                links.append({
-                                    "from_step_id": _from_id,
-                                    "from_output": _from_output,
-                                    "to_input": rhs,               # full RHS preserved (may contain dots)
-                                    "kind": _kind
-                                })
-                            # If _from_id is missing, skip this link entirely (do not use name fallback)
-                            # Add TRACE log when a link is skipped due to a missing ID
-                            # (inserted after the if _from_id: block)
-                            # (see else below)
-                            # (but only if _from_id is missing)
-                            #
-                        else:
-                            # keep raw line for diagnostics if it doesn't match
-                            links.append({"raw": ln})
-                        # After if _from_id: ... else: ... for the matched link line
-                        if mm:
-                            if not _from_id:
-                                LOG.trace("[trace] skipped link: could not resolve id for from_step='%s' (owner rule='%s')", _from_step, rule_name)
-            rule_rec = {
-                "rule_name": rule_name,
-                "rule_purpose": rule_purpose,
-                "rule_spec": rule_spec,
-                "code_block": code_block,
-                "code_file": code_file,
-                "code_lines": code_lines,
-                "code_function": code_function,
-                "example": example,
-                "dmn_hit_policy": dmn_hit_policy,
-                "dmn_inputs": dmn_inputs,
-                "dmn_outputs": dmn_outputs,
-                "dmn_table": dmn_table,
-                "timestamp": section_timestamp,
-                "id": rule_id,
-                "owner": _ingest_owner,
-                "component": _ingest_component,
-                "kind": kind,
-                "links": links,
-            }
-            if existing and existing.get("archived") is not None:
-                # If rule was archived and we are updating it, unarchive automatically
-                if existing.get("archived") is True:
-                    rule_rec["archived"] = False
-                    LOG.info("[info] Unarchived rule on update: %s", rule_name)
-                else:
-                    rule_rec["archived"] = existing["archived"]
-            if FORCE_LOAD and existing:
-                for src_key in ("rule_category", "category", "category_id", "categoryId"):
-                    val = existing.get(src_key)
-                    if val not in (None, "", []):
-                        rule_rec["rule_category"] = val
-                        break
-            _audit_add(
-                "rule",
-                path=rule_rec.get("code_file") or "",
-                source="input_doc",
-                decision="accepted",
-                reason=("updated" if existing else "new"),
-                tests={"has_code_block": bool(code_block)},
-                derived={"id": rule_id, "rule_name": rule_name, "kind": kind, "links": len(links)}
-            )
-            LOG.info("[info] ✓ %s rule: %s", ("updated" if existing else "new"), rule_name)
-            new_rules.append(rule_rec)
-        except Exception as e:
-            print(f"Failed to parse a rule section:\n{section[:100]}...\nError: {e}")
-
- # First ingest the current file content (collect current rule names)
 LOG.info("[step 1/4] Parsing current report to extract rules…")
 with open(input_file, "r", encoding="utf-8") as f:
-    _add_rules_from_text(f.read(), file_timestamp)
+    new_rules_from_doc, updated_count, new_count, considered_count = add_rules_from_text(
+        f.read(),
+        file_timestamp,
+        existing_by_name=existing_by_name,
+        name_to_id=NAME_TO_ID,
+        seen=seen,
+        force_load=FORCE_LOAD,
+        logger=LOG,
+        ingest_owner=_ingest_owner,
+        ingest_component=_ingest_component,
+        audit_add=_audit_add,
+        updated_count=updated_count,
+        new_count=new_count,
+        considered_count=considered_count,
+        allowed_names=None,
+    )
+    new_rules.extend(new_rules_from_doc)
 
 # Then, if requested, ingest prior iterations **only for rules that already exist**
 if ALL_RUNS:
@@ -1317,7 +944,23 @@ if ALL_RUNS:
     _current_names  = {r.get("rule_name") for r in new_rules if r.get("rule_name")}
     _allowed_names  = _existing_names.union(_current_names)
     for ts, resp_text in prior_items:
-        _add_rules_from_text(resp_text, ts or file_timestamp, allowed_names=_allowed_names)
+        prior_rules, updated_count, new_count, considered_count = add_rules_from_text(
+            resp_text,
+            ts or file_timestamp,
+            existing_by_name=existing_by_name,
+            name_to_id=NAME_TO_ID,
+            seen=seen,
+            force_load=FORCE_LOAD,
+            logger=LOG,
+            ingest_owner=_ingest_owner,
+            ingest_component=_ingest_component,
+            audit_add=_audit_add,
+            updated_count=updated_count,
+            new_count=new_count,
+            considered_count=considered_count,
+            allowed_names=_allowed_names,
+        )
+        new_rules.extend(prior_rules)
 
 final_rules = {r["rule_name"]: r for r in existing_rules}
 for r in new_rules:

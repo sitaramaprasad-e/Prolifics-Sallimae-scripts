@@ -1,15 +1,93 @@
 #!/usr/bin/env python3
+import warnings
+# Suppress the LibreSSL/OpenSSL compatibility warning from urllib3 v2
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+",
+    module="urllib3"
+)
 import json
 import os
 from pathlib import Path
 from datetime import datetime
 import zipfile
 import argparse
+import requests
+from typing import Optional, Dict
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--report-only", action="store_true")
 args = parser.parse_args()
 report_only = args.report_only
+
+# --- Neo4j / graph API configuration (lazy, best-effort) ---
+GRAPH_BASE_URL = os.getenv("RULES_PORTAL_BASE_URL", "http://localhost:443").rstrip("/")
+GRAPH_ENABLED_ENV = os.getenv("RULES_PORTAL_GRAPH_ENABLED", "true").strip().lower()
+GRAPH_ENABLED = GRAPH_ENABLED_ENV in {"1", "true", "yes", "on"}
+
+_GRAPH_STATUS_CHECKED = False
+_GRAPH_AVAILABLE = False
+
+
+def graph_is_enabled() -> bool:
+    """Return True if graph population is enabled and the backend is reachable.
+
+    We reuse the same env vars as rule_ingest_core and call /api/graph/status
+    once per process. Failures are logged but do not stop this script.
+    """
+    global _GRAPH_STATUS_CHECKED, _GRAPH_AVAILABLE
+
+    if not GRAPH_ENABLED:
+        return False
+
+    if _GRAPH_STATUS_CHECKED:
+        return _GRAPH_AVAILABLE
+
+    _GRAPH_STATUS_CHECKED = True
+    status_url = f"{GRAPH_BASE_URL}/api/graph/status"
+    try:
+        resp = requests.get(status_url, timeout=2)
+        if resp.ok:
+            data = resp.json()
+            _GRAPH_AVAILABLE = bool(data.get("up"))
+            if not _GRAPH_AVAILABLE:
+                print(
+                    f"[WARN] Neo4j graph API reported up=false at {status_url}: {data.get('message')}"
+                )
+        else:
+            print(
+                f"[WARN] Neo4j graph status check failed ({status_url}): HTTP {resp.status_code}"
+            )
+            _GRAPH_AVAILABLE = False
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[WARN] Neo4j graph status check error at {status_url}: {e}")
+        _GRAPH_AVAILABLE = False
+
+    return _GRAPH_AVAILABLE
+
+
+def graph_run_cypher(query: str, parameters: Optional[Dict] = None) -> Optional[Dict]:
+    """Execute a Cypher statement via POST /api/graph/run (best-effort).
+
+    Any failures are logged to stdout but do not stop this script.
+    """
+    if not graph_is_enabled():
+        return None
+
+    url = f"{GRAPH_BASE_URL}/api/graph/run"
+    payload = {"query": query, "parameters": parameters or {}}
+
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if not resp.ok:
+            print(
+                f"[WARN] Graph run failed HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+            return None
+        return resp.json()
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[WARN] Graph run error: {e}")
+        return None
 
 def main():
     default_home = Path(os.path.expanduser("~/.model"))
@@ -106,15 +184,82 @@ def main():
         print(f"[INFO] {len(archived_rules)} rule(s) would be deleted:")
         for r in archived_rules:
             print(f"       {r.get('id')}  {r.get('rule_name')}")
-        print(f"[INFO] {total_links_removed} link(s) would be cleaned up where the from_step_id no longer matches an existing rule id or would refer to a rule being deleted.")
+        print(
+            f"[INFO] {total_links_removed} link(s) would be cleaned up where the from_step_id no longer matches an existing rule id or would refer to a rule being deleted."
+        )
         return
+
+    # --- Neo4j graph cleanup for deleted rules ---
+    # We use DETACH DELETE so that relationships are removed automatically
+    # when their endpoint nodes are deleted.
+    if graph_is_enabled() and archived_rules:
+        deleted_rule_ids = {rid for rid in archived_ids}
+
+        # Collect candidate code functions and files from the rules being deleted
+        code_functions = set()
+        code_files = set()
+        for r in archived_rules:
+            cf = r.get("code_function")
+            if isinstance(cf, str) and cf.strip():
+                code_functions.add(cf.strip())
+            cfile = r.get("code_file")
+            if isinstance(cfile, str) and cfile.strip():
+                code_files.add(cfile.strip())
+
+        print(
+            f"[INFO] Cleaning Neo4j graph for {len(deleted_rule_ids)} archived rule(s) "
+            f"(base={GRAPH_BASE_URL})..."
+        )
+
+        # 1) Delete LogicStep nodes for each archived rule id (and all their relationships)
+        #    and then delete any Parameter nodes scoped to that rule id.
+        for rid in sorted(deleted_rule_ids):
+            # Delete the LogicStep for this rule
+            graph_run_cypher(
+                "MATCH (l:LogicStep {ruleId: $ruleId}) DETACH DELETE l",
+                {"ruleId": rid},
+            )
+
+            # Delete any Parameter nodes belonging to this rule
+            graph_run_cypher(
+                "MATCH (p:Parameter {ruleId: $ruleId}) DETACH DELETE p",
+                {"ruleId": rid},
+            )
+
+        # 2) Delete CodeFunction nodes that are no longer referenced by any LogicStep
+        for func_name in sorted(code_functions):
+            graph_run_cypher(
+                """
+                MATCH (f:CodeFunction {name: $name})
+                OPTIONAL MATCH (l:LogicStep)-[:IMPLEMENTED_BY]->(f)
+                WITH f, count(l) AS c
+                WHERE c = 0
+                DETACH DELETE f
+                """,
+                {"name": func_name},
+            )
+
+        # 3) Delete CodeFile nodes that are no longer referenced by any CodeFunction
+        for path in sorted(code_files):
+            graph_run_cypher(
+                """
+                MATCH (cf:CodeFile {path: $path})
+                OPTIONAL MATCH (f:CodeFunction)-[:PART_OF]->(cf)
+                WITH cf, count(f) AS c
+                WHERE c = 0
+                DETACH DELETE cf
+                """,
+                {"path": path},
+            )
 
     # Write updated rules including cleaned links
     with open(business_rules_path, "w", encoding="utf-8") as f:
         json.dump(filtered, f, indent=2, ensure_ascii=False)
 
     print(f"[INFO] Deleted {removed_count} archived rule(s).")
-    print(f"[INFO] Removed {total_links_removed} dangling link(s) where from_step_id no longer matches an existing rule id.")
+    print(
+        f"[INFO] Removed {total_links_removed} dangling link(s) where from_step_id no longer matches an existing rule id."
+    )
     print(f"[INFO] {len(filtered)} rule(s) remain in {business_rules_path}")
 
 if __name__ == "__main__":

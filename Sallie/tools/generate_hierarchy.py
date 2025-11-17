@@ -67,10 +67,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from hierarchy_simple import run_simple_compose
-from hierarchy_mim import run_mim_compose
+from helpers.hierarchy_simple import run_simple_compose
+from helpers.hierarchy_mim import run_mim_compose
 
-from hierarchy_common import step_header, load_json, ensure_dir, eprint, _normalize_rule_for_compare, _load_rules_from_report, _safe_backup_json, write_json, TO_PCPT_DIR, TMP_DIR, choose_from_list, SPEC_DIR, prompt_with_default
+from helpers.hierarchy_common import step_header, load_json, ensure_dir, eprint, _normalize_rule_for_compare, _load_rules_from_report, _safe_backup_json, write_json, TO_PCPT_DIR, TMP_DIR, choose_from_list, SPEC_DIR, prompt_with_default
 
 # ---------------------------
 # Core steps
