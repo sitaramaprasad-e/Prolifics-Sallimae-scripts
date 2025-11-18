@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate decisions or hierarchies by selecting a model and composing its logic
-via PCPT. Supports five compose modes: 'top', 'comp', 'selected-top', 'mim' (meet‑in‑the‑middle), and 'mim-minimal'.
+via PCPT. Supports six compose modes: 'top', 'comp', 'selected-top', 'mim' (meet‑in‑the‑middle), 'mim-minimal', and 'chain' (decision chain).
 
 Current behaviour specification:
 
@@ -30,6 +30,7 @@ Current behaviour specification:
        selected-top → suggest-decisions-selected-top.templ
        composite → suggest-decisions-comp.templ
        mim / mim-minimal  → suggest-decisions-mim.templ
+       chain → suggest-decisions-chain.templ (decision chain)
 
 7) If --skip-generate is NOT used, call pcpt_run_custom_prompt with:
        - source directory/File
@@ -69,6 +70,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from helpers.hierarchy_simple import run_simple_compose
 from helpers.hierarchy_mim import run_mim_compose
+from helpers.hierarchy_chain import run_chain_compose
 
 from helpers.hierarchy_common import step_header, load_json, ensure_dir, eprint, _normalize_rule_for_compare, _load_rules_from_report, _safe_backup_json, write_json, TO_PCPT_DIR, TMP_DIR, choose_from_list, SPEC_DIR, prompt_with_default
 
@@ -274,6 +276,15 @@ def step_run_pcpt(
             skip_generate,
             keep_going=keep_going,
         )
+    elif mode_lower == "chain":
+        return run_chain_compose(
+            model_info,
+            spec_info,
+            model_home_prompted,
+            compose_mode,
+            skip_generate,
+            keep_going=keep_going,
+        )
     else:
         return run_simple_compose(
             model_info,
@@ -288,12 +299,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a composed decision report (single or multi).")
     parser.add_argument(
         "--mode",
-        choices=["top", "next", "selected-top", "mim", "mim-minimal"],
+        choices=["top", "next", "selected-top", "mim", "mim-minimal", "chain"],
         help=(
             "Select template behavior: "
             "'top' uses suggest-decisions-top.templ; 'selected-top' uses suggest-decisions-selected-top.templ; "
             "'next' (composite) uses suggest-decisions-comp.templ; "
-            "'mim' and 'mim-minimal' use suggest-decisions-mim.templ."
+            "'mim' and 'mim-minimal' use suggest-decisions-mim.templ; "
+            "'chain' uses suggest-decisions-chain.templ for decision chains."
         ),
     )
     parser.add_argument(
@@ -325,6 +337,7 @@ def main() -> None:
                 "mim          – meet-in-the-middle (with full hierarchy suggestion)",
                 "mim-minimal  – meet-in-the-middle (minimal hierarchy suggestion)",
                 "selected-top – uses suggest-decisions-selected-top.templ (manual top decision)",
+                "chain        – decision chain template",
             ],
             default_index=1,
         )
@@ -336,8 +349,10 @@ def main() -> None:
             compose_mode = "mim"
         elif choice == 4:
             compose_mode = "mim-minimal"
-        else:
+        elif choice == 5:
             compose_mode = "selected-top"
+        else:
+            compose_mode = "chain"
 
     step_header("0", "Generate Hierarchy", {"Compose mode": compose_mode})
     print("=== Generate Hierarchy ===")

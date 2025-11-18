@@ -7,6 +7,15 @@ if _REPO_ROOT not in _sys.path:
     _sys.path.insert(0, _REPO_ROOT)
 # --- end import path bootstrap ---
 
+import warnings
+
+# Suppress the LibreSSL/OpenSSL compatibility warning from urllib3 v2
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+",
+    module="urllib3",
+)
+
 import json
 import sys
 import uuid
@@ -441,9 +450,9 @@ def merge_generated_rules_into_model_home(
     except Exception:
         pass
 
-    # # Helpers for MIM mode and kind classification
-    # def _norm_kind(val: Optional[str]) -> str:
-    #     return (val or "").strip().lower()
+    # Helpers for MIM mode and kind classification
+    def _norm_kind(val: Optional[str]) -> str:
+        return (val or "").strip().casefold()
 
     # def _is_composite(rule: dict) -> bool:
     #     return _norm_kind(rule.get("Kind") or rule.get("kind")) == "decision (composite)".lower()
@@ -557,8 +566,10 @@ def merge_generated_rules_into_model_home(
     for idx, r in enumerate(business_rules):
         if isinstance(r, dict):
             rn0 = (r.get("rule_name") or r.get("name") or "").strip()
+            kind0 = _norm_kind(r.get("Kind") or r.get("kind"))
             if rn0:
-                existing_by_name[rn0] = {"idx": idx, "rule": r}
+                key = f"{rn0}||{kind0}"
+                existing_by_name[key] = {"idx": idx, "rule": r}
     # NEW: Precompute lookup by id
     existing_by_id = {}
     for idx, r in enumerate(business_rules):
@@ -676,7 +687,7 @@ def merge_generated_rules_into_model_home(
                 # Normalize into "id" so downstream paths are consistent
                 r["id"] = rid
 
-        # Build quick lookups for existing rules by id and name (was computed earlier as existing_by_id/name)
+        # Build quick lookups for existing rules by id and (name,kind) (was computed earlier as existing_by_id/name)
         # Recompute here to be safe if code changes above in future.
         existing_by_name = {}
         existing_by_id = {}
@@ -685,8 +696,10 @@ def merge_generated_rules_into_model_home(
                 continue
             rid0 = (r.get("id") or "").strip()
             rn0 = (r.get("rule_name") or r.get("name") or "").strip()
+            kind0 = _norm_kind(r.get("Kind") or r.get("kind"))
             if rn0:
-                existing_by_name[rn0] = {"idx": idx, "rule": r}
+                key = f"{rn0}||{kind0}"
+                existing_by_name[key] = {"idx": idx, "rule": r}
             if rid0:
                 existing_by_id[rid0] = {"idx": idx, "rule": r}
         # Filtered id→entry map for only rules in selected model
@@ -750,7 +763,9 @@ def merge_generated_rules_into_model_home(
             # --- UPDATE path (links only; no Kind mutation). If not found locally, skip to avoid implicit create. ---
             ex = existing_by_id.get(incoming_id)
             if not ex and incoming_name:
-                ex = existing_by_name.get(incoming_name)
+                inc_kind = _detect_incoming_kind(incoming)
+                key_name_kind = f"{incoming_name}||{_norm_kind(inc_kind)}"
+                ex = existing_by_name.get(key_name_kind)
             if not ex:
                 eprint(f"[WARN] MIM/Update: Rule '{incoming_name or '(unnamed)'}' with id={incoming_id} not found; skipping update to avoid unintended create.")
                 continue
@@ -982,26 +997,27 @@ def merge_generated_rules_into_model_home(
         # Remove the deprecated overlay list from the model object
         model_obj.pop("topLevelDecisionIds", None)
 
-        # Append new/ensured ids to businessLogicIds with name-based de-dup (one per model)
+        # Append new/ensured ids to businessLogicIds with (name,kind) de-dup (one per model per name+kind)
         if to_append:
-            # id→name (casefold) map from current business_rules
-            id_to_name_cf = {}
+            # id→(name_cf, kind_norm) map from current business_rules
+            id_to_name_kind = {}
             for r in business_rules:
                 if isinstance(r, dict):
                     rid0 = (r.get("id") or "").strip()
                     rn0 = (r.get("rule_name") or r.get("name") or "").strip()
                     if rid0 and rn0:
-                        id_to_name_cf[rid0] = rn0.casefold()
+                        kind0 = _norm_kind(r.get("Kind") or r.get("kind"))
+                        id_to_name_kind[rid0] = (rn0.casefold(), kind0)
 
-            # Swap-by-name for newly created ids
+            # Swap-by-(name,kind) for newly created ids
             for new_id in to_append_created:
                 if not new_id:
                     continue
-                new_name_cf = id_to_name_cf.get(new_id)
-                if not new_name_cf:
+                new_key = id_to_name_kind.get(new_id)
+                if not new_key:
                     continue
                 ids = [existing_id for existing_id in ids
-                       if id_to_name_cf.get(existing_id) != new_name_cf or existing_id == new_id]
+                       if id_to_name_kind.get(existing_id) != new_key or existing_id == new_id]
 
             before_len = len(ids)
             for rid in to_append:
@@ -1048,14 +1064,17 @@ def merge_generated_rules_into_model_home(
                 })
         for new_rule in new_rules:
             rn = (new_rule.get("rule_name") or new_rule.get("name") or "").strip()
-            ex = existing_by_name.get(rn)
+            kind_new = _norm_kind(new_rule.get("Kind") or new_rule.get("kind"))
+            key_name_kind = f"{rn}||{kind_new}" if rn else None
+            ex = existing_by_name.get(key_name_kind) if key_name_kind else None
             if ex and _has_dmn_material_change(ex["rule"], new_rule):
                 preserved_id = ex["rule"].get("id")
                 preserved_archived = ex["rule"].get("archived", False)
                 new_rule["id"] = preserved_id or new_rule.get("id") or str(uuid.uuid4())
                 new_rule["archived"] = preserved_archived
                 business_rules[ex["idx"]] = new_rule
-                existing_by_name[rn] = {"idx": ex["idx"], "rule": new_rule}
+                if rn:
+                    existing_by_name[f"{rn}||{kind_new}"] = {"idx": ex["idx"], "rule": new_rule}
                 print(f"[INFO] Updated rule by name with DMN changes (incl. allowedValues): '{rn}'")
                 continue
             new_norm = _normalize_rule_for_compare(new_rule)
@@ -1087,9 +1106,16 @@ def merge_generated_rules_into_model_home(
                 matches = existing_by_fp.get(fp_new) or []
                 if not matches and rn:
                     for idx2, r in enumerate(business_rules):
-                        if isinstance(r, dict) and (r.get("rule_name") == rn or r.get("name") == rn):
-                            matches.append({"idx": idx2, "id": r.get("id"), "name": rn})
-                            break
+                        if not isinstance(r, dict):
+                            continue
+                        rn2 = (r.get("rule_name") or r.get("name") or "").strip()
+                        if rn2 != rn:
+                            continue
+                        kind2 = _norm_kind(r.get("Kind") or r.get("kind"))
+                        if kind2 != kind_new:
+                            continue
+                        matches.append({"idx": idx2, "id": r.get("id"), "name": rn})
+                        break
                 skipped_details.append({"new_name": rn or "(unnamed)", "fingerprint": fp_new, "matches": matches})
                 if matches:
                     first = matches[0]
@@ -1169,25 +1195,26 @@ def merge_generated_rules_into_model_home(
     to_append = list(to_append_created) + filtered_ensure
 
     if to_append:
-        # Build a quick id→name map from business_rules for name-based collision handling
-        id_to_name_cf = {}
+        # Build a quick id→(name_cf, kind_norm) map from business_rules for (name,kind)-based collision handling
+        id_to_name_kind = {}
         for r in business_rules:
             if isinstance(r, dict):
                 rid0 = (r.get("id") or "").strip()
                 rn0 = (r.get("rule_name") or r.get("name") or "").strip()
                 if rid0 and rn0:
-                    id_to_name_cf[rid0] = rn0.casefold()
+                    kind0 = _norm_kind(r.get("Kind") or r.get("kind"))
+                    id_to_name_kind[rid0] = (rn0.casefold(), kind0)
 
         # Before appending any newly created id, remove any existing ids in this model
-        # that have the same name (case-insensitive), so we keep exactly one per model.
+        # that have the same (name,kind), so we keep exactly one per model per name+kind.
         for new_id in to_append_created:
             if not new_id:
                 continue
-            new_name_cf = id_to_name_cf.get(new_id)
-            if not new_name_cf:
+            new_key = id_to_name_kind.get(new_id)
+            if not new_key:
                 continue
             ids = [existing_id for existing_id in ids
-                   if id_to_name_cf.get(existing_id) != new_name_cf or existing_id == new_id]
+                   if id_to_name_kind.get(existing_id) != new_key or existing_id == new_id]
 
         # Append unique ids
         before_len = len(ids)

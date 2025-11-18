@@ -20,7 +20,7 @@ def run_simple_compose(
     compose_mode: str,
     skip_generate: bool,
 ) -> None:
-    """Handle 'top', 'selected-top', and 'next' modes with shared, simple flow.
+    """Handle 'top', 'selected-top', and 'comp' modes with shared, simple flow.
     Extracted to keep MIM logic isolated.
     """
     print("\nSTEP 8: Run PCPT (run-custom-prompt)" if not skip_generate else "\nSTEP 8: Skip generate – using existing report for ingest")

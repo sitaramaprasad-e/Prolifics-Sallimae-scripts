@@ -1,3 +1,8 @@
+import warnings
+# Suppress all urllib3 SSL/OpenSSL compatibility warnings
+warnings.filterwarnings("ignore", message=".*OpenSSL*", module="urllib3")
+warnings.filterwarnings("ignore", message=".*LibreSSL*", module="urllib3")
+warnings.filterwarnings("ignore", module="urllib3")
 import re
 import json
 import sys
@@ -5,7 +10,12 @@ import os
 import uuid
 import glob
 import hashlib
-from helpers.rule_ingest_core import add_rules_from_text, heading_text
+from helpers.rule_ingest_core import (
+    add_rules_from_text,
+    heading_text,
+    set_graph_disabled,
+    _populate_graph_for_rule,
+)
 
 # ===== Lightweight TRACE logger (inline; no external files) =====
 import logging
@@ -128,7 +138,45 @@ if len(sys.argv) < 2:
 
 input_file = sys.argv[1]
 
+# Optional root/source metadata from caller (e.g., selected spec path-pair)
+ROOT_DIR_OVERRIDE: Optional[str] = None
+SOURCE_PATH_OVERRIDE: Optional[str] = None
+
+extra_args = sys.argv[2:]
+i = 0
+while i < len(extra_args):
+    arg = extra_args[i]
+    if arg in ("--root-dir", "--root_dir") and i + 1 < len(extra_args):
+        ROOT_DIR_OVERRIDE = extra_args[i + 1]
+        i += 2
+        continue
+    if arg in ("--source-path", "--source_path") and i + 1 < len(extra_args):
+        SOURCE_PATH_OVERRIDE = extra_args[i + 1]
+        i += 2
+        continue
+    i += 1
+
+if ROOT_DIR_OVERRIDE:
+    LOG.info("[info] Using rootDir from CLI: %s", ROOT_DIR_OVERRIDE)
+if SOURCE_PATH_OVERRIDE:
+    LOG.info("[info] Using sourcePath from CLI: %s", SOURCE_PATH_OVERRIDE)
+
 LOG.info("[info] Input report   : %s", os.path.abspath(input_file))
+
+# Optional modes: control Knowledge Graph behavior
+NO_KG = any(arg in ("--NO-KG", "--no-kg") for arg in sys.argv[2:])
+_raw_kg_only = any(arg in ("--KG-ONLY", "--kg-only") for arg in sys.argv[2:])
+
+if NO_KG and _raw_kg_only:
+    LOG.info("[mode] Both --KG-ONLY and --NO-KG supplied; NO-KG takes precedence – running standard ingest without KG export.")
+
+KG_ONLY = (not NO_KG) and _raw_kg_only
+
+if NO_KG:
+    LOG.info("[mode] NO-KG: Knowledge graph export/updates disabled for this run")
+
+if NO_KG:
+    set_graph_disabled(True)
 
 # Optional switch to force load (even if same name + timestamp already exists)
 FORCE_LOAD = any(arg in ("--force", "--force-load") for arg in sys.argv[2:])
@@ -140,6 +188,14 @@ ALL_RUNS = any(arg == "--all-runs" for arg in sys.argv[2:]) or \
            (os.environ.get("PCPT_INGEST_ALL_RUNS", "").lower() in {"1", "true", "yes"})
 if ALL_RUNS:
     LOG.info("[info] All-runs mode: will also ingest rules from previous iterations via PCPT logs")
+
+LOG.info(
+    "[mode] ingest_flags • NO_KG=%s KG_ONLY=%s FORCE_LOAD=%s ALL_RUNS=%s",
+    NO_KG,
+    KG_ONLY,
+    FORCE_LOAD,
+    ALL_RUNS,
+)
 
 file_mtime = os.path.getmtime(input_file)
 file_timestamp = datetime.utcfromtimestamp(file_mtime).replace(microsecond=0).isoformat() + "Z"
@@ -325,11 +381,22 @@ def _prompt_with_default(prompt_text: str, default_val: str) -> str:
 
 
 def _save_json_file(path: str, data) -> None:
+    try:
+        length = len(data)  # works for list/dict; will raise for scalars
+    except Exception:
+        length = None
+    LOG.info(
+        "[summary] Writing JSON file: %s (type=%s, length=%s)",
+        path,
+        type(data).__name__,
+        length if length is not None else "n/a",
+    )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp, path)
+    LOG.trace("[trace] JSON write complete: %s", path)
 
 # Helper: append a unique non-empty string to a JSON list file
 def _append_unique_value(list_path: str, value: str) -> None:
@@ -889,12 +956,74 @@ NAME_TO_ID: Dict[str, str] = {
 }
 
 # Build set of seen (rule_name, timestamp) pairs from existing rules (normalized)
+
 seen = set()
 for rule in existing_rules:
     k = _dedupe_key(rule.get("rule_name"), rule.get("timestamp"))
     if k:
         seen.add(k)
 
+#
+# KG-only mode: use existing rules.json to populate the knowledge graph
+# for the *current source path only*, without parsing the input report or
+# modifying any JSON files.
+if KG_ONLY:
+    LOG.info(
+        "[mode] KG-only: using existing rules from %s to populate knowledge graph; "
+        "will not parse %s or modify rules file",
+        output_file,
+        input_file,
+    )
+
+    if not SOURCE_PATH_OVERRIDE:
+        LOG.warning(
+            "[mode] KG-only: no --source-path provided; nothing to load into KG for this run."
+        )
+        sidecar_path = _audit_write(prefix="rules_kg_only")
+        if sidecar_path:
+            LOG.info("[info] Wrote audit sidecar: %s", sidecar_path)
+        # Do not fall through to normal ingest in KG-only mode.
+        sys.exit(0)
+
+    # Only consider rules already in the catalog for this source path (and root dir, when provided).
+    target_src = SOURCE_PATH_OVERRIDE
+    target_root = ROOT_DIR_OVERRIDE
+    rules_for_kg = []
+    for r in (existing_rules or []):
+        r_src = r.get("sourcePath") or r.get("source_path")
+        r_root = r.get("rootDir") or r.get("root_dir")
+        if r_src != target_src:
+            continue
+        if target_root and r_root != target_root:
+            continue
+        rules_for_kg.append(r)
+
+    LOG.info(
+        "[mode] KG-only: %d existing rules selected for KG population (sourcePath='%s', rootDir='%s')",
+        len(rules_for_kg),
+        target_src,
+        target_root or "*",
+    )
+
+    processed = 0
+    for r in rules_for_kg:
+        try:
+            _populate_graph_for_rule(r, LOG)
+            processed += 1
+        except Exception as e:
+            LOG.warning(
+                "[warn] Graph population failed for rule '%s': %s",
+                r.get("rule_name"),
+                e,
+            )
+
+    LOG.info("[mode] KG-only: graph population complete for %d rules", processed)
+    sidecar_path = _audit_write(prefix="rules_kg_only")
+    if sidecar_path:
+        LOG.info("[info] Wrote audit sidecar: %s", sidecar_path)
+
+    # In KG-only mode we are done; do not fall through to normal ingest.
+    sys.exit(0)
 
 # Defaults for team/owner and component must be empty strings (per requirement)
 default_owner = ""
@@ -930,6 +1059,8 @@ with open(input_file, "r", encoding="utf-8") as f:
         new_count=new_count,
         considered_count=considered_count,
         allowed_names=None,
+        root_dir=ROOT_DIR_OVERRIDE,
+        source_path=SOURCE_PATH_OVERRIDE,
     )
     new_rules.extend(new_rules_from_doc)
 
@@ -959,6 +1090,8 @@ if ALL_RUNS:
             new_count=new_count,
             considered_count=considered_count,
             allowed_names=_allowed_names,
+            root_dir=ROOT_DIR_OVERRIDE,
+            source_path=SOURCE_PATH_OVERRIDE,
         )
         new_rules.extend(prior_rules)
 

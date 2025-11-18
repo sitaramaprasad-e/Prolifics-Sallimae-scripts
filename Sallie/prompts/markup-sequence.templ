@@ -14,7 +14,7 @@ INSTRUCTIONS
 
 You are an expert at taking a sequence description (input 2) describing a set of code (input 1) and marking it up with reference to the business rules (input 3) that are implemented at each step.
 
-Produce a marked up version of the sequence description where each step calling a function is annotated with references to the relevant business rules that are implemented in that function, as per the rule to function mapping in input 3. Only do this for numbered steps.
+Produce a marked up version of the sequence description where each step calling a function is annotated with references to the relevant business rules that are implemented in that function, as per the rule to function mapping in input 3. Only do this for numbered steps. Tweak the function names in the step call to exactly match the code_function names provided in input 3.
 
 Take a look at the source code (input 1) if you need some help understanding exactly which step function a rule applies to. The rule must appear against the step function in the rule is implemented (as described in input 3 which identifies the rules as well as the function each rule is implemented in), not a call to some other function, and only in that one function.
 
@@ -43,5 +43,5 @@ If multiple rules are relevant to a single step, list them all in the note for t
 
 Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting.
-* Don't change any of the content from the original sequence description except to add the rule references. Everything else should remain exactly the same including headings and other existing notes.
+* Don't change any of the content from the original sequence description except to add the rule references and potentially tweak the function name to exactly match the code_function name in input 3. Everything else should remain exactly the same including headings and other existing notes.
 * Do not put any special characters in the output.

@@ -235,6 +235,50 @@ def run_mim_compose(
     else:
         suggest_template = SUGGEST_HIERARCHY_TEMPLATE_DIR
 
+    # Now also looking to see if there is a selected model topDecisionId to annotate
+    try:
+        sel_model_path = Path(model_file)
+        if sel_model_path.exists():
+            sel_model = load_json(sel_model_path)
+            top_decision_id = None
+            # Try to get topDecisionId from the first hierarchy (or any hierarchy that has it)
+            for h in sel_model.get("hierarchies", []):
+                if isinstance(h, dict) and h.get("topDecisionId"):
+                    top_decision_id = h["topDecisionId"]
+                    break
+            if top_decision_id:
+                # Locate business_rules.json in the model home to resolve the name
+                rules_home_path = Path(model_home_prompted) / "business_rules.json"
+                top_name = ""
+                if rules_home_path.exists():
+                    rules_payload = load_json(rules_home_path)
+                    rules_list = []
+                    if isinstance(rules_payload, list):
+                        rules_list = rules_payload
+                    elif isinstance(rules_payload, dict):
+                        # Support either a flat dict of id->rule or a dict with 'rules' key
+                        if "rules" in rules_payload and isinstance(rules_payload["rules"], list):
+                            rules_list = rules_payload["rules"]
+                        else:
+                            # If dict of id -> rule, take values
+                            rules_list = list(rules_payload.values())
+                    for rule in rules_list:
+                        if not isinstance(rule, dict):
+                            continue
+                        rid = rule.get("id") or rule.get("rule_id")
+                        if rid == top_decision_id:
+                            top_name = rule.get("name") or rule.get("rule_name") or ""
+                            break
+                # Append the annotation line if we have an id (always) and optionally a name
+                annotation_name = top_name if top_name else "(name-not-found)"
+                try:
+                    with sel_model_path.open("a", encoding="utf-8") as f:
+                        f.write(f"\nThe Top Level Decision Is: {top_decision_id} {annotation_name}\n")
+                except Exception as inner_ex:
+                    eprint(f"[WARN] Failed to append top-level decision annotation to selected model: {inner_ex}")
+    except Exception as ex:
+        eprint(f"[WARN] Failed to resolve top-level decision for selected-top mode: {ex}")
+
     # MIM pre‑step: discover top-level decisions
     if not skip_generate:
         step_header(9, "MIM pre‑step: Discover Top‑Level decisions", {

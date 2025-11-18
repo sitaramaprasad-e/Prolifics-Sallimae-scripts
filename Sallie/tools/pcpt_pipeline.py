@@ -329,7 +329,14 @@ def _preflight(spec: Dict[str, Any]) -> bool:
 # =========================
 
 
-def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps: Dict[int, int], skip_cat: bool = False) -> Dict[str, Any]:
+def run_pipeline(
+    spec: Dict[str, Any],
+    selected_indexes: List[int],
+    start_steps: Dict[int, int],
+    skip_cat: bool = False,
+    kg_only: bool = False,
+    no_kg: bool = False,
+) -> Dict[str, Any]:
     # Resolve and adopt repo root as CWD; keep everything else relative to it
     root = os.path.abspath(os.path.expanduser(spec.get("root-directory", os.getcwd())))
     os.chdir(root)
@@ -425,6 +432,16 @@ def run_pipeline(spec: Dict[str, Any], selected_indexes: List[int], start_steps:
                     ingest_md,
                     "--force",
                 ]
+                # Pass root-dir and source-path through so ingest_rules can propagate them to CodeFile nodes
+                if root:
+                    cmd_ingest.extend(["--root-dir", root])
+                if source_path:
+                    cmd_ingest.extend(["--source-path", source_path])
+                # Forward KG-related flags to ingest_rules.py if requested
+                if kg_only:
+                    cmd_ingest.append("--KG-ONLY")
+                if no_kg:
+                    cmd_ingest.append("--NO-KG")
                 # Feed model_home, team, and component to ingest_rules.py (matches its prompt order)
                 stdin_values = f"{model_home}\n{pair.get('team', '')}\n{pair.get('component', '')}\n"
                 subprocess.run(
@@ -483,6 +500,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run PCPT pipeline using a spec file under tools/spec")
     parser.add_argument("--spec", help="Path to a spec JSON (if omitted, you will be prompted to choose under tools/spec)")
     parser.add_argument("--skip-cat", action="store_true", help="Skip the categorize step")
+    parser.add_argument(
+        "--KG-ONLY",
+        "--kg-only",
+        dest="kg_only",
+        action="store_true",
+        help="Forward KG-only mode to ingest_rules.py (reuse existing rules and only emit KG export)",
+    )
+    parser.add_argument(
+        "--NO-KG",
+        "--no-kg",
+        dest="no_kg",
+        action="store_true",
+        help="Forward NO-KG mode to ingest_rules.py (disable Neo4j/graph export for this run)",
+    )
     args = parser.parse_args()
 
     if args.spec:
@@ -510,7 +541,14 @@ def main() -> None:
         sys.exit(1)
     start_steps = _prompt_start_steps_for_pairs(spec, selected)
 
-    summary = run_pipeline(spec, selected, start_steps, skip_cat=args.skip_cat)
+    summary = run_pipeline(
+        spec,
+        selected,
+        start_steps,
+        skip_cat=args.skip_cat,
+        kg_only=args.kg_only,
+        no_kg=args.no_kg,
+    )
 
     # Overall summary
     _hdr("Pipeline Summary")

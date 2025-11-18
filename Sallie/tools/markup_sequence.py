@@ -432,7 +432,7 @@ def main() -> None:
   _log(f"Using source_path for export_rules_for_markup: {source_path_arg}")
 
   # Build absolute path to the sibling exporter script so this works from any CWD
-  export_script = os.path.join(SCRIPT_DIR, "export_rules_for_markup.py")
+  export_script = os.path.join(SCRIPT_DIR, "helpers", "export_rules_for_markup.py")
   _log(f"Using export script: {export_script}")
 
   export_cmd = [

@@ -1,0 +1,818 @@
+# Here is the spec for what to create in Neo4j using the rules‑portal graph routes.
+#
+# Node labels:
+# - LogicStep   (one per business rule / decision)
+# - CodeFunction
+# - CodeFile
+#    + sourcePath
+#    + rootDir
+# - Parameter
+# - DomainType
+#   + attributes
+# - Domain
+#    + diagramPath
+#    + ingestionTimestamp
+#
+# Relationship types:
+# - IMPLEMENTED_BY (LogicStep -> CodeFunction)
+# - PART_OF       (CodeFunction -> CodeFile), (DomainType -> Domain)
+# - INPUT         (LogicStep -> Parameter for inputs)
+# - OUTPUT        (LogicStep -> Parameter for outputs)
+# - LINKS_TO      (Parameter -> Parameter for hierarchy links between steps)
+# - OPERATES_ON (LogicStep -> DomainType)
+# - RELATED_TO (DomainType -> DomainType)
+#
+# When ingesting, we populate the above structure, creating domain types and domains, and linking logic steps to domain types.
+#
+# The ingestion code talks to the rules‑portal Express server via the following
+# HTTP routes exposed in `graphRoutes.js`. The base URL is controlled by the
+# environment variable `RULES_PORTAL_BASE_URL` and defaults to
+# `http://localhost:3201`:
+#
+#   GET  /api/graph/status
+#       - Lightweight health check.
+#       - Returns `{ up: boolean, message: string, ... }`.
+#       - Used once per run to decide whether Neo4j graph population is enabled.
+#
+#   POST /api/graph/node
+#       - Create a new node with one or more labels.
+#       - Request body: `{ "label"?: string, "labels"?: string[], "properties"?: object }`.
+#       - Response body on success: `{ success: true, node: { identity, labels, properties } }`.
+#       - We always send `labels` (array) and `properties` from the ingestor.
+#
+#   POST /api/graph/relationship
+#       - Create a relationship between two existing nodes by internal Neo4j id.
+#       - Request body: `{ "fromId": number, "toId": number, "type": string, "properties"?: object }`.
+#       - Response body on success: `{ success: true, relationship: { identity, type, properties } }`.
+#
+#   POST /api/graph/run
+#       - Execute arbitrary Cypher (primarily for debugging / ad‑hoc queries).
+#       - Request body: `{ "query": string, "parameters"?: object }`.
+#       - Not required for the standard ingestion flow, which uses the
+#         `/api/graph/node` and `/api/graph/relationship` routes.
+#
+#   GET  /api/graph/related
+#       - Fetch neighbourhood around a given node id.
+#       - Request query params: `nodeId`, optional `type`, `direction`.
+#       - Mainly useful for UI / exploration; not used directly by ingestion.
+#
+# In summary, rule ingestion is responsible for:
+#   1. Creating/merging Message and Sequence nodes.
+#   2. Wiring them together with SEQUENCED_BY and PART_OF relationships using the graph routes above.
+#!/usr/bin/env python3
+
+# Here is the spec for what to create in Neo4j using the rules‑portal graph routes.
+#
+# Node labels:
+# - LogicStep   (one per business rule / decision)
+# - CodeFunction
+# - CodeFile
+#    + sourcePath
+#    + rootDir
+# - Parameter
+# - DomainType
+#   + attributes
+# - Domain
+#    + diagramPath
+#    + ingestionTimestamp
+#
+# Relationship types:
+# - IMPLEMENTED_BY (LogicStep -> CodeFunction)
+# - PART_OF       (CodeFunction -> CodeFile), (DomainType -> Domain)
+# - INPUT         (LogicStep -> Parameter for inputs)
+# - OUTPUT        (LogicStep -> Parameter for outputs)
+# - LINKS_TO      (Parameter -> Parameter for hierarchy links between steps)
+# - OPERATES_ON   (LogicStep -> DomainType)
+# - RELATED_TO    (DomainType -> DomainType)
+#
+# When ingesting, we populate the above structure, creating domain types and the
+# containing Domain node, wiring DomainType nodes to the Domain via PART_OF, and
+# linking DomainTypes to each other via RELATED_TO relationships derived from the
+# relationships section of the PlantUML diagram. We also attempt to link existing
+# LogicStep nodes to DomainTypes via OPERATES_ON relationships using the rule
+# notes declared on each domain type (e.g. "note top of Account : Rules:\nE8B· Should …").
+#
+# The ingestion code talks to the rules‑portal Express server via the following
+# HTTP routes exposed in `graphRoutes.js`. The base URL is controlled by the
+# environment variable `RULES_PORTAL_BASE_URL` and defaults to
+# `http://localhost:443`:
+#
+#   GET  /api/graph/status
+#       - Lightweight health check.
+#       - Returns `{ up: boolean, message: string, ... }`.
+#       - Used once per run to decide whether Neo4j graph population is enabled.
+#
+#   POST /api/graph/node
+#       - Create a new node with one or more labels.
+#       - Request body: `{ "label"?: string, "labels"?: string[], "properties"?: object }`.
+#       - Response body on success: `{ success: true, node: { identity, labels, properties } }`.
+#       - We always send `labels` (array) and `properties` from the ingestor.
+#
+#   POST /api/graph/relationship
+#       - Create a relationship between two existing nodes by internal Neo4j id.
+#       - Request body: `{ "fromId": number, "toId": number, "type": string, "properties"?: object }`.
+#       - Response body on success: `{ success: true, relationship: { identity, type, properties } }`.
+#
+#   POST /api/graph/run
+#       - Execute arbitrary Cypher (primarily for debugging / ad‑hoc queries).
+#       - Request body: `{ "query": string, "parameters"?: object }`.
+#       - Not required for the standard ingestion flow, which uses the
+#         `/api/graph/node` and `/api/graph/relationship` routes.
+#
+#   GET  /api/graph/related
+#       - Fetch neighbourhood around a given node id.
+#       - Request query params: `nodeId`, optional `type`, `direction`.
+#       - Mainly useful for UI / exploration; not used directly by ingestion.
+#
+# In summary, domain ingestion is responsible for:
+#   1. Parsing the PlantUML domain model report (`domain_model_report.wsd`).
+#   2. Creating DomainType nodes (for classes with `<<DomainType>>` and enums).
+#   3. Creating a Domain node for the diagram and wiring DomainType -> Domain
+#      via PART_OF relationships.
+#   4. Creating RELATED_TO relationships between DomainTypes based on the
+#      relationships section of the diagram.
+#   5. Linking existing LogicStep nodes to DomainTypes via OPERATES_ON using the
+#      rule notes (e.g. `note top of Account : Rules:\nE8B· Should …`).
+
+import warnings
+
+# Suppress the LibreSSL/OpenSSL compatibility warning from urllib3 v2
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+",
+    module="urllib3",
+)
+
+# ===== Implementation =====
+import os
+import sys
+import re
+import json
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple
+
+import requests
+import logging
+
+# ===== TRACE logger setup (mirrors ingest_sequence.py) =====
+TRACE_LEVEL_NUM = 5
+logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
+
+
+def _trace(self, message, *args, **kws):
+    if self.isEnabledFor(TRACE_LEVEL_NUM):
+        self._log(TRACE_LEVEL_NUM, message, args, **kws)
+
+
+logging.Logger.trace = _trace  # type: ignore[attr-defined]
+
+
+def _setup_logger(verbose: bool = True) -> None:
+    level = TRACE_LEVEL_NUM if verbose else logging.INFO
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
+LOG = logging.getLogger("ingest_domain")
+_setup_logger(verbose=True)
+
+# ===== Base URL =====
+RULES_PORTAL_BASE_URL = os.environ.get("RULES_PORTAL_BASE_URL", "http://localhost:443").rstrip("/")
+
+
+# ===== HTTP helpers =====
+def _get(path: str) -> Optional[dict]:
+    url = RULES_PORTAL_BASE_URL + path
+    try:
+        resp = requests.get(url, timeout=8)
+        if resp.status_code == 200:
+            return resp.json()
+        LOG.warning("[warn] GET %s returned %s: %s", url, resp.status_code, resp.text)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("[warn] GET %s failed: %s", url, e)
+    return None
+
+
+def _post(path: str, payload: dict) -> Optional[dict]:
+    url = RULES_PORTAL_BASE_URL + path
+    try:
+        resp = requests.post(url, json=payload, timeout=12)
+        if resp.status_code == 200:
+            return resp.json()
+        LOG.warning("[warn] POST %s returned %s: %s", url, resp.status_code, resp.text)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("[warn] POST %s failed: %s", url, e)
+    return None
+
+
+def run_cypher(query: str, parameters: Optional[dict] = None) -> Optional[list]:
+    payload = {"query": query, "parameters": parameters or {}}
+    resp = _post("/api/graph/run", payload)
+    if resp is None:
+        LOG.warning("[warn] run_cypher failed for query: %s", query)
+        return None
+    if "results" in resp:
+        return resp["results"]
+    return resp
+
+
+def _to_int_id(value: Any) -> Optional[int]:
+    """Convert a Neo4j identity into a plain int.
+
+    Accepts either an int, or an object like {"low": 123, "high": 0}.
+    """
+
+    if isinstance(value, int):
+        return value
+    if isinstance(value, dict):
+        low = value.get("low")
+        high = value.get("high", 0)
+        if isinstance(low, int) and isinstance(high, int):
+            return int(low) + (int(high) << 32)
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def create_node(labels: List[str], properties: Dict[str, Any]) -> Optional[int]:
+    payload = {"labels": labels, "properties": properties}
+    resp = _post("/api/graph/node", payload)
+    if not resp or not resp.get("success"):
+        LOG.warning("[warn] create_node failed: %s", resp)
+        return None
+    node = resp.get("node")
+    if not node:
+        LOG.warning("[warn] create_node: no node in response: %s", resp)
+        return None
+    return _to_int_id(node.get("identity"))
+
+
+def create_relationship(
+    from_id: int,
+    to_id: int,
+    rel_type: str,
+    properties: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    payload = {
+        "fromId": from_id,
+        "toId": to_id,
+        "type": rel_type,
+        "properties": properties or {},
+    }
+    resp = _post("/api/graph/relationship", payload)
+    if not resp or not resp.get("success"):
+        LOG.warning("[warn] create_relationship failed: %s", resp)
+        return None
+    rel = resp.get("relationship")
+    if not rel:
+        LOG.warning("[warn] create_relationship: no relationship in response: %s", resp)
+        return None
+    return _to_int_id(rel.get("identity"))
+
+
+def _normalize_cypher_results(results: Any) -> List[Any]:
+    """Best‑effort normalisation of graph API results into a simple row list."""
+
+    if isinstance(results, list):
+        return results
+    if isinstance(results, dict):
+        for key in ("results", "rows", "data", "records"):
+            val = results.get(key)
+            if isinstance(val, list):
+                return val
+        LOG.warning("[warn] Unexpected run_cypher result format (dict): %r", results)
+        return []
+    LOG.warning("[warn] Unexpected run_cypher result type: %r", type(results))
+    return []
+
+
+# ===== Spec discovery & load (mirrors ingest_sequence.py) =====
+
+
+def _spec_dir() -> str:
+    # This script lives in <repo>/tools; specs are under <repo>/tools/spec
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "spec")
+
+
+def _find_spec_files() -> List[str]:
+    d = _spec_dir()
+    if not os.path.isdir(d):
+        return []
+    return [
+        os.path.join(d, f)
+        for f in sorted(os.listdir(d))
+        if f.endswith(".json")
+        and (f.startswith("source_") or f.startswith("sources_"))
+        and os.path.isfile(os.path.join(d, f))
+    ]
+
+
+def _choose_spec(specs: List[str]) -> Optional[str]:
+    if not specs:
+        LOG.error(
+            "[error] No spec files found under tools/spec (expected 'source_*.json' or 'sources_*.json').",
+        )
+        return None
+    print("\n=== Select a spec file for domain ingestion ===")
+    for i, path in enumerate(specs, 1):
+        print(f"  {i}. {os.path.basename(path)}")
+    print("Choose a spec by number (or Ctrl+C to cancel).")
+    while True:
+        choice = input("Enter number: ").strip()
+        if not choice.isdigit():
+            print("Please enter a valid number.")
+            continue
+        idx = int(choice)
+        if 1 <= idx <= len(specs):
+            return specs[idx - 1]
+        print("Out of range. Try again.")
+
+
+def _load_spec(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _choose_pair(spec: Dict[str, Any]) -> Optional[int]:
+    """Prompt the user to choose a single path‑pair index (1‑based) from the spec."""
+
+    pairs = spec.get("path-pairs", [])
+    if not pairs:
+        LOG.error("[error] Spec has no 'path-pairs' entries.")
+        return None
+    print("\n=== Select a path-pair for domain ingestion ===")
+    for i, p in enumerate(pairs, 1):
+        src = p.get("source-path", "?")
+        outp = p.get("output-path", "?")
+        team = p.get("team", "-")
+        comp = p.get("component", "-")
+        print(f"  {i}. {src} -> {outp} (team={team}, component={comp})")
+    print("Choose a pair by number (or Ctrl+C to cancel).")
+    while True:
+        choice = input("Enter number: ").strip()
+        if not choice.isdigit():
+            print("Please enter a valid number.")
+            continue
+        idx = int(choice)
+        if 1 <= idx <= len(pairs):
+            return idx
+        print("Out of range. Try again.")
+
+
+# ===== Domain model parser =====
+
+
+class DomainTypeSpec(Dict[str, Any]):
+    """Convenience type alias for a parsed DomainType."""
+
+
+def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str, str]]]:
+    """Parse the PlantUML domain model file.
+
+    Returns a tuple of (domain_types, relationships) where:
+      * domain_types is a list of dicts with keys:
+          - name: str
+          - kind: "class" | "enum"
+          - attributes: List[str]
+          - rules: List[{code, name, raw}] (may be empty)
+      * relationships is a list of dicts with keys:
+          - from: str
+          - to: str
+          - label: str
+    """
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as e:  # noqa: BLE001
+        LOG.error("[error] Could not read domain model file %s: %s", path, e)
+        return [], []
+
+    domain_types: Dict[str, DomainTypeSpec] = {}
+    relationships: List[Dict[str, str]] = []
+
+    class_rx = re.compile(r"^\s*class\s+(\w+)\s*<<DomainType>>\s*\{")
+    enum_rx = re.compile(r"^\s*enum\s+(\w+)\s*\{")
+
+    i = 0
+    n = len(lines)
+
+    # ---- First pass: classes and enums ----
+    while i < n:
+        line = lines[i]
+
+        m_class = class_rx.match(line)
+        m_enum = enum_rx.match(line)
+
+        if m_class:
+            name = m_class.group(1)
+            attrs: List[str] = []
+            i += 1
+            while i < n and "}" not in lines[i]:
+                raw = lines[i].strip()
+                if raw and not raw.startswith("note ") and not raw.startswith("'"):
+                    # Attribute lines typically look like: "+Id: String"
+                    attrs.append(raw.lstrip("+"))
+                i += 1
+            domain_types[name] = DomainTypeSpec(
+                name=name,
+                kind="class",
+                attributes=attrs,
+                rules=[],
+            )
+        elif m_enum:
+            name = m_enum.group(1)
+            values: List[str] = []
+            i += 1
+            while i < n and "}" not in lines[i]:
+                raw = lines[i].strip()
+                if raw and not raw.startswith("'"):
+                    values.append(raw)
+                i += 1
+            domain_types[name] = DomainTypeSpec(
+                name=name,
+                kind="enum",
+                attributes=values,
+                rules=[],
+            )
+        else:
+            i += 1
+
+    # ---- Second pass: notes (Rules) and relationships ----
+    note_rx = re.compile(r"^\s*note\s+top\s+of\s+(\w+)\s*:\s*(.*)$")
+    rel_rx = re.compile(
+        r"^\s*(\w+)\s+\"[^\"]*\"\s+[-o]+-\s+\"[^\"]*\"\s+(\w+)\s*:?(.*)$",
+    )
+
+    for line in lines:
+        # Notes carrying rules
+        m_note = note_rx.match(line)
+        if m_note:
+            dt_name = m_note.group(1)
+            rest = m_note.group(2) or ""
+            # Expect something like: "Rules:\nE8B· Rule One,\n4AF· Rule Two"
+            if "Rules:" not in rest:
+                continue
+            rules_part = rest.split("Rules:", 1)[1].strip()
+            # Convert literal "\n" sequences into real newlines, then flatten to commas
+            rules_text = rules_part.replace("\\n", "\n")
+            flat = rules_text.replace("\n", ",")
+            pieces = [p.strip().strip("\"") for p in flat.split(",")]
+
+            dt = domain_types.setdefault(
+                dt_name,
+                DomainTypeSpec(name=dt_name, kind="class", attributes=[], rules=[]),
+            )
+            if "rules" not in dt:
+                dt["rules"] = []
+
+            for item in pieces:
+                if not item:
+                    continue
+                # Expect e.g. "E8B· Should Account Shared List Be Displayed"
+                m_rule = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
+                if m_rule:
+                    code = m_rule.group(1).strip()
+                    rname = m_rule.group(2).strip()
+                else:
+                    code = None
+                    rname = item
+                dt["rules"].append({"code": code, "name": rname, "raw": item})
+            continue
+
+        # Relationships between domain types
+        m_rel = rel_rx.match(line)
+        if m_rel:
+            from_name = m_rel.group(1)
+            to_name = m_rel.group(2)
+            label = (m_rel.group(3) or "").strip()
+            relationships.append({"from": from_name, "to": to_name, "label": label})
+
+    LOG.info(
+        "[info] Parsed %d DomainType(s) and %d relationship(s) from %s",
+        len(domain_types),
+        len(relationships),
+        path,
+    )
+
+    return list(domain_types.values()), relationships
+
+
+# ===== LogicStep lookup (for OPERATES_ON) =====
+
+
+def _find_logic_step_id(rule_code: Optional[str], rule_name: Optional[str]) -> Optional[int]:
+    """Best‑effort lookup of a LogicStep id for a given rule.
+
+    We try a combination of short code equality and name substring matches
+    against a variety of commonly‑used LogicStep properties. The graph schema
+    is intentionally tolerant here: missing properties simply evaluate to null
+    and are ignored by the Cypher predicates.
+    """
+
+    short = (rule_code or "").strip()
+    name = (rule_name or "").strip()
+    if not short and not name:
+        return None
+
+    query = """
+    MATCH (ls:LogicStep)
+    WHERE
+      ($short <> '' AND (
+        (ls.shortCode IS NOT NULL AND ls.shortCode = $short) OR
+        (ls.short_code IS NOT NULL AND ls.short_code = $short) OR
+        (ls.code IS NOT NULL AND ls.code = $short)
+      ))
+      OR
+      ($name <> '' AND (
+        (ls.name IS NOT NULL AND ls.name CONTAINS $name) OR
+        (ls.rule_name IS NOT NULL AND ls.rule_name CONTAINS $name) OR
+        (ls.ruleName IS NOT NULL AND ls.ruleName CONTAINS $name) OR
+        (ls.label IS NOT NULL AND ls.label CONTAINS $name)
+      ))
+    RETURN id(ls) AS id,
+           coalesce(ls.name, ls.rule_name, ls.ruleName, ls.label) AS name
+    LIMIT 1
+    """
+
+    params = {"short": short, "name": name}
+    results = run_cypher(query, params)
+    if not results:
+        return None
+
+    rows = _normalize_cypher_results(results)
+    if not rows:
+        return None
+
+    row = rows[0]
+    ls_id: Optional[int] = None
+    display_name: Optional[str] = None
+
+    if isinstance(row, dict):
+        if "id" in row:
+            ls_id = _to_int_id(row.get("id"))
+            display_name = str(row.get("name") or "")
+        elif isinstance(row.get("row"), (list, tuple)) and row["row"]:
+            ls_id = _to_int_id(row["row"][0])
+            if len(row["row"]) > 1:
+                display_name = str(row["row"][1])
+    elif isinstance(row, (list, tuple)) and row:
+        ls_id = _to_int_id(row[0])
+        if len(row) > 1:
+            display_name = str(row[1])
+
+    if ls_id is not None:
+        LOG.info(
+            "[info] Matched rule '%s' (code=%s) to LogicStep id=%s name='%s'",
+            name or short,
+            short or "",
+            ls_id,
+            display_name or "",
+        )
+    return ls_id
+
+
+# ===== Helper to delete existing Domain and DomainTypes for diagramPath =====
+def _delete_existing_domain(diagram_path: str):
+    """
+    Delete any existing Domain and DomainType nodes for the given diagram_path.
+    """
+    cypher = """
+    MATCH (d:Domain {diagramPath: $diagramPath})
+    OPTIONAL MATCH (dt:DomainType)-[:PART_OF]->(d)
+    WITH collect(DISTINCT d) AS domains, collect(DISTINCT dt) AS dts
+    FOREACH (x IN dts | DETACH DELETE x)
+    FOREACH (d IN domains | DETACH DELETE d)
+    RETURN size(domains) AS domainsDeleted, size(dts) AS domainTypesDeleted
+    """
+    params = {"diagramPath": diagram_path}
+    results = run_cypher(cypher, params)
+    rows = _normalize_cypher_results(results)
+    if not rows:
+        LOG.info("[info] No existing Domain node found for diagramPath=%s; nothing to delete", diagram_path)
+        return
+    row = rows[0]
+    domains_deleted: Any = 0
+    domain_types_deleted: Any = 0
+
+    if isinstance(row, dict):
+        domains_deleted = row.get("domainsDeleted", 0)
+        domain_types_deleted = row.get("domainTypesDeleted", 0)
+    elif isinstance(row, (list, tuple)):
+        if len(row) > 0:
+            domains_deleted = row[0]
+        if len(row) > 1:
+            domain_types_deleted = row[1]
+
+    # Normalise potential Neo4j integer structures (e.g. {"low": 1, "high": 0}) to plain ints
+    try:
+        domains_deleted_int = _to_int_id(domains_deleted) or 0
+    except Exception:  # noqa: BLE001
+        domains_deleted_int = 0
+
+    try:
+        domain_types_deleted_int = _to_int_id(domain_types_deleted) or 0
+    except Exception:  # noqa: BLE001
+        domain_types_deleted_int = 0
+
+    LOG.info(
+        "[info] Deleted %d existing Domain node(s) and %d DomainType node(s) for diagramPath=%s",
+        domains_deleted_int,
+        domain_types_deleted_int,
+        diagram_path,
+    )
+
+
+# ===== Main entry point =====
+
+
+def main() -> None:
+    _setup_logger(verbose=True)
+
+    # Determine domain model path either from CLI or spec selection
+    if len(sys.argv) == 2:
+        domain_path = sys.argv[1]
+        LOG.info("[info] Using explicit domain model path from CLI.")
+    elif len(sys.argv) == 1:
+        specs = _find_spec_files()
+        if not specs:
+            LOG.error("[error] No spec files found in %s", _spec_dir())
+            sys.exit(1)
+        spec_path = _choose_spec(specs)
+        if not spec_path:
+            sys.exit(1)
+        LOG.info("[info] Loading spec from %s", spec_path)
+        spec = _load_spec(spec_path)
+
+        pair_index = _choose_pair(spec)
+        if pair_index is None:
+            sys.exit(1)
+
+        pairs = spec.get("path-pairs", [])
+        pair = pairs[pair_index - 1]
+
+        root_dir = os.path.expanduser(spec.get("root-directory", os.getcwd()))
+        out_rel = pair.get("output-path") or ""
+
+        output_dir = os.path.join(root_dir, out_rel) if out_rel else root_dir
+        domain_path = os.path.join(output_dir, "domain_model_report", "domain_model_report.wsd")
+
+        LOG.info("[info] Selected rootDir='%s'", root_dir)
+        LOG.info("[info] Selected outputDir='%s'", output_dir)
+        LOG.info("[info] Domain model will be read from '%s'", domain_path)
+    else:
+        print("Usage: python ingest_domain.py [path/to/domain_model_report.wsd]")
+        sys.exit(1)
+
+    abs_domain_path = os.path.abspath(domain_path)
+    LOG.info("[info] Domain model path: %s", abs_domain_path)
+    if not os.path.isfile(abs_domain_path):
+        LOG.error("[error] Domain model file not found: %s", abs_domain_path)
+        sys.exit(1)
+
+    # Contact graph API
+    LOG.info("[info] Contacting rules-portal graph API at %s", RULES_PORTAL_BASE_URL)
+    status = _get("/api/graph/status")
+    if not status or not status.get("up", False):
+        LOG.error("[error] rules-portal graph API is not up or unreachable.")
+        sys.exit(1)
+
+    # Parse domain model
+    domain_types, relationships = _parse_domain_model(abs_domain_path)
+    if not domain_types:
+        LOG.warning("[warn] No DomainType entries parsed from file: %s", abs_domain_path)
+        sys.exit(0)
+
+    _delete_existing_domain(abs_domain_path)
+
+    ts = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    # Create Domain node
+    domain_id = create_node(
+        ["Domain"],
+        {
+            "diagramPath": abs_domain_path,
+            "ingestionTimestamp": ts,
+        },
+    )
+    if domain_id is None:
+        LOG.error("[error] Failed to create Domain node.")
+        sys.exit(1)
+
+    # Create DomainType nodes and PART_OF relationships
+    dt_name_to_id: Dict[str, int] = {}
+    for dt in domain_types:
+        name = dt.get("name") or ""
+        if not name:
+            continue
+        kind = dt.get("kind", "class")
+        attributes = dt.get("attributes", []) or []
+
+        props: Dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "diagramPath": abs_domain_path,
+        }
+        # Store attributes as JSON string for easier inspection/searching
+        try:
+            props["attributes"] = json.dumps(attributes, ensure_ascii=False)
+        except TypeError:
+            props["attributes"] = str(attributes)
+
+        dt_id = create_node(["DomainType"], props)
+        if dt_id is None:
+            LOG.warning("[warn] Failed to create DomainType node for '%s'", name)
+            continue
+        dt_name_to_id[name] = dt_id
+
+        rel_id = create_relationship(dt_id, domain_id, "PART_OF", {})
+        if rel_id is None:
+            LOG.warning(
+                "[warn] Failed to create PART_OF relationship for DomainType '%s' -> Domain %d",
+                name,
+                domain_id,
+            )
+
+    LOG.info("[info] Created %d DomainType node(s)", len(dt_name_to_id))
+
+    # Create RELATED_TO relationships between DomainTypes (bidirectional for easy traversal)
+    related_created = 0
+    for rel in relationships:
+        from_name = rel.get("from")
+        to_name = rel.get("to")
+        label = rel.get("label", "")
+        if not from_name or not to_name:
+            continue
+        from_id = dt_name_to_id.get(from_name)
+        to_id = dt_name_to_id.get(to_name)
+        if from_id is None or to_id is None:
+            LOG.trace(
+                "[trace] Skipping RELATED_TO for '%s' -> '%s' (one or both DomainTypes missing)",
+                from_name,
+                to_name,
+            )
+            continue
+
+        props = {"label": label} if label else {}
+
+        if create_relationship(from_id, to_id, "RELATED_TO", props) is not None:
+            related_created += 1
+        if create_relationship(to_id, from_id, "RELATED_TO", props) is not None:
+            related_created += 1
+
+    LOG.info("[info] Created %d RELATED_TO relationship(s) (including reverse links)", related_created)
+
+    # Link LogicSteps to DomainTypes via OPERATES_ON based on rules in notes
+    operates_created = 0
+    cache: Dict[Tuple[Optional[str], Optional[str]], Optional[int]] = {}
+
+    for dt in domain_types:
+        dt_name = dt.get("name")
+        dt_id = dt_name_to_id.get(dt_name)
+        if dt_id is None:
+            continue
+        rules = dt.get("rules") or []
+        if not rules:
+            continue
+
+        for rule in rules:
+            code = rule.get("code")
+            rname = rule.get("name")
+            key = (code, rname)
+            if key not in cache:
+                cache[key] = _find_logic_step_id(code, rname)
+            ls_id = cache[key]
+            if ls_id is None:
+                LOG.info(
+                    "[info] No LogicStep match found for rule '%s' (code=%s)",
+                    rname or code or "",
+                    code or "",
+                )
+                continue
+
+            props = {
+                "ruleCode": code,
+                "ruleName": rname,
+                "domainType": dt_name,
+                "diagramPath": abs_domain_path,
+                "ingestionTimestamp": ts,
+            }
+            if create_relationship(ls_id, dt_id, "OPERATES_ON", props) is not None:
+                operates_created += 1
+
+    LOG.info("[info] Created %d OPERATES_ON relationship(s)", operates_created)
+    LOG.info(
+        "[info] Domain ingestion complete: %d DomainType nodes, %d RELATED_TO, %d OPERATES_ON",
+        len(dt_name_to_id),
+        related_created,
+        operates_created,
+    )
+
+
+if __name__ == "__main__":
+    main()

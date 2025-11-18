@@ -1,0 +1,192 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+I have a provided a list of business logic (aka rules/decisions) (input 2) and the source code that corresponds to these rules/decisions (input 1).
+
+I have also indicated in input 3 which of these rules/decisions is my desired top-level decision.
+
+I want you to think about which business logic/rules/decisions contribute directly to making the top-level decision in input 3.
+
+You must add links to that top-level decision from all base rules/decisions/BKMs that contribute to this top-level decision. Only add links where it is clear from the source code (input 1) that the rule/decision/bkm is depended on by the top-level decision. 
+
+The return json must only contain the top-level decision with its links added.
+
+Reponse must be in this json structure:
+
+[
+  {
+    "rule_name": "Persist Operation Result",
+    "rule_purpose": "Map a database save outcome into a normalized operation result and optional error message",
+    "rule_spec": "If Database.SaveResult.isSuccess is true set OperationResult to success and ErrorMessage to dash. Otherwise set OperationResult to error and copy Database.SaveResult.errors into ErrorMessage",
+    "code_block": "",
+    "code_file": "",
+    "code_lines": [],
+    "code_function": "",
+    "example": "Save fails with validation error results in OperationResult error and ErrorMessage containing the validation text",
+    "dmn_hit_policy": "UNIQUE",
+    "dmn_inputs": [
+      {
+        "name": "Database.SaveResult.isSuccess",
+        "type": "boolean"
+      },
+      {
+        "name": "Database.SaveResult.errors",
+        "type": "string"
+      }
+    ],
+    "dmn_outputs": [
+      {
+        "name": "OperationResult",
+        "type": "string",
+        "allowedValues": [
+          "success",
+          "error"
+        ]
+      },
+      {
+        "name": "ErrorMessage",
+        "type": "string"
+      }
+    ],
+    "dmn_table": "| Database.SaveResult.isSuccess condition | OperationResult | ErrorMessage |\n|-------------------------------|--------------|-----------------------------|\n| true                          | success      | -                           |\n| false                         | error        | Database.SaveResult.errors  |",
+    "timestamp": "2025-11-07T00:10:00.000Z",
+    "id": "base-ops-result-001",
+    "owner": "SF Team",
+    "component": "SF Code",
+    "kind": "Decision",
+    "links": [],
+    "doc_rule_id": null,
+    "rule_category": "Audit",
+    "business_area": null,
+    "doc_match_score": 0,
+    "ai_categorized": true,
+    "category_explanation": "Normalizes DB outcomes for audit and downstream decisions",
+    "archived": false
+  },
+  {
+    "rule_name": "Should Error Email Be Sent",
+    "rule_purpose": "Determine whether to send an error notification email based on the presence of errors in the batch",
+    "rule_spec": "If ErrorMap is not empty send email otherwise do not send",
+    "code_block": "",
+    "code_file": "",
+    "code_lines": [],
+    "code_function": "",
+    "example": "Three failed records produce SendEmail true",
+    "dmn_hit_policy": "UNIQUE",
+    "dmn_inputs": [
+      {
+        "name": "ErrorMap.isEmpty",
+        "type": "boolean"
+      }
+    ],
+    "dmn_outputs": [
+      {
+        "name": "SendEmail",
+        "type": "boolean"
+      }
+    ],
+    "dmn_table": "| ErrorMap.isEmpty condition | SendEmail |\n|----------------------------|-----------|\n| false                      | true      |\n| true                       | false     |",
+    "timestamp": "2025-11-07T00:10:00.000Z",
+    "id": "base-send-email-001",
+    "owner": "SF Team",
+    "component": "SF Code",
+    "kind": "Decision",
+    "links": [],
+    "doc_rule_id": null,
+    "rule_category": "Audit",
+    "business_area": null,
+    "doc_match_score": 0,
+    "ai_categorized": true,
+    "category_explanation": "Controls error notification behavior",
+    "archived": false
+  },
+  {
+    "rule_name": "Execute Error Notification",
+    "rule_purpose": "Determine whether to send an error notification email and what body to use based directly on operation result and error presence",
+    "rule_spec": "If SendEmail is true and OperationResult equals error then set Email.Sent to true and Email.Body to ErrorMessage. Otherwise set Email.Sent to false and Email.Body to dash.",
+    "code_block": "",
+    "code_file": "",
+    "code_lines": [],
+    "code_function": "",
+    "example": "If SendEmail is true and OperationResult is error then Email.Sent is true and Email.Body is the ErrorMessage; in all other cases Email.Sent is false and Email.Body is dash",
+    "dmn_hit_policy": "UNIQUE",
+    "dmn_inputs": [
+      {
+        "name": "OperationResult",
+        "type": "string",
+        "allowedValues": [
+          "success",
+          "error"
+        ]
+      },
+      {
+        "name": "ErrorMessage",
+        "type": "string"
+      },
+      {
+        "name": "SendEmail",
+        "type": "boolean"
+      }
+    ],
+    "dmn_outputs": [
+      {
+        "name": "Email.Sent",
+        "type": "boolean"
+      },
+      {
+        "name": "Email.Body",
+        "type": "string"
+      }
+    ],
+    "dmn_table": "| SendEmail condition | OperationResult condition | Email.Sent | Email.Body |\n|---------------------|---------------------------|------------|------------|\n| true                | \"error\"                   | true       | ErrorMessage |\n| -                   | -                         | false      | -            |",
+    "timestamp": "2025-11-07T00:10:00.000Z",
+    "id": "top-execute-email-001",
+    "owner": "SF Team",
+    "component": "SF Code",
+    "kind": "Decision (Top-Level)",
+    "links": [
+      {
+        "from_step": "Persist Operation Result",
+        "from_output": "OperationResult",
+        "to_input": "OperationResult",
+        "kind": "depends_on"
+      },
+      {
+        "from_step": "Persist Operation Result",
+        "from_output": "ErrorMessage",
+        "to_input": "ErrorMessage",
+        "kind": "depends_on"
+      },
+      {
+        "from_step": "Should Error Email Be Sent",
+        "from_output": "SendEmail",
+        "to_input": "SendEmail",
+        "kind": "depends_on"
+      }
+    ],
+    "doc_rule_id": null,
+    "rule_category": "Audit",
+    "business_area": null,
+    "doc_match_score": 0,
+    "ai_categorized": true,
+    "category_explanation": "Top level trigger based on operation result and error presence",
+    "archived": false
+  }
+]
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_step_id rather than from_step, you should use from_step as per the example and populate it with the name of the step.
+* Do not put any special characters in the output.
+* Do not modify any of the rule details other than adding links. This is especially true of the id and kind fields.

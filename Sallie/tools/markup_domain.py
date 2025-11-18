@@ -32,7 +32,7 @@ SPEC_DIR = os.path.join(SCRIPT_DIR, "spec")
 DEFAULT_PROMPT_NAME = "markup-domain.templ"
 
 TMP_ROOT = ".tmp/rules-for-markup"
-TMP_SEQUENCE_TXT = os.path.join(TMP_ROOT, "domain_report.txt")
+TMP_DOMAIN_TXT = os.path.join(TMP_ROOT, "domain_model_report.txt")
 TMP_EXPORTED_RULES = os.path.join(TMP_ROOT, "exported-rules.json")
 MARKUP_OUT_DIRNAME = "markup-domain"
 MARKUP_OUT_FILENAME = "markup-domain.md"
@@ -278,7 +278,7 @@ def main() -> None:
   parser.add_argument("output_dir", nargs="?", default=None, help="Output directory for docs. If omitted, you will be prompted via a spec file.")
   parser.add_argument("--prompt-name", default=DEFAULT_PROMPT_NAME, help="Custom prompt template name (default: markup-domain.templ)")
   parser.add_argument("--filter", default=None, help="Filter file (optional). If provided, it will be passed to PCPT.")
-  parser.add_argument("--skip-initial-domain", action="store_true", help="Skip the initial domain generation step.")
+  parser.add_argument("--generate-initial-domain", action="store_true", help="Generate the initial domain diagram (default is to skip).")
   parser.add_argument(
       "--include-all-rules",
       action="store_true",
@@ -363,18 +363,18 @@ def main() -> None:
     _log(f"Detected root path from CWD: {root_path}")
 
   # Paths used by the flow
-  domain_report_src = os.path.join(output_dir, "domain_report", "domain_report.txt")
+  domain_report_src = os.path.join(output_dir, "domain_model_report", "domain_model_report.txt")
   markup_md = os.path.join(output_dir, MARKUP_OUT_DIRNAME, MARKUP_OUT_FILENAME)
 
   _log("Step 1: Create standard Domain Diagram", header=True)
-  if not args.skip_initial_sequence:
+  if args.generate_initial_domain:
       pcpt_sequence(output_dir=output_dir, visualize=code_dir, filter_file=filter_file)
   else:
-    _log("Skipped initial sequence generation as requested.")
+      _log("Skipped initial domain generation (default). Use --generate-initial-domain to enable.")
 
   _log("Step 2: Copy existing sequence report to temp folder", header=True)
   _ensure_dir(TMP_ROOT)
-  _copy(domain_report_src, TMP_SEQUENCE_TXT)
+  _copy(domain_report_src, TMP_DOMAIN_TXT)
 
   _log("Step 3: Export list of current business rules for code", header=True)
   if not root_path:
@@ -394,8 +394,17 @@ def main() -> None:
   source_path_arg = pair_source if pair_source else code_dir
   _log(f"Using source_path for export_rules_for_markup: {source_path_arg}")
 
-  # Build absolute path to the sibling exporter script so this works from any CWD
-  export_script = os.path.join(SCRIPT_DIR, "export_rules_for_markup.py")
+  # Build absolute path to the exporter script so this works from any CWD.
+  # Prefer a helpers/ subfolder if present, but fall back to the legacy location
+  helpers_export = os.path.join(SCRIPT_DIR, "helpers", "export_rules_for_markup.py")
+
+  if os.path.exists(helpers_export):
+    export_script = helpers_export
+  else:
+    raise FileNotFoundError(
+      f"Could not locate export_rules_for_markup.py in {helpers_export}"
+    )
+
   _log(f"Using export script: {export_script}")
 
   export_cmd = [
@@ -422,11 +431,11 @@ def main() -> None:
       f"Ensure tools/export_rules_for_markup.py writes to that path."
     )
 
-  _log("Step 4: Markup sequence description", header=True)
+  _log("Step 4: Markup domain description", header=True)
 
-  _log("Step 4: Markup sequence description", header=True)
+  _log("Step 4: Markup domain description", header=True)
   pcpt_run_custom_prompt(
-    input_file=TMP_SEQUENCE_TXT,
+    input_file=TMP_DOMAIN_TXT,
     input_file2=TMP_EXPORTED_RULES,
     output_dir=output_dir,
     code_dir=code_dir,
@@ -434,21 +443,18 @@ def main() -> None:
     filter_file=filter_file,
   )
 
-  _log("Step 5: Regenerate sequence diagram from markup", header=True)
+  _log("Step 5: Regenerate domain diagram from markup", header=True)
   if not os.path.exists(markup_md):
     raise FileNotFoundError(
       f"Expected markup file not found: {markup_md}. "
       f"Verify the custom prompt produced it under {os.path.join(output_dir, MARKUP_OUT_DIRNAME)}"
     )
-  # Only pass domain_hints if it was provided
-  if domain_hints:
-    pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints)
-  else:
-    pcpt_sequence(output_dir=output_dir, visualize=markup_md)
 
-  _log("✅ Done. Sequence regenerated using markup.")
+  pcpt_sequence(output_dir=output_dir, visualize=markup_md)
+
+  _log("✅ Done. Domain regenerated using markup.")
   _log(f"Markup file: {markup_md}")
-  _log(f"Sequence report used: {TMP_SEQUENCE_TXT}")
+  _log(f"Domain report used: {TMP_DOMAIN_TXT}")
   _log(f"Exported rules: {TMP_EXPORTED_RULES}")
 
 if __name__ == "__main__":

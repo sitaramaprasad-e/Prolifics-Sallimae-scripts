@@ -212,11 +212,14 @@ def main():
         )
 
         # 1) Delete LogicStep nodes for each archived rule id (and all their relationships)
-        #    and then delete any Parameter nodes scoped to that rule id.
         for rid in sorted(deleted_rule_ids):
-            # Delete the LogicStep for this rule
+            # Delete any Message nodes sequenced by this LogicStep, then delete the LogicStep
             graph_run_cypher(
-                "MATCH (l:LogicStep {ruleId: $ruleId}) DETACH DELETE l",
+                """
+                MATCH (l:LogicStep {id: $ruleId})
+                OPTIONAL MATCH (l)-[:SEQUENCED_BY]->(m:Message)
+                DETACH DELETE m, l
+                """,
                 {"ruleId": rid},
             )
 
@@ -251,6 +254,44 @@ def main():
                 """,
                 {"path": path},
             )
+
+        # 4) Delete Message nodes that are no longer linked to any LogicStep
+        graph_run_cypher(
+            """
+            MATCH (m:Message)
+            WHERE NOT EXISTS { MATCH (m)<-[:SEQUENCED_BY]-(:LogicStep) }
+            DETACH DELETE m
+            """,
+            {},
+        )
+
+        # 5) Delete Sequence nodes that no longer have any Message nodes at all
+        graph_run_cypher(
+            """
+            MATCH (s:Sequence)
+            WHERE NOT EXISTS { MATCH (s)<-[:PART_OF]-(:Message) }
+            DETACH DELETE s
+            """,
+            {},
+        )
+
+        # 6) Delete Domain and DomainType nodes that are no longer linked to any LogicStep.
+        #    For any Domain node where none of its DomainType children are the target
+        #    of an OPERATES_ON relationship from a LogicStep, delete that Domain and
+        #    all of its DomainType nodes.
+        graph_run_cypher(
+            """
+            MATCH (d:Domain)
+            WHERE NOT EXISTS {
+              MATCH (d)--(dt:DomainType)<-[:OPERATES_ON]-(:LogicStep)
+            }
+            WITH collect(d) AS doms
+            UNWIND doms AS d
+            MATCH (d)--(dt:DomainType)
+            DETACH DELETE dt, d
+            """,
+            {},
+        )
 
     # Write updated rules including cleaned links
     with open(business_rules_path, "w", encoding="utf-8") as f:

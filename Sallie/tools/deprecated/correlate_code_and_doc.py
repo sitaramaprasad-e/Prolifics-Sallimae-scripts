@@ -4,14 +4,19 @@ import faiss
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import normalize
 import numpy as np
-import warnings
-from urllib3.exceptions import NotOpenSSLWarning
 import uuid
 from copy import deepcopy
 from typing import List, Dict, Any
 import re
 
-warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+#!/usr/bin/env python3
+import warnings
+# Suppress the LibreSSL/OpenSSL compatibility warning from urllib3 v2
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+",
+    module="urllib3"
+)
 
 # ----------------------------
 # Model home prompt (defaults to home dir)

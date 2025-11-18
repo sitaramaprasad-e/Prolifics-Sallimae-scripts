@@ -14,6 +14,8 @@ from typing import Optional, List, Dict, Any, Set, Tuple
 # - LogicStep   (one per business rule / decision)
 # - CodeFunction
 # - CodeFile
+#   + sourcePath
+#   + rootDir
 # - Parameter
 #
 # Relationship types:
@@ -69,6 +71,14 @@ GRAPH_BASE_URL = os.getenv("RULES_PORTAL_BASE_URL", "http://localhost:443").rstr
 GRAPH_ENABLED_ENV = os.getenv("RULES_PORTAL_GRAPH_ENABLED", "true").strip().lower()
 GRAPH_ENABLED = GRAPH_ENABLED_ENV in {"1", "true", "yes", "on"}
 
+# --- Run-scoped override to forcibly disable graph calls ---
+GRAPH_FORCE_DISABLED = False
+
+def set_graph_disabled(disabled: bool = True) -> None:
+    """Override graph population for the current process/run."""
+    global GRAPH_FORCE_DISABLED
+    GRAPH_FORCE_DISABLED = bool(disabled)
+
 _GRAPH_STATUS_CHECKED = False
 _GRAPH_AVAILABLE = False
 
@@ -86,6 +96,9 @@ def _graph_is_enabled(logger: logging.Logger) -> bool:
     the result. All failures are logged as warnings but do not stop ingestion.
     """
     global _GRAPH_STATUS_CHECKED, _GRAPH_AVAILABLE
+
+    if GRAPH_FORCE_DISABLED:
+        return False
 
     if not GRAPH_ENABLED:
         return False
@@ -213,7 +226,12 @@ def _ensure_logicstep_node(rule: Dict[str, Any], logger: logging.Logger) -> Opti
     return _graph_create_node(["LogicStep"], props, logger, _LOGICSTEP_CACHE, rule_id)
 
 
-def _ensure_codefile_node(path: str, logger: logging.Logger) -> Optional[Any]:
+def _ensure_codefile_node(
+    path: str,
+    logger: logging.Logger,
+    root_dir: Optional[str] = None,
+    source_path: Optional[str] = None,
+) -> Optional[Any]:
     if not path:
         return None
     norm_path = os.path.normpath(path)
@@ -221,6 +239,10 @@ def _ensure_codefile_node(path: str, logger: logging.Logger) -> Optional[Any]:
     if cached is not None:
         return cached
     props = {"path": norm_path, "name": os.path.basename(norm_path)}
+    if source_path:
+        props["sourcePath"] = source_path
+    if root_dir:
+        props["rootDir"] = root_dir
     return _graph_create_node(["CodeFile"], props, logger, _CODEFILE_CACHE, norm_path)
 
 
@@ -246,9 +268,17 @@ def _ensure_param_node(rule_id: str, name: str, direction: str, typ: str, logger
     if cached is not None:
         return cached
 
+    dir_norm = (direction or "").lower()
+    prefix = ""
+    if dir_norm == "input":
+        prefix = "in: "
+    elif dir_norm == "output":
+        prefix = "out: "
+    display_name = f"{prefix}{name}" if prefix else name
+
     props = {
         "stepId": rule_id,
-        "name": name,
+        "name": display_name,
         "direction": direction or "",
         "type": typ or "",
     }
@@ -273,8 +303,19 @@ def _populate_graph_for_rule(rule: Dict[str, Any], logger: logging.Logger) -> No
     # Code function and file
     code_function = rule.get("code_function") or ""
     code_file = rule.get("code_file") or ""
+    code_file_root_dir = rule.get("rootDir") or rule.get("root_dir")
+    code_file_source_path = rule.get("sourcePath") or rule.get("source_path")
 
-    file_id = _ensure_codefile_node(code_file, logger) if code_file else None
+    file_id = (
+        _ensure_codefile_node(
+            code_file,
+            logger,
+            root_dir=code_file_root_dir,
+            source_path=code_file_source_path,
+        )
+        if code_file
+        else None
+    )
     func_id = _ensure_codefunc_node(code_function, code_file, logger) if code_function else None
 
     if logic_id is not None and func_id is not None:
@@ -494,6 +535,8 @@ def add_rules_from_text(
     new_count: int = 0,
     considered_count: int = 0,
     allowed_names: Optional[Set[str]] = None,
+    root_dir: Optional[str] = None,
+    source_path: Optional[str] = None,
 ) -> Tuple[List[dict], int, int, int]:
     """Parse markdown rule sections and return new/updated rule records plus updated counters."""
     t = _normalize_rule_doc_text(doc_text or "")
@@ -501,11 +544,12 @@ def add_rules_from_text(
     new_rules: List[dict] = []
     name_counts: Dict[str, int] = {}
 
-    for section in rule_sections:
+    for idx, section in enumerate(rule_sections, start=1):
         considered_count += 1
         try:
             lines = section.strip().splitlines()
-            rule_name = heading_text(lines[0])
+            logger.trace("[trace] section %d: first line='%s'", idx, (lines[0] if lines else ""))
+            rule_name = heading_text(lines[0] if lines else "")
             if not rule_name or rule_name.lower() in {"rule name", "rule-name"}:
                 rn_match = re.search(r"\*\*Rule Name:\*\*\s*(.+)", section)
                 if rn_match:
@@ -516,6 +560,8 @@ def add_rules_from_text(
                 if rn2:
                     rule_name = rn2.group(1).strip()
 
+            logger.trace("[trace] section %d: parsed rule_name (pre-suffix)='%s'", idx, rule_name)
+
             # Make rule names unique within this document by appending a counter
             base_name = rule_name
             if base_name:
@@ -525,6 +571,8 @@ def add_rules_from_text(
                     # First occurrence keeps the plain name; subsequent ones get " (2)", " (3)", etc.
                     rule_name = f"{base_name} ({count})"
 
+            logger.trace("[trace] section %d: final rule_name='%s'", idx, rule_name)
+
             # New optional Kind field (Decision | BKM)
             kind = ""
             m_kind = re.search(r"\*\*Kind:\*\*\s*([A-Za-z]+)", section)
@@ -533,6 +581,12 @@ def add_rules_from_text(
 
             # If we are restricting to an allowed set of names, apply it after suffixing
             if allowed_names is not None and rule_name not in allowed_names:
+                logger.trace(
+                    "[trace] section %d: rule_name '%s' not in allowed_names (size=%s); skipping",
+                    idx,
+                    rule_name,
+                    len(allowed_names),
+                )
                 continue
 
             # Purpose
@@ -572,6 +626,10 @@ def add_rules_from_text(
                 example = re.split(
                     r"\n(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?", example, flags=re.IGNORECASE
                 )[0].strip()
+
+            # Dedupe key for this section
+            k = _dedupe_key(rule_name, section_timestamp)
+            logger.trace("[trace] section %d: dedupe_key=%s", idx, k)
 
             # DMN
             dmn_hit_policy = ""
@@ -634,8 +692,12 @@ def add_rules_from_text(
                 dmn_table = "\n".join(table_lines).strip()
 
             # Dedup by (rule_name, timestamp)
-            k = _dedupe_key(rule_name, section_timestamp)
             if k in seen and not force_load:
+                logger.trace(
+                    "[trace] section %d: dedupe key %s already seen and force_load=False; skipping",
+                    idx,
+                    k,
+                )
                 audit_add(
                     "rule",
                     path="section",
@@ -650,6 +712,13 @@ def add_rules_from_text(
             existing = existing_by_name.get(rule_name)
             if existing:
                 old_ts = existing.get("timestamp")
+                logger.trace(
+                    "[trace] section %d: existing rule found for '%s' (id=%s, ts=%s)",
+                    idx,
+                    rule_name,
+                    existing.get("id"),
+                    old_ts,
+                )
                 new_fields = {
                     "dmn_hit_policy": dmn_hit_policy,
                     "dmn_inputs": dmn_inputs,
@@ -657,6 +726,13 @@ def add_rules_from_text(
                     "dmn_table": dmn_table,
                 }
                 is_material_change = _has_material_change(existing, new_fields)
+                logger.trace(
+                    "[trace] section %d: material_change=%s (old_ts=%s, new_ts=%s)",
+                    idx,
+                    is_material_change,
+                    old_ts,
+                    section_timestamp,
+                )
                 if (
                     not force_load
                     and old_ts
@@ -690,10 +766,22 @@ def add_rules_from_text(
                 )
                 name_to_id[rule_name] = rule_id
                 updated_count += 1
+                logger.trace(
+                    "[trace] section %d: updating existing rule id=%s name='%s'",
+                    idx,
+                    rule_id,
+                    rule_name,
+                )
             else:
                 rule_id = name_to_id.get(rule_name) or str(uuid.uuid4())
                 name_to_id[rule_name] = rule_id
                 new_count += 1
+                logger.trace(
+                    "[trace] section %d: creating NEW rule id=%s name='%s'",
+                    idx,
+                    rule_id,
+                    rule_name,
+                )
 
             seen.add(k)
 
@@ -810,6 +898,11 @@ def add_rules_from_text(
                 "kind": kind,
                 "links": links,
             }
+            # Attach optional file-origin metadata so CodeFile nodes can receive rootDir/sourcePath
+            if root_dir:
+                rule_rec["rootDir"] = root_dir
+            if source_path:
+                rule_rec["sourcePath"] = source_path
 
             existing = existing_by_name.get(rule_name)
             if existing and existing.get("archived") is not None:
@@ -863,9 +956,24 @@ def add_rules_from_text(
                 rule_name,
             )
             new_rules.append(rule_rec)
+
+            logger.trace(
+                "[trace] section %d: appended rule id=%s name='%s' kind='%s'",
+                idx,
+                rule_id,
+                rule_name,
+                kind,
+            )
         except Exception as e:
             logger.error(
                 "[error] Failed to parse a rule section: %s", e
             )
 
+    logger.info(
+        "[summary] add_rules_from_text: considered=%d updated=%d new=%d emitted=%d",
+        considered_count,
+        updated_count,
+        new_count,
+        len(new_rules),
+    )
     return new_rules, updated_count, new_count, considered_count
