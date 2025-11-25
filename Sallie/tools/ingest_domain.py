@@ -93,9 +93,9 @@
 # notes declared on each domain type (e.g. "note top of Account : Rules:\nE8B· Should …").
 #
 # The ingestion code talks to the rules‑portal Express server via the following
-# HTTP routes exposed in `graphRoutes.js`. The base URL is controlled by the
-# environment variable `RULES_PORTAL_BASE_URL` and defaults to
-# `http://localhost:443`:
+# HTTP routes exposed in `graphRoutes.js`. The base URL defaults to
+# `http://localhost:443` and is typically overridden from the spec file via
+# the `graph-url` property.
 #
 #   GET  /api/graph/status
 #       - Lightweight health check.
@@ -227,9 +227,11 @@ LOG = logging.getLogger("ingest_domain")
 _setup_logger(verbose=True)
 
 # ===== Base URL =====
-RULES_PORTAL_BASE_URL = os.environ.get("RULES_PORTAL_BASE_URL", "http://localhost:443").rstrip("/")
-GRAPH_INSECURE_ENV = os.getenv("RULES_PORTAL_GRAPH_INSECURE", "false").strip().lower()
-GRAPH_VERIFY = GRAPH_INSECURE_ENV not in {"1", "true", "yes", "on"}
+# Default base URL for the rules‑portal graph API. This is typically overridden
+# via the `graph-url` value in the selected spec file inside `main()`.
+RULES_PORTAL_BASE_URL = "http://localhost:443"
+# Always run graph calls without TLS certificate verification (insecure mode).
+GRAPH_VERIFY = False
 
 
 # ===== HTTP helpers =====
