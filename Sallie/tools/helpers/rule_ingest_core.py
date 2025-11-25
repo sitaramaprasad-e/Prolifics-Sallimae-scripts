@@ -70,6 +70,8 @@ from typing import Optional, List, Dict, Any, Set, Tuple
 GRAPH_BASE_URL = os.getenv("RULES_PORTAL_BASE_URL", "http://localhost:443").rstrip("/")
 GRAPH_ENABLED_ENV = os.getenv("RULES_PORTAL_GRAPH_ENABLED", "true").strip().lower()
 GRAPH_ENABLED = GRAPH_ENABLED_ENV in {"1", "true", "yes", "on"}
+GRAPH_INSECURE_ENV = os.getenv("RULES_PORTAL_GRAPH_INSECURE", "false").strip().lower()
+GRAPH_VERIFY = GRAPH_INSECURE_ENV not in {"1", "true", "yes", "on"}
 
 # --- Run-scoped override to forcibly disable graph calls ---
 GRAPH_FORCE_DISABLED = False
@@ -123,7 +125,7 @@ def _graph_is_enabled(logger: logging.Logger) -> bool:
     _GRAPH_STATUS_CHECKED = True
     status_url = f"{GRAPH_BASE_URL}/api/graph/status"
     try:
-        resp = requests.get(status_url, timeout=2)
+        resp = requests.get(status_url, timeout=2, verify=GRAPH_VERIFY)
         if resp.ok:
             data = resp.json()
             _GRAPH_AVAILABLE = bool(data.get("up"))
@@ -169,7 +171,7 @@ def _graph_create_node(labels: List[str], properties: Dict[str, Any], logger: lo
     payload = {"labels": labels, "properties": properties or {}}
 
     try:
-        resp = requests.post(url, json=payload, timeout=5)
+        resp = requests.post(url, json=payload, timeout=5, verify=GRAPH_VERIFY)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("success"):
@@ -201,7 +203,7 @@ def _graph_create_relationship(from_id: Any, to_id: Any, rel_type: str,
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=5)
+        resp = requests.post(url, json=payload, timeout=5, verify=GRAPH_VERIFY)
         # We log non‑2xx but do not raise to keep ingestion resilient.
         if not resp.ok:
             logger.warning(
@@ -253,7 +255,7 @@ def _graph_find_logicstep_node(rule_id: str, name: Optional[str], logger: loggin
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=5)
+        resp = requests.post(url, json=payload, timeout=5, verify=GRAPH_VERIFY)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("success"):
