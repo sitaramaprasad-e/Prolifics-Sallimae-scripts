@@ -521,6 +521,7 @@ def find_code_function_id(function_name: str, candidates: List[Dict[str, Any]]) 
 
 # ===== Main entry point =====
 def main():
+    global RULES_PORTAL_BASE_URL
     _setup_logger(verbose=True)
     # Parse args / interactive spec selection
     source_path: Optional[str] = None
@@ -546,6 +547,11 @@ def main():
             sys.exit(1)
         LOG.info("[info] Loading spec from %s", spec_path)
         spec = _load_spec(spec_path)
+
+        graph_url = spec.get("graph-url")
+        if graph_url:
+            RULES_PORTAL_BASE_URL = str(graph_url).rstrip("/")
+            LOG.info("[info] Using graph URL from spec: %s", RULES_PORTAL_BASE_URL)
 
         pair_index = _choose_pair(spec)
         if pair_index is None:

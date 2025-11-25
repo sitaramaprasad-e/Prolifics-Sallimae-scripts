@@ -870,6 +870,7 @@ def _delete_existing_domain(diagram_path: str):
 
 
 def main() -> None:
+    global RULES_PORTAL_BASE_URL
     _setup_logger(verbose=True)
 
     domain_name: Optional[str] = None
@@ -888,6 +889,11 @@ def main() -> None:
             sys.exit(1)
         LOG.info("[info] Loading spec from %s", spec_path)
         spec = _load_spec(spec_path)
+
+        graph_url = spec.get("graph-url")
+        if graph_url:
+            RULES_PORTAL_BASE_URL = str(graph_url).rstrip("/")
+            LOG.info("[info] Using graph URL from spec: %s", RULES_PORTAL_BASE_URL)
 
         pair_index = _choose_pair(spec)
         if pair_index is None:

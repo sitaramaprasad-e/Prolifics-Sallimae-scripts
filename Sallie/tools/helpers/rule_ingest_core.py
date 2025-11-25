@@ -74,6 +74,20 @@ GRAPH_ENABLED = GRAPH_ENABLED_ENV in {"1", "true", "yes", "on"}
 # --- Run-scoped override to forcibly disable graph calls ---
 GRAPH_FORCE_DISABLED = False
 
+
+def set_graph_base_url(url: Optional[str]) -> None:
+    """
+    Optionally override the base URL for graph / Neo4j integration at runtime.
+    If `url` is None or empty, the existing GRAPH_BASE_URL is left unchanged.
+    Resets the cached status so subsequent calls re-check the new URL.
+    """
+    global GRAPH_BASE_URL, _GRAPH_STATUS_CHECKED, _GRAPH_AVAILABLE
+    if url:
+        GRAPH_BASE_URL = url.rstrip("/")
+        # Force a fresh status check on next use
+        _GRAPH_STATUS_CHECKED = False
+        _GRAPH_AVAILABLE = False
+
 def set_graph_disabled(disabled: bool = True) -> None:
     """Override graph population for the current process/run."""
     global GRAPH_FORCE_DISABLED

@@ -1,6 +1,7 @@
 {
   "root-directory": "/Users/greghodgkinson/Documents/git.nosync/sallie-mae-example",
   "model-home": "~/",
+  "graph-url": "http://localhost:443",
   "path-pairs": [
     {
       "source-path": "code/stored_proc",

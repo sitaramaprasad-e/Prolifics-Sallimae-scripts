@@ -16,6 +16,7 @@ from helpers.rule_ingest_core import (
     heading_text,
     set_graph_disabled,
     _populate_graph_for_rule,
+    set_graph_base_url,
 )
 
 # ===== Lightweight TRACE logger (inline; no external files) =====
@@ -217,6 +218,7 @@ input_file = sys.argv[1]
 # Optional root/source metadata from caller (e.g., selected spec path-pair)
 ROOT_DIR_OVERRIDE: Optional[str] = None
 SOURCE_PATH_OVERRIDE: Optional[str] = None
+GRAPH_URL_OVERRIDE: Optional[str] = None
 
 extra_args = sys.argv[2:]
 i = 0
@@ -230,12 +232,19 @@ while i < len(extra_args):
         SOURCE_PATH_OVERRIDE = extra_args[i + 1]
         i += 2
         continue
+    if arg in ("--graph-url", "--graph_url") and i + 1 < len(extra_args):
+        GRAPH_URL_OVERRIDE = extra_args[i + 1]
+        i += 2
+        continue
     i += 1
 
 if ROOT_DIR_OVERRIDE:
     LOG.info("[info] Using rootDir from CLI: %s", ROOT_DIR_OVERRIDE)
 if SOURCE_PATH_OVERRIDE:
     LOG.info("[info] Using sourcePath from CLI: %s", SOURCE_PATH_OVERRIDE)
+if GRAPH_URL_OVERRIDE:
+    LOG.info("[info] Using graph URL from CLI: %s", GRAPH_URL_OVERRIDE)
+    set_graph_base_url(GRAPH_URL_OVERRIDE)
 
 LOG.info("[info] Input report   : %s", os.path.abspath(input_file))
 # Clone the full source tree for this root/source into the model tmp files area
