@@ -343,6 +343,7 @@ def run_pipeline(
     os.chdir(root)
     model_home = _expand_home(spec.get("model-home", "~"))
     pairs = spec.get("path-pairs", [])
+    graph_url = spec.get("graph-url")
 
     _hdr("Starting PCPT Pipeline")
     print(f"Root directory: {root}")
@@ -507,6 +508,9 @@ def run_pipeline(
                     cmd_ingest.append("--KG-ONLY")
                 if no_kg:
                     cmd_ingest.append("--NO-KG")
+                # Forward graph-url from spec to ingest_rules.py so it can override the graph base URL
+                if graph_url:
+                    cmd_ingest.extend(["--graph-url", str(graph_url)])
                 # Feed model_home, team, and component to ingest_rules.py (matches its prompt order)
                 stdin_values = f"{model_home}\n{pair.get('team', '')}\n{pair.get('component', '')}\n"
                 subprocess.run(
