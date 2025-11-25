@@ -29,10 +29,9 @@ from typing import Optional, List, Dict, Any, Set, Tuple
 # inputs/outputs, plus the cross‑step `links` that describe how outputs from one
 # step feed into inputs of another.
 #
-# The ingestion code talks to the rules‑portal Express server via the following
-# HTTP routes exposed in `graphRoutes.js`. The base URL is controlled by the
-# environment variable `RULES_PORTAL_BASE_URL` and defaults to
-# `http://localhost:3000`:
+# HTTP routes exposed in `graphRoutes.js`. The base URL defaults to
+# `http://localhost:443` and is overridden at runtime via `set_graph_base_url(...)`
+# from the pipeline spec (graph-url).
 #
 #   GET  /api/graph/status
 #       - Lightweight health check.
@@ -67,11 +66,15 @@ from typing import Optional, List, Dict, Any, Set, Tuple
 #      LINKS_TO relationships using the graph routes above.
 
 # --- Neo4j / graph API configuration (lazy, best‑effort) ---
-GRAPH_BASE_URL = os.getenv("RULES_PORTAL_BASE_URL", "http://localhost:443").rstrip("/")
-GRAPH_ENABLED_ENV = os.getenv("RULES_PORTAL_GRAPH_ENABLED", "true").strip().lower()
-GRAPH_ENABLED = GRAPH_ENABLED_ENV in {"1", "true", "yes", "on"}
-GRAPH_INSECURE_ENV = os.getenv("RULES_PORTAL_GRAPH_INSECURE", "false").strip().lower()
-GRAPH_VERIFY = GRAPH_INSECURE_ENV not in {"1", "true", "yes", "on"}
+# Default base URL for the rules‑portal graph API. This is typically overridden
+# at runtime via `set_graph_base_url(...)` using the `graph-url` value from the
+# pcpt_pipeline spec.
+GRAPH_BASE_URL = "http://localhost:443"
+# Graph integration is enabled by default; callers can disable it for a run via
+# `set_graph_disabled(True)` or by using the NO_KG flag in ingest_rules.py.
+GRAPH_ENABLED = True
+# Always run graph calls without TLS certificate verification (insecure mode).
+GRAPH_VERIFY = False
 
 # --- Run-scoped override to forcibly disable graph calls ---
 GRAPH_FORCE_DISABLED = False

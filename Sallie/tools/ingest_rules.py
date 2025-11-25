@@ -3,6 +3,7 @@ import warnings
 warnings.filterwarnings("ignore", message=".*OpenSSL*", module="urllib3")
 warnings.filterwarnings("ignore", message=".*LibreSSL*", module="urllib3")
 warnings.filterwarnings("ignore", module="urllib3")
+import os
 import re
 import json
 import sys
@@ -18,10 +19,6 @@ from helpers.rule_ingest_core import (
     _populate_graph_for_rule,
     set_graph_base_url,
 )
-
-# Insecure HTTPS toggle for internal rules‑portal graph calls
-GRAPH_INSECURE_ENV = os.getenv("RULES_PORTAL_GRAPH_INSECURE", "false").strip().lower()
-GRAPH_VERIFY = GRAPH_INSECURE_ENV not in {"1", "true", "yes", "on"}
 
 # ===== Lightweight TRACE logger (inline; no external files) =====
 import logging
@@ -249,7 +246,6 @@ if SOURCE_PATH_OVERRIDE:
 if GRAPH_URL_OVERRIDE:
     LOG.info("[info] Using graph URL from CLI: %s", GRAPH_URL_OVERRIDE)
     set_graph_base_url(GRAPH_URL_OVERRIDE)
-    os.environ["RULES_PORTAL_GRAPH_INSECURE"] = GRAPH_INSECURE_ENV
 
 LOG.info("[info] Input report   : %s", os.path.abspath(input_file))
 # Clone the full source tree for this root/source into the model tmp files area
