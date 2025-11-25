@@ -12,20 +12,21 @@ INPUT 3: DECISION MODEL
 
 INSTRUCTIONS
 
-Take a look at these decisions (input 2), and work out what the decision hierarchy is that organizes these decisions from top to botton, and specifically which of the decisions should be at the top-level of that decision hierarchy.
+Take a look at these decisions (input 2), and work out what the decision hierarchy is that organizes these decisions from top to botton, and specifically which of the decisions should be at the top-level of that decision hierarchy. There is often only one top-level decision, but could be more.
 
 I have optionally indicated in input 3 which of these rules/decisions is my desired top-level decision. If I do, then you MUST make this a top-level decision in a hierarchy, but you can still create other hierarchies if needed.
 
 VERY IMPORTANT: Suggest the smallest number of hierarchies possible. Ideally one, but can be more than one. Only focus on the important top-level decisions that are business meaningful.
 
 1. Keep all decisions grounded in the code provided in input 1.
-2. Top-level should have decisions flow into them from lower level decisions. There is often only one top-level decision, but could be more.
+2. Top-level should have decisions flow into them from lower level decisions.
 3. Top-level decisions should not themselves flow into higher level decisions. They are at the top. Note that if a rule is currently marked as a source link for another rule, then it cannot be top-level, and you should look instead at the rule it feeds into.
 4. You need to think carefully about all of the rules, and how they form mini hierarchies of decisions that feed from bottom to top, lower level decisions driving a higher level decision.
 5. For some hierarchies, for them to make sense, we might need to suggest a new top-level decision that doesn't exist yet. For those, create a new decision, and leave its id blank i.e. "".
 6. If there are no top-level decisions, just return an empty json.
 7. The flow description needs to fully explain how the lower level decisions feed into the top-level decision, and any parallel flows that also feed into the top-level decision.
-8. Here's an example of the output I want, with the top-level decisions as top_decision, quoting the uuid of the decision.
+8. Never suggest a hierarchy that is just a single decision. There must be at least one lower level decision feeding into the top-level decision. 
+9. Here's an example of the output I want, with the top-level decisions as top_decision, quoting the uuid of the decision.
 
 {
   "hierarchies": [

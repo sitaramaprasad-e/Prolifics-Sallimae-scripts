@@ -1,0 +1,48 @@
+INPUT 1: SOURCE CODE
+
+This is a set of source code files that contain business rules.
+
+@@INPUT1@@
+
+INPUT 2: DOMAIN
+
+This is the domain model that describes the business entities used in the business rules in the source code in input 1.
+
+@@INPUT_FILE_CONTENT@@ 
+
+INPUT 3: CURRENT BUSINESS RULES REPORT
+
+This is the current report of business rules extracted from the source code in input 1.
+
+@@INPUT_FILE2_CONTENT@@ 
+
+INSTRUCTIONS
+
+You are an expert at finding business rules in code. Take a look at the current business rules report (input 3) and give me an updated version that corrects and improves it based on the source code in input 1 and the domain model in input 2.
+
+Hints
+* Most important: Look carefully for any business logic in the code that is not covered by a rule in input 3, and either add to an existing rule or add a new rule as appropriate.
+* Give preference to adding to an existing rule rather than creating a new one, where possible.
+* Correct any inaccuracies in the existing report.
+    * Ensure the rule spec is fully accurate of all of the logic in the source code relevant to this rule.
+    * Ensure that the DMN table, inputs and outputs, are fully descriptive of this logic, retaining grounding in the source code and the domain model.
+* Stick the format of the existing report as closely as possible. General guidelines for any new rules you create:
+    1) heading with the rule name (### Name: <name>) with no formatting in the name (if rule is a decision then phrase it as a business question (e.g. “Is Claim Valid?”, otherwise phrase as an action/function (e.g. “Standardize Gender”).
+    2) the rule kind, if it is a decision then make it Decision or if it is a action/function then make it BKM (**Kind:** <Decision or BKM)
+    3) desription of the rule purpose (**Purpose:** <description>) 
+    4) a full spec of the rule in plain english that decribes the rule's behaviour (**Spec:** <spec>) 
+    5) include the code block quoting the lines it appears in, formatted exactly as follows (each item on a new line):
+    **Code Block:** <file name including the path>
+    Lines: <start>-<end>
+    Function: <name of the most specific function or class or similar where the rule appears which would be appropriate to represent on a sequence diagram, including signature>
+    <the code block itself enclosed in triple backticks> 
+    6) an example of the rule being applied (**Example:** <example>) 
+    7) the rule(s) expressed in a DMN decision table with input conditions and output conclusions (**DMN:** <DMN decision table which must include Inputs/Outputs (names + types + allowed values if required, where name can be from domain model or from another decisions outputs if there is a decision that links with this one - in which case the input name/type/values on this rule must exactly match the name/type/values of the output of the linked source rule) with side effects as signals, an explicit and appropriate hit policy, and pure FEEL constructs in cells>))
+    * Make a natural language readable business rule name that is not too long but descriptive, preferably in terms of the business domain.
+    * If it is a decision, phrase it as a business question (e.g., “Is Claim Valid?”). Otherwise phrase it as an action or function (e.g., “Standardize Gender”).
+    * The business rules should reference the domain types from the domain model.
+    * Leave a line between each line in the report to improve formatting.
+    * When you quote the code, include the file name, and actually provide the code listing for the lines quoted.
+    * Input and output names should quote the domain model in the form type.attribute or quote another linked source decisions output, but if and only if they correspond to those things.
+    * Focus more on the business relevant rules rather than just technical rules.
+    * New rules should not have the exact same name as an existing rule.

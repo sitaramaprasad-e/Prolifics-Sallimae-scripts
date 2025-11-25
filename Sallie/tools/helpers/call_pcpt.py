@@ -207,6 +207,7 @@ def pcpt_business_logic(
 def pcpt_run_custom_prompt(
     source_path: str,
     custom_prompt_template: str,
+    domain_hints: Optional[str] = None,
     input_file: Optional[str] = None,
     input_file2: Optional[str] = None,
     echo_only: bool = False,
@@ -223,6 +224,7 @@ def pcpt_run_custom_prompt(
         [--input-file2 <input_file2>] \
         [--echo-only] \
         [--output <output_dir_arg>] \
+        [--domain-hints <domain_hints>] \
         [--filter <filter_path>] \
         [--mode {multi,single}] \
         [--index X --total Y] \
@@ -243,6 +245,8 @@ def pcpt_run_custom_prompt(
         cmd.append("--echo-only")
     if output_dir_arg:
         cmd.extend(["--output", output_dir_arg])
+    if domain_hints:
+        cmd.extend(["--domain-hints", domain_hints])
     if filter_path:
         cmd.extend(["--filter", filter_path])
     if mode:

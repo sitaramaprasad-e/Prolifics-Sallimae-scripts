@@ -207,14 +207,98 @@ def _graph_create_relationship(from_id: Any, to_id: Any, rel_type: str,
         )
 
 
-def _ensure_logicstep_node(rule: Dict[str, Any], logger: logging.Logger) -> Optional[Any]:
-    rule_id = rule.get("id")
+
+# --- Helper: best-effort lookup of existing LogicStep node by id and name ---
+def _graph_find_logicstep_node(rule_id: str, name: Optional[str], logger: logging.Logger) -> Optional[Any]:
+    """
+    Best-effort lookup of an existing LogicStep node by id and name.
+
+    Returns the Neo4j internal identity if found, or None otherwise.
+    """
     if not rule_id:
         return None
+
+    # If graph is globally disabled/unavailable, skip lookup
+    if not _graph_is_enabled(logger):
+        return None
+
+    url = f"{GRAPH_BASE_URL}/api/graph/run"
+    query = (
+        "MATCH (ls:LogicStep) "
+        "WHERE ls.id = $id "
+        "AND toLower(ls.name) = toLower($name) "
+        "RETURN id(ls) AS identity "
+        "LIMIT 1"
+    )
+    payload = {
+        "query": query,
+        "parameters": {
+            "id": rule_id,
+            "name": (name or ""),
+        },
+    }
+
+    try:
+        resp = requests.post(url, json=payload, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("success"):
+            logger.trace(
+                "[trace] LogicStep lookup returned success=false for id=%s name='%s': %s",
+                rule_id,
+                name,
+                data,
+            )
+            return None
+        records = data.get("records") or []
+        if not records:
+            return None
+        first = records[0] or {}
+        identity = first.get("identity")
+        if identity is None:
+            logger.trace(
+                "[trace] LogicStep lookup returned record without identity for id=%s name='%s': %s",
+                rule_id,
+                name,
+                first,
+            )
+            return None
+        return identity
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "[warn] Failed to lookup LogicStep in graph for id=%s name='%s': %s",
+            rule_id,
+            name,
+            exc,
+        )
+        return None
+
+
+def _ensure_logicstep_node(rule: Dict[str, Any], logger: logging.Logger) -> Tuple[Optional[Any], bool]:
+    """Ensure there is a LogicStep node for this rule.
+
+    Returns a tuple of (identity, existed) where:
+      • identity is the Neo4j internal id (or None on failure)
+      • existed is True if we matched an existing node (cache or graph),
+        and False if we had to create a new node.
+    """
+    rule_id = rule.get("id")
+    if not rule_id:
+        return None, False
+
+    # Check in-process cache first
     cached = _LOGICSTEP_CACHE.get(rule_id)
     if cached is not None:
-        return cached
+        # From our perspective, this "existed" already in this run
+        return cached, True
 
+    # Best-effort lookup in existing graph to avoid duplicate LogicStep nodes
+    existing_id = _graph_find_logicstep_node(rule_id, rule.get("rule_name"), logger)
+    if existing_id is not None:
+        _LOGICSTEP_CACHE[rule_id] = existing_id
+        return existing_id, True
+
+    # Fall back to creating a new LogicStep node
     props = {
         "id": rule_id,
         "name": rule.get("rule_name"),
@@ -223,7 +307,8 @@ def _ensure_logicstep_node(rule: Dict[str, Any], logger: logging.Logger) -> Opti
         "component": rule.get("component") or "",
         "timestamp": rule.get("timestamp") or "",
     }
-    return _graph_create_node(["LogicStep"], props, logger, _LOGICSTEP_CACHE, rule_id)
+    identity = _graph_create_node(["LogicStep"], props, logger, _LOGICSTEP_CACHE, rule_id)
+    return identity, False
 
 
 def _ensure_codefile_node(
@@ -298,7 +383,14 @@ def _populate_graph_for_rule(rule: Dict[str, Any], logger: logging.Logger) -> No
     if not rule_id:
         return
 
-    logic_id = _ensure_logicstep_node(rule, logger)
+    logic_id, existed = _ensure_logicstep_node(rule, logger)
+    # If the LogicStep already existed in the graph, we assume its CodeFile,
+    # CodeFunction and Parameter nodes (and relationships) are already present.
+    # In that case, skip re-creating them to avoid duplicates.
+    if logic_id is None:
+        return
+    if existed:
+        return
 
     # Code function and file
     code_function = rule.get("code_function") or ""
@@ -543,6 +635,8 @@ def add_rules_from_text(
     rule_sections = re.split(r"(?m)^\s{0,3}#{1,6}\s+", t.strip())[1:]
     new_rules: List[dict] = []
     name_counts: Dict[str, int] = {}
+    # Track duplicates within this document by (base rule name, code file)
+    seen_name_codefile: Set[Tuple[str, str]] = set()
 
     for idx, section in enumerate(rule_sections, start=1):
         considered_count += 1
@@ -562,22 +656,94 @@ def add_rules_from_text(
 
             logger.trace("[trace] section %d: parsed rule_name (pre-suffix)='%s'", idx, rule_name)
 
-            # Make rule names unique within this document by appending a counter
+            # Preserve the base heading text before any suffixing
             base_name = rule_name
-            if base_name:
-                count = name_counts.get(base_name, 0) + 1
-                name_counts[base_name] = count
-                if count > 1:
-                    # First occurrence keeps the plain name; subsequent ones get " (2)", " (3)", etc.
-                    rule_name = f"{base_name} ({count})"
-
-            logger.trace("[trace] section %d: final rule_name='%s'", idx, rule_name)
 
             # New optional Kind field (Decision | BKM)
             kind = ""
             m_kind = re.search(r"\*\*Kind:\*\*\s*([A-Za-z]+)", section)
             if m_kind:
                 kind = m_kind.group(1).strip()
+
+            # code_file, code_lines, code_function
+            code_file = ""
+            code_lines: Optional[List[int]] = None
+
+            m_codefile_inline = re.search(
+                r"\*\*Code\s*Block:\*\*\s*`?([^`\n]+)`?", section, re.IGNORECASE
+            )
+            if m_codefile_inline:
+                code_file = m_codefile_inline.group(1).strip()
+            else:
+                m_codefile_fileline = re.search(
+                    r"(?mi)^\s*File:\s*`?([^`\n]+)`?", section
+                )
+                if m_codefile_fileline:
+                    code_file = m_codefile_fileline.group(1).strip()
+            if code_file:
+                code_file = code_file.replace("`", "").strip()
+
+            m_codelines = re.search(
+                r"\bLine(?:s)?\s*:??\s*(\d+)(?:\s*[\-\u2013\u2014]\s*(\d+))?",
+                section,
+                re.IGNORECASE,
+            )
+            if m_codelines:
+                try:
+                    start_line = int(m_codelines.group(1))
+                    end_line = m_codelines.group(2)
+                    if end_line is not None:
+                        end_line = int(end_line)
+                    else:
+                        end_line = start_line
+                    code_lines = [start_line, end_line]
+                except Exception:
+                    code_lines = None
+
+            code_function = ""
+            m_codefunc = re.search(
+                r"(?mi)^\s*Function\b\s*[:\-\u2013\u2014]*\s*`?([^`\n]+)`?", section
+            )
+            if m_codefunc:
+                code_function = m_codefunc.group(1).strip()
+                code_function = re.sub(
+                    r"^[\s:;\-\u2013\u2014]+", "", code_function
+                ).strip()
+
+            # If we have both a base name and a code file, treat (name, code_file) duplicates
+            # within the same document as true duplicates and skip them.
+            if base_name and code_file:
+                cf_key = code_file or ""
+                dup_key = (base_name, cf_key)
+                if dup_key in seen_name_codefile:
+                    logger.info(
+                        "[info] Skipping duplicate rule '%s' in same code file '%s' within document",
+                        base_name,
+                        cf_key,
+                    )
+                    audit_add(
+                        "rule",
+                        path=cf_key,
+                        source="input_doc",
+                        decision="rejected",
+                        reason="duplicate name in same code file",
+                        tests={"base_name": base_name},
+                        derived={},
+                    )
+                    continue
+                seen_name_codefile.add(dup_key)
+
+            # Now make rule names unique within this document by appending a counter,
+            # but only after we've handled same-file duplicates.
+            rule_name = base_name
+            if rule_name:
+                count = name_counts.get(rule_name, 0) + 1
+                name_counts[rule_name] = count
+                if count > 1:
+                    # First occurrence keeps the plain name; subsequent ones get " (2)", " (3)", etc.
+                    rule_name = f"{rule_name} ({count})"
+
+            logger.trace("[trace] section %d: final rule_name='%s'", idx, rule_name)
 
             # If we are restricting to an allowed set of names, apply it after suffixing
             if allowed_names is not None and rule_name not in allowed_names:
@@ -785,50 +951,6 @@ def add_rules_from_text(
 
             seen.add(k)
 
-            # code_file, code_lines, code_function
-            code_file = ""
-            code_lines: Optional[List[int]] = None
-
-            m_codefile_inline = re.search(
-                r"\*\*Code\s*Block:\*\*\s*`?([^`\n]+)`?", section, re.IGNORECASE
-            )
-            if m_codefile_inline:
-                code_file = m_codefile_inline.group(1).strip()
-            else:
-                m_codefile_fileline = re.search(
-                    r"(?mi)^\s*File:\s*`?([^`\n]+)`?", section
-                )
-                if m_codefile_fileline:
-                    code_file = m_codefile_fileline.group(1).strip()
-            if code_file:
-                code_file = code_file.replace("`", "").strip()
-
-            m_codelines = re.search(
-                r"\bLine(?:s)?\s*:??\s*(\d+)(?:\s*[\-\u2013\u2014]\s*(\d+))?",
-                section,
-                re.IGNORECASE,
-            )
-            if m_codelines:
-                try:
-                    start_line = int(m_codelines.group(1))
-                    end_line = m_codelines.group(2)
-                    if end_line is not None:
-                        end_line = int(end_line)
-                    else:
-                        end_line = start_line
-                    code_lines = [start_line, end_line]
-                except Exception:
-                    code_lines = None
-
-            code_function = ""
-            m_codefunc = re.search(
-                r"(?mi)^\s*Function\b\s*[:\-\u2013\u2014]*\s*`?([^`\n]+)`?", section
-            )
-            if m_codefunc:
-                code_function = m_codefunc.group(1).strip()
-                code_function = re.sub(
-                    r"^[\s:;\-\u2013\u2014]+", "", code_function
-                ).strip()
 
             # Links
             links: List[dict] = []

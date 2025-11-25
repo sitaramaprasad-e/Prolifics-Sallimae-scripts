@@ -72,10 +72,11 @@ import json
 import os
 import sys
 import subprocess
+import shutil
 from typing import List, Dict, Any, Optional
 
 # Local imports
-from tools.helpers.call_pcpt import pcpt_domain_model, pcpt_business_logic
+from tools.helpers.call_pcpt import pcpt_domain_model, pcpt_business_logic, pcpt_run_custom_prompt
 
 # =========================
 # Console helpers
@@ -360,6 +361,7 @@ def run_pipeline(
         hints = pair.get("domain-hints")
         filt = pair.get("filter")
         mode = pair.get("mode")
+        update_existing = bool(pair.get("update_existing", False))
 
         # Use spec-provided paths as-is; with CWD at repo root these resolve predictably
         source_path = src_rel
@@ -374,6 +376,7 @@ def run_pipeline(
             "output": output_path,
             "domain_hints": domain_hints,
             "filter": filter_path,
+            "update_existing": update_existing,
             "steps": [],
             "ok": True,
         }
@@ -401,17 +404,79 @@ def run_pipeline(
 
         # 4.2 Business logic
         if start_step <= 2:
-            _subhdr("4.2 Business Logic")
+            if update_existing:
+                _subhdr("4.2 Business Logic (update-existing)")
+            else:
+                _subhdr("4.2 Business Logic")
             try:
-                domain_report_path = os.path.join(output_path, "domain_model_report/domain_model_report.txt")
-                pcpt_business_logic(
-                    output_dir_arg=output_path,
-                    domain_path=domain_report_path,
-                    domain_hints=domain_hints,
-                    filter_path=filter_path,
-                    source_path=source_path,
-                    mode=mode,
-                )
+                domain_report_path = os.path.join(output_path, "domain_model_report", "domain_model_report.txt")
+                business_report_path = os.path.join(output_path, "business_logic_report", "business_logic_report.md")
+
+                if update_existing:
+                    # Only use the update flow if an existing report is present; otherwise warn and fall back to normal behavior.
+                    if os.path.isfile(business_report_path):
+                        # Take an in-place backup before running the update
+                        backup_path = business_report_path + ".bak"
+                        shutil.copy2(business_report_path, backup_path)
+                        _ok(f"Backed up existing business logic report to {backup_path}")
+
+                        # --- Copy domain and business reports into a per-pair temp dir (not output_path) ---
+                        # Use a shared .tmp folder at the repo root (CWD) for update inputs
+                        tmp_update_dir = os.path.join(".tmp")
+                        os.makedirs(tmp_update_dir, exist_ok=True)
+                        tmp_domain_path = os.path.join(tmp_update_dir, f"domain_model_report_{idx}.txt")
+                        tmp_business_path = os.path.join(tmp_update_dir, f"business_logic_report_{idx}.md")
+                        shutil.copy2(domain_report_path, tmp_domain_path)
+                        shutil.copy2(business_report_path, tmp_business_path)
+
+                        # Prepare arguments for custom prompt; align index/total usage with standard business-logic behavior
+                        prompt_template = "update-business-rules-report.templ"
+                        prompt_base = os.path.splitext(prompt_template)[0]  # "update-business-rules-report"
+                        run_kwargs = dict(
+                            source_path=str(source_path),
+                            custom_prompt_template=prompt_template,
+                            input_file=str(tmp_domain_path),
+                            input_file2=str(tmp_business_path),
+                            output_dir_arg=str(output_path),
+                            domain_hints=domain_hints,
+                            filter_path=filter_path,
+                            mode=mode,
+                        )
+                        # For multi-mode runs, provide index/total for progress; for single-mode, omit them
+                        if mode == "multi":
+                            run_kwargs["total"] = len(pairs)
+                            run_kwargs["index"] = idx
+                        pcpt_run_custom_prompt(**run_kwargs)
+
+                        # After the custom prompt runs, copy its output over the original report
+                        updated_report_path = os.path.join(output_path, prompt_base, f"{prompt_base}.md")
+                        if os.path.isfile(updated_report_path):
+                            shutil.copy2(updated_report_path, business_report_path)
+                            _ok(f"Updated business logic report from {updated_report_path}")
+                        else:
+                            raise FileNotFoundError(f"Expected updated business report at {updated_report_path} was not found")
+                    else:
+                        _fail(f"No existing business logic report found at {business_report_path}; falling back to normal business-logic generation.")
+                        # Fall back to the normal business logic flow below
+                        pcpt_business_logic(
+                            output_dir_arg=output_path,
+                            domain_path=domain_report_path,
+                            domain_hints=domain_hints,
+                            filter_path=filter_path,
+                            source_path=source_path,
+                            mode=mode,
+                        )
+                else:
+                    # Normal business logic flow (no update)
+                    pcpt_business_logic(
+                        output_dir_arg=output_path,
+                        domain_path=domain_report_path,
+                        domain_hints=domain_hints,
+                        filter_path=filter_path,
+                        source_path=source_path,
+                        mode=mode,
+                    )
+
                 _ok("business-logic completed")
                 pair_summary["steps"].append("business-logic: ok")
             except Exception as e:

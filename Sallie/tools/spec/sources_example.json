@@ -10,7 +10,8 @@
       "mode": "multi",
       "team": "DB Team",
       "component": "ODS Claims ETL",
-      "default_step": "i"
+      "default_step": "i",
+      "update_existing": true
     },
     {
       "source-path": "code/sf",
@@ -20,7 +21,8 @@
       "mode": "single",
       "team": "SF Team",
       "component": "SF Code",
-      "default_step": "i"
+      "default_step": "i",
+      "update_existing": true
     }
   ]
 }

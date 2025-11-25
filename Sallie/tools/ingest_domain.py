@@ -151,12 +151,58 @@ import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
+def _normalise_entity_name(name: str) -> str:
+    """Normalise a domain/entity name so 'Claim Line' matches 'ClaimLine', etc."""
+    return re.sub(r"\s+", "", name or "").strip()
+
 import requests
 import logging
 
 # ===== TRACE logger setup (mirrors ingest_sequence.py) =====
 TRACE_LEVEL_NUM = 5
 logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
+
+def _derive_short_code_from_uuid(uuid_str: str) -> str:
+    """
+    Derive the 3-hex short rule code from a UUID string by stripping dashes
+    and taking the last 3 characters, uppercased.
+    Example:
+      'e8972032-1c87-4670-a9e0-2329a15cd7c0' -> '7C0'
+    """
+    cleaned = uuid_str.replace("-", "")
+    if len(cleaned) < 3:
+        return cleaned.upper()
+    return cleaned[-3:].upper()
+
+
+def _find_logicstep_id_for_rule(
+    steps: List[Dict[str, Any]],
+    short_code: str,
+    rule_name: str,
+) -> Optional[str]:
+    """
+    Given a 3-hex short rule code from the domain model and a rule name,
+    find the corresponding LogicStep id by matching BOTH:
+      - last 3 hex chars of the UUID-derived id, and
+      - the rule name (case-insensitive exact match).
+    Returns the LogicStep id (UUID) if found, else None.
+    """
+    target_code = (short_code or "").strip().upper()
+    target_name = (rule_name or "").strip().lower()
+    if not target_code or not target_name:
+        return None
+
+    for step in steps:
+        step_id = str(step.get("id") or "").strip()
+        name = str(step.get("name") or "").strip()
+        if not step_id or not name:
+            continue
+
+        code = _derive_short_code_from_uuid(step_id)
+        if code == target_code and name.lower() == target_name:
+            return step_id
+
+    return None
 
 
 def _trace(self, message, *args, **kws):
@@ -444,26 +490,57 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
             i += 1
 
     # ---- Second pass: notes (Rules) and relationships ----
-    note_rx = re.compile(r"^\s*note\s+top\s+of\s+(\w+)\s*:\s*(.*)$")
+    note_inline_rx = re.compile(r"^\s*note\s+top\s+of\s+(\w+)\s*:\s*(.*)$")
+    note_block_rx = re.compile(r"^\s*note\s+(top|right|left|bottom)\s+of\s+(\w+)\s*$")
     rel_rx = re.compile(
         r"^\s*(\w+)\s+\"[^\"]*\"\s+[-o]+-\s+\"[^\"]*\"\s+(\w+)\s*:?(.*)$",
     )
 
-    for line in lines:
-        # Notes carrying rules
-        m_note = note_rx.match(line)
-        if m_note:
-            dt_name = m_note.group(1)
-            rest = m_note.group(2) or ""
-            # Expect something like: "Rules:\nE8B· Rule One,\n4AF· Rule Two"
-            if "Rules:" not in rest:
-                continue
-            rules_part = rest.split("Rules:", 1)[1].strip()
-            # Convert literal "\n" sequences into real newlines, then flatten to commas
-            rules_text = rules_part.replace("\\n", "\n")
-            flat = rules_text.replace("\n", ",")
-            pieces = [p.strip().strip("\"") for p in flat.split(",")]
+    i = 0
+    while i < n:
+        line = lines[i]
 
+        # Inline note style: "note top of Account : Rules:\nE8B· ...,4AF· ..."
+        m_inline = note_inline_rx.match(line)
+        if m_inline:
+            dt_name = m_inline.group(1)
+            rest = m_inline.group(2) or ""
+            if "Rules:" in rest:
+                rules_part = rest.split("Rules:", 1)[1].strip()
+                rules_text = rules_part.replace("\\n", "\n")
+                flat = rules_text.replace("\n", ",")
+                pieces = [p.strip().strip("\"") for p in flat.split(",")]
+
+                dt = domain_types.setdefault(
+                    dt_name,
+                    DomainTypeSpec(name=dt_name, kind="class", attributes=[], rules=[]),
+                )
+                if "rules" not in dt:
+                    dt["rules"] = []
+
+                for item in pieces:
+                    if not item:
+                        continue
+                    m_rule = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
+                    if m_rule:
+                        code = m_rule.group(1).strip()
+                        rname = m_rule.group(2).strip()
+                    else:
+                        code = None
+                        rname = item
+                    dt["rules"].append({"code": code, "name": rname, "raw": item})
+            i += 1
+            continue
+
+        # Block note style:
+        #   note right of Patient
+        #     Rules:
+        #     2B0· Standardize Gender,
+        #     41F· Calculate Age At First Claim
+        #   end note
+        m_block = note_block_rx.match(line)
+        if m_block:
+            dt_name = m_block.group(2)
             dt = domain_types.setdefault(
                 dt_name,
                 DomainTypeSpec(name=dt_name, kind="class", attributes=[], rules=[]),
@@ -471,27 +548,45 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
             if "rules" not in dt:
                 dt["rules"] = []
 
-            for item in pieces:
-                if not item:
+            i += 1
+            in_rules = False
+            while i < n and "end note" not in lines[i]:
+                stripped = lines[i].strip()
+                if not stripped:
+                    i += 1
                     continue
-                # Expect e.g. "E8B· Should Account Shared List Be Displayed"
-                m_rule = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
-                if m_rule:
-                    code = m_rule.group(1).strip()
-                    rname = m_rule.group(2).strip()
-                else:
-                    code = None
-                    rname = item
-                dt["rules"].append({"code": code, "name": rname, "raw": item})
+                if stripped.startswith("Rules"):
+                    # Start of rules section inside this note
+                    in_rules = True
+                    i += 1
+                    continue
+                if in_rules:
+                    # Strip any trailing comma
+                    item = stripped.rstrip(",").strip().strip("\"")
+                    if item:
+                        m_rule = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
+                        if m_rule:
+                            code = m_rule.group(1).strip()
+                            rname = m_rule.group(2).strip()
+                        else:
+                            code = None
+                            rname = item
+                        dt["rules"].append({"code": code, "name": rname, "raw": item})
+                i += 1
+            # Skip the "end note" line
+            if i < n and "end note" in lines[i]:
+                i += 1
             continue
 
-        # Relationships between domain types
+        # Relationships between domain types (unchanged)
         m_rel = rel_rx.match(line)
         if m_rel:
             from_name = m_rel.group(1)
             to_name = m_rel.group(2)
             label = (m_rel.group(3) or "").strip()
             relationships.append({"from": from_name, "to": to_name, "label": label})
+
+        i += 1
 
     LOG.info(
         "[info] Parsed %d DomainType(s) and %d relationship(s) from %s",
@@ -503,40 +598,183 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
     return list(domain_types.values()), relationships
 
 
+# ===== Helper: parse twin .txt domain description file =====
+def _parse_domain_description_file(path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Parse a Markdown-style domain description file that matches the domain_model_report.wsd.
+
+    Returns a mapping:
+      {
+        "<DomainTypeName>": {
+          "description": "<entity description>",
+          "attributes": {
+             "<AttrName>": "<attribute description>",
+             ...
+          }
+        },
+        ...
+      }
+
+    The parser looks for sections like:
+
+      ### **Patient**
+      Represents individuals...
+
+      **Attributes:**
+      - PatientKey: Unique system identifier for the patient
+      - SourcePatientID: Original patient identifier from source system
+
+    and similarly for enums under "## Enumerations".
+    """
+    entities: Dict[str, Dict[str, Any]] = {}
+    current_entity: Optional[str] = None
+    collecting_entity_desc = False
+    collecting_attrs = False
+    entity_desc_parts: List[str] = []
+
+    # Regexes for section and attribute detection
+    entity_header_rx = re.compile(r"^###\s+\*\*(.+?)\*\*")
+    attrs_header_rx = re.compile(r"^\s*\*\*Attributes:\*\*")
+    relationships_header_rx = re.compile(r"^\s*\*\*Relationships:\*\*")
+    enum_header_rx = re.compile(r"^##\s+Enumerations\s*$")
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("[warn] Could not read domain description file %s: %s", path, e)
+        return entities
+
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].rstrip("\n")
+
+        # Detect entity header like "### **Patient**"
+        m_ent = entity_header_rx.match(line)
+        if m_ent:
+            # Flush previous entity description if any
+            if current_entity is not None and entity_desc_parts:
+                desc = " ".join(p.strip() for p in entity_desc_parts if p.strip())
+                key = _normalise_entity_name(current_entity)
+                entities.setdefault(key, {})["description"] = desc
+            # Heading text, e.g. "Claim Line"
+            current_entity = m_ent.group(1).strip()
+            key = _normalise_entity_name(current_entity)
+            entities.setdefault(key, {}).setdefault("attributes", {})
+            entity_desc_parts = []
+            collecting_entity_desc = True
+            collecting_attrs = False
+            i += 1
+            continue
+
+        # Attributes header
+        if attrs_header_rx.match(line):
+            # Finish entity description collection
+            if current_entity is not None and entity_desc_parts:
+                desc = " ".join(p.strip() for p in entity_desc_parts if p.strip())
+                key = _normalise_entity_name(current_entity)
+                entities.setdefault(key, {})["description"] = desc
+            collecting_entity_desc = False
+            collecting_attrs = True
+            i += 1
+            continue
+
+        # Relationships header or new section – stop collecting attributes
+        if relationships_header_rx.match(line) or line.startswith("## ") or line.startswith("### "):
+            collecting_attrs = False
+            collecting_entity_desc = False
+            # Do not consume the line here for headers – allow re-processing if it's another entity
+            if entity_header_rx.match(line):
+                continue
+            i += 1
+            continue
+
+        # Collect entity description text: first paragraph(s) after the entity header until Attributes/Relationships/next header.
+        # If we encounter a "(note" line, we treat that (and anything that follows) as out of scope for the description.
+        if collecting_entity_desc and current_entity is not None:
+            stripped = line.strip()
+            if stripped.lower().startswith("(note"):
+                # Stop collecting description when we hit the rules/note section.
+                collecting_entity_desc = False
+                i += 1
+                continue
+            # Skip empty lines
+            if stripped:
+                entity_desc_parts.append(stripped)
+            i += 1
+            continue
+
+        # Collect attributes as "- Name: Description"
+        if collecting_attrs and current_entity is not None:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                # Attribute line
+                attr_body = stripped[2:].strip()
+                # Split on first ":" to separate name and description
+                if ":" in attr_body:
+                    attr_name, attr_desc = attr_body.split(":", 1)
+                    attr_name = attr_name.strip()
+                    attr_desc = attr_desc.strip()
+                else:
+                    attr_name = attr_body.strip()
+                    attr_desc = ""
+                key = _normalise_entity_name(current_entity)
+                ent = entities.setdefault(key, {})
+                attrs_map = ent.setdefault("attributes", {})
+                attrs_map[attr_name] = attr_desc
+                i += 1
+                continue
+            # Stop collecting attributes when we hit a blank line or another section
+            if not stripped or stripped.startswith("**Relationships:**") or stripped.startswith("### ") or stripped.startswith("## "):
+                collecting_attrs = False
+            i += 1
+            continue
+
+        i += 1
+
+    # Flush last entity description, if any
+    if current_entity is not None and entity_desc_parts:
+        desc = " ".join(p.strip() for p in entity_desc_parts if p.strip())
+        key = _normalise_entity_name(current_entity)
+        entities.setdefault(key, {})["description"] = desc
+
+    LOG.info("[info] Parsed descriptions for %d domain types from %s", len(entities), path)
+    return entities
+
+
 # ===== LogicStep lookup (for OPERATES_ON) =====
 
 
 def _find_logic_step_id(rule_code: Optional[str], rule_name: Optional[str]) -> Optional[int]:
-    """Best‑effort lookup of a LogicStep id for a given rule.
+    """Lookup a LogicStep id for a given rule using short code + name.
 
-    We try a combination of short code equality and name substring matches
-    against a variety of commonly‑used LogicStep properties. The graph schema
-    is intentionally tolerant here: missing properties simply evaluate to null
-    and are ignored by the Cypher predicates.
+    The matching strategy is:
+      * Derive a 3-hex short code from the LogicStep `id` property using
+        `toUpper(right(replace(ls.id, '-', ''), 3))`, and require it to equal
+        the provided `rule_code` (case-insensitive).
+      * Require an exact, case-insensitive match between `ls.name` and the
+        provided `rule_name`.
+
+    This reflects the convention that the domain model rule code (e.g. '2B0')
+    is the last 3 hex characters of the LogicStep UUID, and we also harden the
+    match by checking the rule name.
     """
 
-    short = (rule_code or "").strip()
+    short = (rule_code or "").strip().upper()
     name = (rule_name or "").strip()
     if not short and not name:
         return None
 
     query = """
     MATCH (ls:LogicStep)
+    WITH ls, toUpper(right(replace(ls.id, '-', ''), 3)) AS shortCode
     WHERE
-      ($short <> '' AND (
-        (ls.shortCode IS NOT NULL AND ls.shortCode = $short) OR
-        (ls.short_code IS NOT NULL AND ls.short_code = $short) OR
-        (ls.code IS NOT NULL AND ls.code = $short)
-      ))
-      OR
-      ($name <> '' AND (
-        (ls.name IS NOT NULL AND ls.name CONTAINS $name) OR
-        (ls.rule_name IS NOT NULL AND ls.rule_name CONTAINS $name) OR
-        (ls.ruleName IS NOT NULL AND ls.ruleName CONTAINS $name) OR
-        (ls.label IS NOT NULL AND ls.label CONTAINS $name)
-      ))
+      ($short <> '' AND shortCode = $short)
+      AND
+      ($name <> '' AND toLower(ls.name) = toLower($name))
     RETURN id(ls) AS id,
-           coalesce(ls.name, ls.rule_name, ls.ruleName, ls.label) AS name
+           coalesce(ls.name, '') AS name
     LIMIT 1
     """
 
@@ -634,6 +872,8 @@ def _delete_existing_domain(diagram_path: str):
 def main() -> None:
     _setup_logger(verbose=True)
 
+    domain_name: Optional[str] = None
+
     # Determine domain model path either from CLI or spec selection
     if len(sys.argv) == 2:
         domain_path = sys.argv[1]
@@ -655,6 +895,11 @@ def main() -> None:
 
         pairs = spec.get("path-pairs", [])
         pair = pairs[pair_index - 1]
+
+        component = pair.get("component") or ""
+        if component:
+            domain_name = f"{component} Domain"
+        LOG.info("[info] Selected component='%s'", component)
 
         root_dir = os.path.expanduser(spec.get("root-directory", os.getcwd()))
         out_rel = pair.get("output-path") or ""
@@ -684,6 +929,14 @@ def main() -> None:
 
     # Parse domain model
     domain_types, relationships = _parse_domain_model(abs_domain_path)
+    # Attempt to parse twin .txt description file next to the .wsd
+    description_map: Dict[str, Dict[str, Any]] = {}
+    txt_path = os.path.splitext(abs_domain_path)[0] + ".txt"
+    if os.path.isfile(txt_path):
+        LOG.info("[info] Loading domain descriptions from %s", txt_path)
+        description_map = _parse_domain_description_file(txt_path)
+    else:
+        LOG.info("[info] No domain description file found at %s (skipping descriptions)", txt_path)
     if not domain_types:
         LOG.warning("[warn] No DomainType entries parsed from file: %s", abs_domain_path)
         sys.exit(0)
@@ -693,13 +946,14 @@ def main() -> None:
     ts = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
     # Create Domain node
-    domain_id = create_node(
-        ["Domain"],
-        {
-            "diagramPath": abs_domain_path,
-            "ingestionTimestamp": ts,
-        },
-    )
+    domain_props: Dict[str, Any] = {
+        "diagramPath": abs_domain_path,
+        "ingestionTimestamp": ts,
+    }
+    if domain_name:
+        domain_props["name"] = domain_name
+
+    domain_id = create_node(["Domain"], domain_props)
     if domain_id is None:
         LOG.error("[error] Failed to create Domain node.")
         sys.exit(1)
@@ -711,18 +965,58 @@ def main() -> None:
         if not name:
             continue
         kind = dt.get("kind", "class")
-        attributes = dt.get("attributes", []) or []
+        raw_attributes = dt.get("attributes", []) or []
+
+        # Look up description and attribute descriptions from the .txt file (if available)
+        norm_name = _normalise_entity_name(name)
+        desc_entry = description_map.get(norm_name)
+        if desc_entry is None:
+            LOG.trace(
+                "[trace] No description entry found for DomainType '%s' (normalised='%s') in description_map",
+                name,
+                norm_name,
+            )
+            desc_entry = {}
+        entity_description = desc_entry.get("description")
+        if not entity_description:
+            LOG.trace(
+                "[trace] No entity description found for DomainType '%s' (will omit 'description' property)",
+                name,
+            )
+        attr_descs: Dict[str, str] = desc_entry.get("attributes", {}) or {}
+
+        # Enrich each attribute string with "-<description>" where we can match by attribute name
+        enriched_attributes: List[str] = []
+        for attr in raw_attributes:
+            attr_str = str(attr)
+            # Strip common UML prefixes/suffixes to get the attribute name (before colon, if present)
+            tmp = attr_str.lstrip("+#-").strip()
+            attr_name = tmp.split(":", 1)[0].strip()
+            desc = attr_descs.get(attr_name)
+            if desc:
+                enriched_attributes.append(f"{attr_str} - {desc}")
+            else:
+                LOG.trace(
+                    "[trace] No attribute description found for '%s' on DomainType '%s' (raw='%s')",
+                    attr_name,
+                    name,
+                    attr_str,
+                )
+                enriched_attributes.append(attr_str)
 
         props: Dict[str, Any] = {
             "name": name,
             "kind": kind,
             "diagramPath": abs_domain_path,
         }
+        if entity_description:
+            props["description"] = entity_description
+
         # Store attributes as JSON string for easier inspection/searching
         try:
-            props["attributes"] = json.dumps(attributes, ensure_ascii=False)
+            props["attributes"] = json.dumps(enriched_attributes, ensure_ascii=False)
         except TypeError:
-            props["attributes"] = str(attributes)
+            props["attributes"] = str(enriched_attributes)
 
         dt_id = create_node(["DomainType"], props)
         if dt_id is None:

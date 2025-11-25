@@ -1,0 +1,57 @@
+INPUT 1: DECISIONS
+
+@@INPUT1@@
+
+INPUT 2: DOMAINS
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: SEQUENCES
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+Take a look at these decisions (input 1), and suggest which ones should be considered "top-level" decisions. Top-level decisions are those that sit at the top of a hierarchy of decisions, with lower-level decisions feeding into them.
+
+1. Identify candidate top decisions
+A. Business Outcome Indicators
+	•	Prefer decisions that determine what should happen next (update, create, sync, approve, accept, route, select).
+	•	Look for rules that operate directly on core domain entities (Patient, Provider, Claim, Account).
+	•	Prefer rules whose names/descriptions use action-driven language such as “Should…”, “Determine…”, “Select…”.
+(Be careful: “Is…Valid” patterns commonly indicate supporting validations, not top-level decisions.)
+
+B. Data and Dependency Indicators
+	•	Choose decisions whose inputs are mostly external data (UI/API/batch), not outputs from other decisions.
+	•	Prefer decisions whose outputs feed many other rules, indicating they orchestrate downstream logic.
+	•	Decisions linked to many domain types or to key domain attributes are stronger candidates.
+
+C. Sequence and Workflow Indicators
+	•	Decisions that appear near the start or end of user-facing or API-driven sequences are strong top-level candidates.
+	•	Decisions referenced by multiple sequences often represent central workflow orchestration points.
+
+D. Exclusions
+	•	Exclude rules that are pure tech plumbing (logging, retries, formatting, toggles).
+	•	Exclude narrow field-level validations (“Is X valid?”, “Are fields consistent?”) unless they directly represent the final business outcome.
+
+2. Here's an example of the output I want.
+
+{
+  "suggestions": [
+    {
+      "id": "eb6047f6-c371-4f82-95a5-f4467fa052de",
+      "name": "Should Provider Be Updated",
+      "reason": "This rule is the first business-relevant checkpoint in several entrypoints (provider sync, claim ingestion, eligibility checks). It determines whether downstream provider-related logic will even run. It has high fan-out in the graph (many dependent rules) and low fan-in (few prerequisites), making it an excellent top-level driver of provider-maintenance behaviour.",
+      "ignored": true
+    },
+    {
+      "id": "3798e1be-7283-4154-ab28-a4f3ad1a5c84",
+      "name": "Is Claim Date Valid",
+      "reason": "This rule gates the entire claim processing pipeline. Multiple controllers and batch flows enter the graph through this node before any further validation or enrichment. It sets a domain outcome ('claim is date-valid or not'), and its high out-degree makes it a structural root for most downstream claim rules. Strong candidate for a top-level 'Claim Validation' decision."
+    }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Do not put any special characters in the output.

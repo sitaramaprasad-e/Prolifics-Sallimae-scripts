@@ -179,6 +179,78 @@ def main():
             # Be robust; if links are malformed, skip cleaning that rule
             pass
 
+    # --- Model businessLogicIds dangling cleanup ---
+    # Build a set of remaining (non-archived) rule IDs.
+    remaining_rule_ids = set()
+    for r in filtered:
+        rid = r.get("id")
+        if isinstance(rid, str) and rid.strip():
+            remaining_rule_ids.add(rid.strip())
+
+    models_path = model_home / "models.json"
+    models = None
+    dangling_model_refs_total = 0
+    models_with_dangling = 0
+
+    if models_path.exists():
+        try:
+            with open(models_path, "r", encoding="utf-8") as mf:
+                models = json.load(mf)
+            if not isinstance(models, list):
+                print(f"[WARN] models.json format invalid at {models_path}: expected a list.")
+                models = None
+        except json.JSONDecodeError as e:
+            print(f"[WARN] Failed to parse models.json at {models_path}: {e}")
+            models = None
+    else:
+        print(f"[INFO] models.json not found at {models_path} (skipping model dangling check).")
+
+    if models:
+        for m in models:
+            model_id = m.get("id")
+            model_name = m.get("name")
+            bl_ids = m.get("businessLogicIds")
+            if not isinstance(bl_ids, list):
+                continue
+
+            cleaned_ids = []
+            dangling_ids = []
+
+            for bid in bl_ids:
+                # We only treat string IDs that are non-empty and present in remaining_rule_ids as valid.
+                if not isinstance(bid, str) or not bid.strip():
+                    dangling_ids.append(bid)
+                    continue
+                bid_str = bid.strip()
+                if bid_str not in remaining_rule_ids:
+                    dangling_ids.append(bid_str)
+                else:
+                    cleaned_ids.append(bid_str)
+
+            if dangling_ids:
+                models_with_dangling += 1
+                dangling_model_refs_total += len(dangling_ids)
+                if report_only:
+                    print(
+                        f"[REPORT] Model {model_id} ({model_name}) has {len(dangling_ids)} "
+                        f"dangling businessLogicId(s) (rule(s) no longer exist): {', '.join(map(str, dangling_ids))}"
+                    )
+                else:
+                    # Apply the cleanup only when not in report-only mode.
+                    m["businessLogicIds"] = cleaned_ids
+
+        # If not report-only and we modified any models, write them back out.
+        if not report_only and dangling_model_refs_total > 0:
+            try:
+                with open(models_path, "w", encoding="utf-8") as mf:
+                    json.dump(models, mf, indent=2, ensure_ascii=False)
+                print(
+                    f"[INFO] Removed {dangling_model_refs_total} dangling businessLogicId(s) "
+                    f"from {models_with_dangling} model(s) in {models_path}"
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to write cleaned models.json to {models_path}: {e}")
+
     if report_only:
         print("[INFO] --report-only mode: no changes written.")
         print(f"[INFO] {len(archived_rules)} rule(s) would be deleted:")

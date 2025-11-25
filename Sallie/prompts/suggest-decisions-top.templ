@@ -42,7 +42,7 @@ Reponse must be in this json structure:
     ],
     "dmn_table": "| Database.SaveResult.isSuccess condition | OperationResult | ErrorMessage |\n|-----------------------------------------|---------------|--------------|\n| true                                    | success       | -            |\n| false                                   | error         | Database.SaveResult.errors |",
     "timestamp": "2025-11-07T00:10:00.000Z",
-    "id": "base-ops-result-001",
+    "id": "25d5749b-613d-47b3-b8e2-6a84a5114561",
     "owner": "SF Team",
     "component": "SF Code",
     "kind": "Decision",
@@ -73,7 +73,7 @@ Reponse must be in this json structure:
     ],
     "dmn_table": "| ErrorMap.isEmpty condition | SendEmail |\n|----------------------------|-----------|\n| false                      | true      |\n| true                       | false     |",
     "timestamp": "2025-11-07T00:10:00.000Z",
-    "id": "base-send-email-001",
+    "id": "ef0d85de-36ea-474f-85e2-44b837df06ba",
     "owner": "SF Team",
     "component": "SF Code",
     "kind": "Decision",
@@ -107,7 +107,7 @@ Reponse must be in this json structure:
     ],
     "dmn_table": "| SendEmail condition | OperationResult condition | Email.Sent | Email.Body   |\n|---------------------|---------------------------|-----------|-------------|\n| true                | \"error\"                  | true      | ErrorMessage |\n| -                   | -                         | false     | -           |",
     "timestamp": "2025-11-07T00:10:00.000Z",
-    "id": "top-execute-email-001",
+    "id": "",
     "owner": "SF Team",
     "component": "SF Code",
     "kind": "Decision (Top-Level)",
@@ -130,5 +130,5 @@ Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting
 * Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_step_id rather than from_step, you should use from_step as per the example and populate it with the name of the step.
 * Do not put any special characters in the output.
-* Provide blanks for the following json fields: rule_category, ai_categorised, component, owner, category_explanation
+* For any newly generated rules, use blanks for the following json fields: id, rule_category, ai_categorised, component, owner, category_explanation
 * Set kind to Decision (Top-Level)

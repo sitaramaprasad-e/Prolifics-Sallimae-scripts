@@ -1,0 +1,46 @@
+INPUT 1: DECISIONS
+
+@@INPUT1@@
+
+INPUT 2: DOMAINS
+
+@@INPUT_FILE_CONTENT@@ 
+
+INSTRUCTIONS
+
+Take a look at the top-level decision and set of candidate supporting decisions (both in input 1), and suggest which should be considered supporting decisions. Supporting decisions are those that provide required inputs to the top-level decision, refine or transform domain data needed for its logic, or resolve sub-questions that must be answered before the top-level decision can be evaluated.
+
+1. Identify candidate supporting decisions that meet the following criteria:
+	A.	Identify dependency relationships
+	•	Select decisions whose outputs are required as direct inputs to the top-level decision.
+  B.	Look for data refinement or transformation
+	•	Select decisions that prepare, validate, standardize, or transform domain data (provided in input 2) directly needed by the top-level decision.
+	C.	Detect prerequisite sub-questions
+	•	Select decisions that answer smaller, necessary questions that must be resolved before the top-level decision can be made.
+	D.	Ensure the decisions operate at a lower level of abstraction
+	•	Supporting decisions should clarify, break down, or structure the reasoning for the top-level decision, not replace or duplicate it.
+	E.	Maintain DRD structure
+	•	Supporting decisions form the immediate next layer down in the DRD beneath the top-level decision.
+
+2. Here's an example of the output I want.
+
+{
+  "suggestions": [
+    {
+      "id": "7b1e3c9e-9bd4-4af3-8e70-6d61c62e9e12",
+      "name": "Is Patient ID Present",
+      "reason": "This decision checks a prerequisite needed before the top-level decision 'Should Claim Be Accepted' can run. The top-level logic requires a valid patient reference, and this rule provides that intermediate determination. It answers a smaller sub-question and supplies an input required by the top-level decision.",
+      "ignored": false
+    },
+    {
+      "id": "c22ea4fa-d1e6-4b27-83eb-58b1e3b17c41",
+      "name": "Standardize Claim Dates",
+      "reason": "This decision transforms raw date fields into a normalized format consumed directly by the top-level decision. It does not represent a business outcome on its own; instead, it prepares data needed by the top-level logic, making it a supporting decision.",
+      "ignored": false
+    }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Do not put any special characters in the output.

@@ -414,10 +414,63 @@ def load_code_functions_for_source(source_path: Optional[str]) -> List[Dict[str,
     return candidates
 
 # ===== CodeFunction lookup =====
+
+def _substring_distance(pattern: str, text: str) -> Optional[int]:
+    """
+    Compute the minimum character-wise Hamming distance between `pattern`
+    and any substring of `text` of the same length.
+
+    Returns:
+      - An integer >= 0 representing the smallest distance found, or
+      - None if pattern or text are empty or pattern is longer than text.
+
+    Distance here is simply the count of differing characters at each position.
+    """
+    if not pattern or not text:
+        return None
+
+    pattern_norm = pattern.lower()
+    text_norm = text.lower()
+
+    if len(pattern_norm) > len(text_norm):
+        return None
+
+    min_dist: Optional[int] = None
+    plen = len(pattern_norm)
+    tlen = len(text_norm)
+
+    for start in range(0, tlen - plen + 1):
+        window = text_norm[start:start + plen]
+        dist = 0
+        for a, b in zip(pattern_norm, window):
+            if a != b:
+                dist += 1
+                # Small optimisation: if distance already worse than any known min, break
+                if min_dist is not None and dist > min_dist:
+                    break
+        if min_dist is None or dist < min_dist:
+            min_dist = dist
+            if min_dist == 0:
+                # Can't do better than an exact match
+                break
+
+    return min_dist
+
 def find_code_function_id(function_name: str, candidates: List[Dict[str, Any]]) -> Optional[int]:
     """Choose the CodeFunction whose label most closely matches function_name,
-    restricted to the provided candidates. Only consider candidates where the
-    first 3 characters of the normalized strings match (case-insensitive).
+    restricted to the provided candidates.
+
+    Matching rule:
+      - Treat the CodeFunction label as a pattern and the function_name from
+        the Message as text.
+      - Find the substring of the function_name whose length matches the label
+        and has the smallest character-wise distance.
+      - If the best distance is <= 3, treat it as a valid match.
+      - If nothing meets that threshold but there is exactly one candidate,
+        fall back to that single candidate.
+
+    This allows the CodeFunction label to appear as a mostly-full substring
+    within the message function name, with up to 3 differing characters.
     """
     fn_raw = (function_name or "").strip()
     if not fn_raw:
@@ -427,40 +480,51 @@ def find_code_function_id(function_name: str, candidates: List[Dict[str, Any]]) 
         LOG.trace("[trace] No CodeFunction candidates available for functionName '%s'", fn_raw)
         return None
 
-    fn_norm = fn_raw.lower()
     best_id: Optional[int] = None
-    best_score: float = 0.0
+    best_label: str = ""
+    best_dist: Optional[int] = None
 
     for cand in candidates:
         label = str(cand.get("label") or "").strip()
         cid = _to_int_id(cand.get("id"))
         if not label or cid is None:
             continue
-        label_norm = label.lower()
-        # Require at least first 3 characters to match to be considered
-        if len(fn_norm) < 3 or len(label_norm) < 3:
-            prefix_ok = fn_norm[:1] == label_norm[:1]
-        else:
-            prefix_ok = fn_norm[:3] == label_norm[:3]
-        if not prefix_ok:
+
+        dist = _substring_distance(label, fn_raw)
+        if dist is None:
             continue
-        score = difflib.SequenceMatcher(None, fn_norm, label_norm).ratio()
-        if score > best_score:
-            best_score = score
+
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
             best_id = cid
+            best_label = label
 
-    if best_id is None:
-        LOG.trace("[trace] No CodeFunction candidate met prefix/score criteria for functionName '%s'", fn_raw)
-        return None
+            # Early exit on perfect match
+            if best_dist == 0:
+                break
 
-    LOG.info("[info] Matched functionName '%s' to CodeFunction id=%s with score=%.3f", fn_raw, best_id, best_score)
-    return best_id
+    # If we found a candidate within an acceptable distance, use it
+    if best_id is not None and best_dist is not None and best_dist <= 3:
+        LOG.info(
+            "[info] Matched functionName '%s' to CodeFunction id=%s (label='%s') with substring_distance=%d",
+            fn_raw,
+            best_id,
+            best_label,
+            best_dist,
+        )
+        return best_id
+
+    # No fallback: if no candidate met the substring-distance criteria, return None.
+
+    LOG.trace("[trace] No CodeFunction candidate met substring-distance criteria for functionName '%s'", fn_raw)
+    return None
 
 # ===== Main entry point =====
 def main():
     _setup_logger(verbose=True)
     # Parse args / interactive spec selection
     source_path: Optional[str] = None
+    sequence_name: Optional[str] = None
 
     if len(sys.argv) == 3:
         # Legacy mode: explicit sequence path and sourcePath
@@ -488,7 +552,14 @@ def main():
             sys.exit(1)
 
         pairs = spec.get("path-pairs", [])
+        # --- Begin: component/sequence_name logic ---
         pair = pairs[pair_index - 1]
+
+        component = pair.get("component") or ""
+        if component:
+            sequence_name = f"{component} Sequence"
+        LOG.info("[info] Selected component='%s'", component)
+        # --- End: component/sequence_name logic ---
 
         root_dir = os.path.expanduser(spec.get("root-directory", os.getcwd()))
         src_rel = pair.get("source-path") or ""
@@ -536,10 +607,13 @@ def main():
 
     ts = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     diagram_path = abs_seq_path
-    sequence_id = create_node(["Sequence"], {
+    sequence_props = {
         "diagramPath": diagram_path,
         "ingestionTimestamp": ts,
-    })
+    }
+    if sequence_name:
+        sequence_props["name"] = sequence_name
+    sequence_id = create_node(["Sequence"], sequence_props)
     if sequence_id is None:
         LOG.error("[error] Failed to create Sequence node.")
         sys.exit(1)

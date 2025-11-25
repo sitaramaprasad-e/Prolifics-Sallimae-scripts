@@ -10,6 +10,7 @@ import os
 import uuid
 import glob
 import hashlib
+import shutil
 from helpers.rule_ingest_core import (
     add_rules_from_text,
     heading_text,
@@ -62,6 +63,81 @@ MODEL_HOME = _prompt_model_home()
 # Enable TRACE logging by default and announce script start
 _setup_logger(verbose=True)
 LOG.info("[info] ingest_rules starting • MODEL_HOME=%s", MODEL_HOME)
+
+TMP_FILES_ROOT = os.path.join(MODEL_HOME, ".model", ".tmp", "files")
+
+def _clone_source_tree_to_tmp(root_dir: Optional[str], source_path: Optional[str]) -> None:
+    """Clone the entire tree under root_dir/source_path into
+    MODEL_HOME/.model/.tmp/files/<source_path>, clearing it first.
+
+    If root_dir or source_path are missing, or the source tree does not exist,
+    we log and skip.
+    """
+    if not root_dir or not source_path:
+        LOG.info(
+            "[info] Skipping source tree clone: root_dir or source_path not provided "
+            "(root_dir=%r, source_path=%r)",
+            root_dir,
+            source_path,
+        )
+        return
+
+    src_root = os.path.join(root_dir, source_path)
+    if not os.path.isdir(src_root):
+        LOG.warning(
+            "[warn] Skipping source tree clone: source directory does not exist (%s)",
+            src_root,
+        )
+        return
+
+    dest_root = os.path.join(TMP_FILES_ROOT, source_path)
+
+    # Clear out any previous copy for this source path
+    try:
+        if os.path.exists(dest_root):
+            shutil.rmtree(dest_root)
+    except Exception as e:
+        LOG.warning(
+            "[warn] Failed to clear existing tmp source tree at %s: %s",
+            dest_root,
+            e,
+        )
+
+    files_copied = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(src_root):
+            rel = os.path.relpath(dirpath, src_root)
+            dest_dir = dest_root if rel == "." else os.path.join(dest_root, rel)
+            os.makedirs(dest_dir, exist_ok=True)
+
+            for fname in filenames:
+                src_file = os.path.join(dirpath, fname)
+                dest_file = os.path.join(dest_dir, fname)
+                try:
+                    shutil.copy2(src_file, dest_file)
+                    files_copied += 1
+                except Exception as e:
+                    LOG.warning(
+                        "[warn] Failed to copy %s → %s: %s",
+                        src_file,
+                        dest_file,
+                        e,
+                    )
+    except Exception as e:
+        LOG.warning(
+            "[warn] Error while cloning source tree from %s to %s: %s",
+            src_root,
+            dest_root,
+            e,
+        )
+        return
+
+    LOG.info(
+        "[info] Cloned %d files from %s to %s",
+        files_copied,
+        src_root,
+        dest_root,
+    )
 
 # ===== PCPT Header parsing for model/sources.json & model/runs.json (new) =====
 PCPT_PREFIX  = "[PCPTLOG:]"
@@ -162,6 +238,8 @@ if SOURCE_PATH_OVERRIDE:
     LOG.info("[info] Using sourcePath from CLI: %s", SOURCE_PATH_OVERRIDE)
 
 LOG.info("[info] Input report   : %s", os.path.abspath(input_file))
+# Clone the full source tree for this root/source into the model tmp files area
+_clone_source_tree_to_tmp(ROOT_DIR_OVERRIDE, SOURCE_PATH_OVERRIDE)
 
 # Optional modes: control Knowledge Graph behavior
 NO_KG = any(arg in ("--NO-KG", "--no-kg") for arg in sys.argv[2:])

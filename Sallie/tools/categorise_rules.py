@@ -12,7 +12,7 @@ import glob
 import time
 
 # Reusable pcpt helpers
-from tools.helpers.call_pcpt import build_output_path, clean_previous_outputs, run_pcpt_for_rule
+from helpers.call_pcpt import build_output_path, clean_previous_outputs, run_pcpt_for_rule
 
 # ----------------------------
 # Model home prompt (defaults to home dir)

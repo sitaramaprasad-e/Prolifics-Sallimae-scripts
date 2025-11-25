@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import List, Optional
 import json
 from typing import Any, Dict
+import re
 
 # Resolve directory of this script (so we can locate sibling tools reliably)
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -43,6 +44,49 @@ LOG_DIR = os.path.expanduser("~/.pcpt/log/markup_domain")
 # ----------------------------
 # Utilities
 # ----------------------------
+
+def _derive_short_code_from_uuid(uuid_str: str) -> str:
+    """
+    Derive the 3-hex short rule code from a UUID string by stripping dashes
+    and taking the last 3 characters, uppercased.
+    Example:
+      'e8972032-1c87-4670-a9e0-2329a15cd7c0' -> '7C0'
+    """
+    cleaned = uuid_str.replace("-", "")
+    if len(cleaned) < 3:
+        return cleaned.upper()
+    return cleaned[-3:].upper()
+
+
+def _find_logicstep_id_for_rule(
+    steps: List[Dict[str, Any]],
+    short_code: str,
+    rule_name: str,
+) -> Optional[str]:
+    """
+    Given a 3-hex short rule code from the domain model and a rule name,
+    find the corresponding LogicStep id by matching BOTH:
+      - last 3 hex chars of the UUID-derived id, and
+      - the rule name (case-insensitive exact match).
+    Returns the LogicStep id (UUID) if found, else None.
+    """
+    target_code = (short_code or "").strip().upper()
+    target_name = (rule_name or "").strip().lower()
+    if not target_code or not target_name:
+        return None
+
+    for step in steps:
+        step_id = str(step.get("id") or "").strip()
+        name = str(step.get("name") or "").strip()
+        if not step_id or not name:
+            continue
+
+        code = _derive_short_code_from_uuid(step_id)
+        if code == target_code and name.lower() == target_name:
+            return step_id
+
+    return None
+
 def _log(msg: str, header: bool = False) -> None:
   """Print timestamped log messages, with optional header formatting."""
   os.makedirs(LOG_DIR, exist_ok=True)
@@ -83,6 +127,61 @@ def _load_json(path: str) -> Any:
 def _write_json(path: str, data: Any) -> None:
   with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ----------------------------
+# PlantUML Rules Format Normalization
+# ----------------------------
+def _normalize_rules_format(path: str) -> None:
+  """
+  Normalize PlantUML rules/decisions style in note blocks to bullet format.
+  """
+  with open(path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+  out_lines = []
+  in_note = False
+  in_rules = False
+  for idx, line in enumerate(lines):
+    stripped = line.strip()
+    # Entering note block?
+    if not in_note and stripped.startswith("note"):
+      in_note = True
+      in_rules = False
+      out_lines.append(line)
+      continue
+    # Exiting note block?
+    if in_note and stripped == "end note":
+      in_note = False
+      in_rules = False
+      out_lines.append(line)
+      continue
+    # Are we at the start of a Rules section?
+    if in_note and not in_rules and stripped.startswith("Rules"):
+      in_rules = True
+      out_lines.append(line)
+      continue
+    # If in a Rules section, process lines until end note or blank or non-rule
+    if in_note and in_rules:
+      # End rules section if we see a blank line or something that looks like a new section
+      if not stripped or (not re.match(r'^([A-Za-z0-9]+\s*·)', stripped) and not stripped.startswith("Rules")):
+        in_rules = False
+        out_lines.append(line)
+        continue
+      # Try to match rule lines
+      m = re.match(r'^(\s*)([A-Za-z0-9]+)\s*·\s*(.*?)(,)?\s*$', line)
+      if m:
+        indent, rule_id, rule_name, _ = m.groups()
+        out_lines.append(f"{indent}- {rule_id}: {rule_name}\n")
+        continue
+      else:
+        out_lines.append(line)
+        continue
+    # Default: just copy line
+    out_lines.append(line)
+
+  with open(path, "w", encoding="utf-8") as f:
+    f.writelines(out_lines)
 
 
 
@@ -229,9 +328,12 @@ def _select_spec_pair() -> Dict[str, Any]:
 # ----------------------------
 def pcpt_sequence(output_dir: str, visualize: str, domain_hints: Optional[str] = None, filter_file: Optional[str] = None) -> None:
   """
-  Run: pcpt.sh domain-model --output <output_dir> [--filter <filter_file>] --visualize <visualize>
+  Run: pcpt.sh domain-model --output <output_dir> [--domain-hints <domain_hints>] [--filter <filter_file>] --visualize <visualize>
   """
   cmd = ["pcpt.sh", "domain-model", "--output", output_dir]
+  if domain_hints:
+    dh_value = os.path.basename(domain_hints) if os.path.isabs(domain_hints) else domain_hints
+    cmd.extend(["--domain-hints", dh_value])
   if filter_file:
     ff_value = os.path.basename(filter_file) if os.path.isabs(filter_file) else filter_file
     cmd.extend(["--filter", ff_value])
@@ -244,10 +346,11 @@ def pcpt_run_custom_prompt(
     output_dir: str,
     code_dir: str,
     prompt_name: str,
+    domain_hints: Optional[str] = None,
     filter_file: Optional[str] = None,
 ) -> None:
   """
-  Run: pcpt.sh run-custom-prompt --input-file <input_file> --input-file2 <input_file2> --output <output_dir> [--filter <filter_file>] <code_dir> <prompt_name>
+  Run: pcpt.sh run-custom-prompt --input-file <input_file> --input-file2 <input_file2> --output <output_dir> [--domain-hints <domain_hints>] [--filter <filter_file>] <code_dir> <prompt_name>
   """
   cmd = [
     "pcpt.sh",
@@ -259,6 +362,9 @@ def pcpt_run_custom_prompt(
     "--output",
     output_dir,
   ]
+  if domain_hints:
+    dh_value = os.path.basename(domain_hints) if os.path.isabs(domain_hints) else domain_hints
+    cmd.extend(["--domain-hints", dh_value])
   if filter_file:
     ff_value = os.path.basename(filter_file) if os.path.isabs(filter_file) else filter_file
     cmd.extend(["--filter", ff_value])
@@ -278,6 +384,7 @@ def main() -> None:
   parser.add_argument("output_dir", nargs="?", default=None, help="Output directory for docs. If omitted, you will be prompted via a spec file.")
   parser.add_argument("--prompt-name", default=DEFAULT_PROMPT_NAME, help="Custom prompt template name (default: markup-domain.templ)")
   parser.add_argument("--filter", default=None, help="Filter file (optional). If provided, it will be passed to PCPT.")
+  parser.add_argument("--domain-hints", default=None, help="Domain hints file (optional). If provided, it will be passed to PCPT.")
   parser.add_argument("--generate-initial-domain", action="store_true", help="Generate the initial domain diagram (default is to skip).")
   parser.add_argument(
       "--include-all-rules",
@@ -290,6 +397,7 @@ def main() -> None:
   output_dir = args.output_dir.strip() if isinstance(args.output_dir, str) and args.output_dir.strip() else None
   prompt_name = args.prompt_name
   filter_file = args.filter.strip() if isinstance(args.filter, str) and args.filter.strip() else None
+  domain_hints = args.domain_hints.strip() if isinstance(args.domain_hints, str) and args.domain_hints.strip() else None
 
   root_path: Optional[str] = None
   pair_source: Optional[str] = None
@@ -353,10 +461,19 @@ def main() -> None:
       )
       filter_file = _resolve_candidate_path(filter_candidate, bases) if filter_candidate else None
 
+    if not domain_hints:
+      domain_hints_candidate = (
+        pair.get("domain-hints")
+        or pair.get("domain_hints")
+      )
+      domain_hints = _resolve_candidate_path(domain_hints_candidate, bases) if domain_hints_candidate else None
+
     _log(f"Selected code_dir: {code_dir}")
     _log(f"Selected output_dir: {output_dir}")
     if filter_file:
       _log(f"Using filter from spec: {filter_file}")
+    if domain_hints:
+      _log(f"Using domain hints from spec: {domain_hints}")
   else:
     # CLI-provided mode: preserve previous behaviour for root_path
     root_path = os.path.realpath(os.path.abspath(os.getcwd()))
@@ -368,13 +485,15 @@ def main() -> None:
 
   _log("Step 1: Create standard Domain Diagram", header=True)
   if args.generate_initial_domain:
-      pcpt_sequence(output_dir=output_dir, visualize=code_dir, filter_file=filter_file)
+      pcpt_sequence(output_dir=output_dir, visualize=code_dir, domain_hints=domain_hints, filter_file=filter_file)
   else:
       _log("Skipped initial domain generation (default). Use --generate-initial-domain to enable.")
 
   _log("Step 2: Copy existing sequence report to temp folder", header=True)
   _ensure_dir(TMP_ROOT)
   _copy(domain_report_src, TMP_DOMAIN_TXT)
+  _log("Normalizing rules format in temporary domain report (if needed)...")
+  _normalize_rules_format(TMP_DOMAIN_TXT)
 
   _log("Step 3: Export list of current business rules for code", header=True)
   if not root_path:
@@ -440,6 +559,7 @@ def main() -> None:
     output_dir=output_dir,
     code_dir=code_dir,
     prompt_name=prompt_name,
+    domain_hints=domain_hints,
     filter_file=filter_file,
   )
 
@@ -450,7 +570,7 @@ def main() -> None:
       f"Verify the custom prompt produced it under {os.path.join(output_dir, MARKUP_OUT_DIRNAME)}"
     )
 
-  pcpt_sequence(output_dir=output_dir, visualize=markup_md)
+  pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints)
 
   _log("✅ Done. Domain regenerated using markup.")
   _log(f"Markup file: {markup_md}")

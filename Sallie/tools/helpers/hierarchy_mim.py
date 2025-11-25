@@ -4,9 +4,12 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from helpers.call_pcpt import pcpt_run_custom_prompt
 
-from helpers.hierarchy_common import step_header, ANSI_YELLOW, ANSI_RESET, load_json, build_temp_source_from_model,ensure_dir, resolve_optional_path, pcpt_run_custom_prompt,prepare_rules_file_for_pcpt, merge_generated_rules_into_model_home, eprint, REPO_ROOT, _resolve_template_path, SUGGEST_HIERARCHY_TEMPLATE_DIR, SUGGEST_HIERARCHY_MINIMAL_TEMPLATE_DIR, TMP_DIR, _load_rules_from_report, write_json, _safe_backup_json
+from helpers.hierarchy_common import (
+    step_header, ANSI_YELLOW, ANSI_RESET, load_json, build_temp_source_from_model, ensure_dir, resolve_optional_path,
+    pcpt_run_custom_prompt, prepare_rules_file_for_pcpt, merge_generated_rules_into_model_home, eprint, REPO_ROOT, _resolve_template_path,
+    SUGGEST_HIERARCHY_TEMPLATE_DIR, SUGGEST_HIERARCHY_MINIMAL_TEMPLATE_DIR, TMP_DIR, _load_rules_from_report, write_json, _safe_backup_json
+)
 
 def _scrub_links_to_hierarchy_scope(rules: List[dict], allowed_ids: Set[str], allowed_names_cf: Set[str]) -> List[dict]:
     """
@@ -194,6 +197,13 @@ def run_mim_compose(
     filt_rel = ""  # pair.get("filter")
     pcpt_mode = "multi"
 
+    # Optional domain-hints file from spec pair
+    domain_hints_rel = pair.get("domain-hints") or pair.get("domain_hints") or ""
+    domain_hints_path = resolve_optional_path(
+        domain_hints_rel,
+        base_candidates=[spec_dir, REPO_ROOT, root_dir],
+    )
+
     # Determine source_mode
     source_mode = (spec_info.get("source_mode") or "spec")
     if source_mode == "model_files":
@@ -295,6 +305,7 @@ def run_mim_compose(
             input_file=str(rules_file_for_pcpt_suggest),
             input_file2=str(model_file),
             output_dir_arg=str(output_path),
+            domain_hints=str(domain_hints_path) if domain_hints_path else None,
             filter_path=filter_path,
             mode=pcpt_mode,
         )
@@ -486,6 +497,7 @@ def run_mim_compose(
                         input_file=str(rules_file_for_pcpt_h),
                         input_file2=str(input2_file),
                         output_dir_arg=str(output_path),
+                        domain_hints=str(domain_hints_path) if domain_hints_path else None,
                         filter_path=filter_path,
                         mode=pcpt_mode,
                         total=total,
@@ -568,6 +580,8 @@ def run_mim_compose(
         print(f"→ Filter: {filt_rel}")
     if pcpt_mode:
         print(f"→ Mode:   {pcpt_mode}")
+    if domain_hints_path:
+        print(f"→ Domain hints: {domain_hints_path}")
     print(f"→ Input 1 (rules for PCPT): {rules_file_for_pcpt_suggest} (from {rules_file})")
     print(f"→ Input 2 (hierarchy): {suggest_report_path or model_file}")
     print(f"→ Template: {template_path.name}")
@@ -580,6 +594,7 @@ def run_mim_compose(
             input_file=str(rules_file_for_pcpt_suggest),
             input_file2=str(suggest_report_path or model_file),
             output_dir_arg=str(output_path),
+            domain_hints=str(domain_hints_path) if domain_hints_path else None,
             filter_path=filter_path,
             mode=pcpt_mode,
         )

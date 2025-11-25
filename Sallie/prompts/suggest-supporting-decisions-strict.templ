@@ -1,0 +1,57 @@
+INPUT 1: DECISIONS
+
+@@INPUT1@@
+
+INPUT 2: DOMAINS
+
+@@INPUT_FILE_CONTENT@@ 
+
+INSTRUCTIONS
+
+Take a look at the top-level decision and set of candidate supporting decisions (both in input 1), and suggest which should be considered supporting decisions. Supporting decisions are those that provide required inputs to the top-level decision, refine or transform domain data needed for its logic, or resolve sub-questions that must be answered before the top-level decision can be evaluated.
+
+1. Identify candidate supporting decisions that meet all of the following criteria:
+
+A. Identify true dependency relationships
+	•	Select only decisions whose outputs are explicitly required to evaluate the top-level decision.
+	•	If no metadata exists, infer dependency only if the supporting decision directly prepares, derives, standardizes, or validates the same fields the top-level decision consumes.
+	•	Do not infer dependency merely because two decisions:
+    • operate on the same entity
+    • belong to the same workflow
+    • perform similar types of checks
+    These are correlations, not support.
+B. Ensure the decisions operate at a lower level of abstraction and feed directly into the top-level decision
+	•	Supporting decisions must break down sub-questions that the top-level decision depends on.
+	•	They must meaningfully contribute inputs or prerequisites, not run in parallel.
+	•	A decision validating other attributes (e.g., date when the top-level decision checks charge amount) is a peer sibling, not a supporter.
+C. Maintain correct DRD structure
+	•	Supporting decisions must be in the immediate next layer beneath the top-level decision.
+	•	There must be a direct functional link, not conceptual similarity or shared domain proximity.
+	•	Shared entities, similar naming, or co-location in pipelines are not sufficient grounds for support.
+D. Do not force-fit decisions that do not naturally support the top-level decision
+	•	If a candidate decision does not clearly and directly support the top-level decision, exclude it.
+	•	Prefer returning an empty list over including weak, indirect, or speculative links.
+	•	Decisions that validate, calculate, or check unrelated attributes—even within the same record—must be ignored.
+
+2. Here's an example of the output I want.
+
+{
+  "suggestions": [
+    {
+      "id": "7b1e3c9e-9bd4-4af3-8e70-6d61c62e9e12",
+      "name": "Is Patient ID Present",
+      "reason": "This decision checks a prerequisite needed before the top-level decision 'Should Claim Be Accepted' can run. The top-level logic requires a valid patient reference, and this rule provides that intermediate determination. It answers a smaller sub-question and supplies an input required by the top-level decision.",
+      "ignored": false
+    },
+    {
+      "id": "c22ea4fa-d1e6-4b27-83eb-58b1e3b17c41",
+      "name": "Standardize Claim Dates",
+      "reason": "This decision transforms raw date fields into a normalized format consumed directly by the top-level decision. It does not represent a business outcome on its own; instead, it prepares data needed by the top-level logic, making it a supporting decision.",
+      "ignored": false
+    }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Do not put any special characters in the output.

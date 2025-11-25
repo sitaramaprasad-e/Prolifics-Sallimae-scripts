@@ -43,6 +43,13 @@ def run_simple_compose(
     filt_rel = ""  # pair.get("filter")
     pcpt_mode = "multi"  # force multi mode; ignore spec-provided mode
 
+    # Optional domain-hints file from spec pair
+    domain_hints_rel = pair.get("domain-hints") or pair.get("domain_hints") or ""
+    domain_hints_path = resolve_optional_path(
+        domain_hints_rel,
+        base_candidates=[spec_dir, REPO_ROOT, root_dir],
+    )
+
     # Determine source_mode
     source_mode = (spec_info.get("source_mode") or "spec")
     if source_mode == "model_files":
@@ -140,6 +147,8 @@ def run_simple_compose(
         print(f"→ Filter: {filt_rel}")
     if pcpt_mode:
         print(f"→ Mode:   {pcpt_mode}")
+    if domain_hints_path:
+        print(f"→ Domain hints: {domain_hints_path}")
     print(f"→ Input 1 (rules for PCPT): {rules_file_for_pcpt} (from {rules_file})")
     print(f"→ Input 2 (model): {model_file}")
     print(f"→ Template: {template_path.name}")
@@ -152,6 +161,7 @@ def run_simple_compose(
             input_file=str(rules_file_for_pcpt),
             input_file2=str(model_file),
             output_dir_arg=str(output_path),
+            domain_hints=str(domain_hints_path) if domain_hints_path else None,
             filter_path=filter_path,
             mode=pcpt_mode,
         )

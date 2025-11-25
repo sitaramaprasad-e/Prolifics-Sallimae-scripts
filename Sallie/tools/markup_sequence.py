@@ -267,10 +267,11 @@ def pcpt_run_custom_prompt(
     output_dir: str,
     code_dir: str,
     prompt_name: str,
+    domain_hints: Optional[str] = None,
     filter_file: Optional[str] = None,
 ) -> None:
   """
-  Run: pcpt.sh run-custom-prompt --input-file <input_file> --input-file2 <input_file2> --output <output_dir> [--filter <filter_file>] <code_dir> <prompt_name>
+  Run: pcpt.sh run-custom-prompt --input-file <input_file> --input-file2 <input_file2> --output <output_dir> [--domain-hints <domain_hints>] [--filter <filter_file>] <code_dir> <prompt_name>
   """
   cmd = [
     "pcpt.sh",
@@ -282,6 +283,9 @@ def pcpt_run_custom_prompt(
     "--output",
     output_dir,
   ]
+  if domain_hints:
+    dh_value = os.path.basename(domain_hints) if os.path.isabs(domain_hints) else domain_hints
+    cmd.extend(["--domain-hints", dh_value])
   if filter_file:
     ff_value = os.path.basename(filter_file) if os.path.isabs(filter_file) else filter_file
     cmd.extend(["--filter", ff_value])
@@ -468,6 +472,7 @@ def main() -> None:
     output_dir=output_dir,
     code_dir=code_dir,
     prompt_name=prompt_name,
+    domain_hints=domain_hints,
     filter_file=filter_file,
   )
 
