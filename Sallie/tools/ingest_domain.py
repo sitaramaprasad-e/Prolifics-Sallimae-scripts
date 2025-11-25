@@ -228,13 +228,15 @@ _setup_logger(verbose=True)
 
 # ===== Base URL =====
 RULES_PORTAL_BASE_URL = os.environ.get("RULES_PORTAL_BASE_URL", "http://localhost:443").rstrip("/")
+GRAPH_INSECURE_ENV = os.getenv("RULES_PORTAL_GRAPH_INSECURE", "false").strip().lower()
+GRAPH_VERIFY = GRAPH_INSECURE_ENV not in {"1", "true", "yes", "on"}
 
 
 # ===== HTTP helpers =====
 def _get(path: str) -> Optional[dict]:
     url = RULES_PORTAL_BASE_URL + path
     try:
-        resp = requests.get(url, timeout=8)
+        resp = requests.get(url, timeout=8, verify=GRAPH_VERIFY)
         if resp.status_code == 200:
             return resp.json()
         LOG.warning("[warn] GET %s returned %s: %s", url, resp.status_code, resp.text)
@@ -246,7 +248,7 @@ def _get(path: str) -> Optional[dict]:
 def _post(path: str, payload: dict) -> Optional[dict]:
     url = RULES_PORTAL_BASE_URL + path
     try:
-        resp = requests.post(url, json=payload, timeout=12)
+        resp = requests.post(url, json=payload, timeout=12, verify=GRAPH_VERIFY)
         if resp.status_code == 200:
             return resp.json()
         LOG.warning("[warn] POST %s returned %s: %s", url, resp.status_code, resp.text)
