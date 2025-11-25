@@ -178,35 +178,6 @@ PORT=3201
 
 echo "🚀 Starting deployment of Rules Portal..."
 
-# Prepare PCPT artifacts under .tmp/pcpt-core for Docker build
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PCPT_SRC_DIR="${ROOT_DIR}/pcpt-core"
-PCPT_TMP_DIR="${SCRIPT_DIR}/.tmp/pcpt-core"
-
-echo "🧩 Preparing PCPT artifacts for image build..."
-if [[ ! -d "${PCPT_SRC_DIR}" ]]; then
-  echo "❌ PCPT source directory not found at ${PCPT_SRC_DIR}"
-  echo "   Ensure pcpt-core is checked out alongside rules-portal."
-  exit 1
-fi
-
-# Recreate .tmp/pcpt-core
-rm -rf "${PCPT_TMP_DIR}"
-mkdir -p "${PCPT_TMP_DIR}"
-
-# Copy PCPT core files into .tmp so Dockerfile can COPY from .tmp/pcpt-core/...
-cp "${PCPT_SRC_DIR}/requirements.txt" "${PCPT_TMP_DIR}/"
-cp "${PCPT_SRC_DIR}/pcpt.spec"        "${PCPT_TMP_DIR}/"
-
-cp -R "${PCPT_SRC_DIR}/code"    "${PCPT_TMP_DIR}/"
-cp -R "${PCPT_SRC_DIR}/config"  "${PCPT_TMP_DIR}/"
-cp -R "${PCPT_SRC_DIR}/hints"   "${PCPT_TMP_DIR}/"
-cp -R "${PCPT_SRC_DIR}/prompts" "${PCPT_TMP_DIR}/"
-cp -R "${PCPT_SRC_DIR}/shell"   "${PCPT_TMP_DIR}/"
-
-echo "✅ PCPT artifacts staged in ${PCPT_TMP_DIR}"
-
 # Optionally build images (default: build)
 if [[ "$NO_BUILD" != true ]]; then
   echo "🧱 Running build.sh (use --no-build to skip)..."
