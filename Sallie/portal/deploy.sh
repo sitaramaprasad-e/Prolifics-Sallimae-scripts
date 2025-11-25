@@ -342,7 +342,12 @@ if [[ "$USE_PROXY" == true ]]; then
   echo "  }"
   echo "  tls internal"
   echo "  log"
-  echo "  reverse_proxy ${CONTAINER_NAME}:$PORT"
+  echo "  handle_path /neo4j/* {"
+  echo "    reverse_proxy ${NEO4J_NAME}:${NEO4J_HTTP_PORT}"
+  echo "  }"
+  echo "  handle /* {"
+  echo "    reverse_proxy ${CONTAINER_NAME}:$PORT"
+  echo "  }"
   echo "}"
 elif [[ "$LOCAL_TLS" == true ]]; then
   # Local/dev HTTPS with Caddy internal CA on https://localhost
@@ -356,7 +361,12 @@ elif [[ "$LOCAL_TLS" == true ]]; then
   echo "  }"
   echo "  tls internal"
   echo "  log"
-  echo "  reverse_proxy ${CONTAINER_NAME}:$PORT"
+  echo "  handle_path /neo4j/* {"
+  echo "    reverse_proxy ${NEO4J_NAME}:${NEO4J_HTTP_PORT}"
+  echo "  }"
+  echo "  handle /* {"
+  echo "    reverse_proxy ${CONTAINER_NAME}:$PORT"
+  echo "  }"
   echo "}"
 else
   # Public domain with Let's Encrypt
@@ -373,7 +383,12 @@ else
   echo "    protocols tls1.2 tls1.3"
   echo "  }"
   echo "  log"
-  echo "  reverse_proxy ${CONTAINER_NAME}:$PORT"
+  echo "  handle_path /neo4j/* {"
+  echo "    reverse_proxy ${NEO4J_NAME}:${NEO4J_HTTP_PORT}"
+  echo "  }"
+  echo "  handle /* {"
+  echo "    reverse_proxy ${CONTAINER_NAME}:$PORT"
+  echo "  }"
   echo "}"
 fi > "$CADDYFILE_PATH"
 
