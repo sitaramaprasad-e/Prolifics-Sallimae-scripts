@@ -6,27 +6,27 @@ INPUT 2: SEQUENCE
 
 @@INPUT_FILE_CONTENT@@
 
-INPUT 3: RULES
+INPUT 3: LOGICS
 
 @@INPUT_FILE2_CONTENT@@
 
 INSTRUCTIONS
 
-You are an expert at taking a sequence description (input 2) describing a set of code (input 1) and marking it up with reference to the business rules (input 3) that are implemented at each step.
+You are an expert at taking a sequence description (input 2) describing a set of code (input 1) and marking it up with reference to the logics (input 3) that are implemented at each step.
 
-Produce a marked up version of the sequence description where each step calling a function is annotated with references to the relevant business rules that are implemented in that function, as per the rule to function mapping in input 3. Only do this for numbered steps. Tweak the function names in the step call to EACTLY match the code_function names provided in input with no extra details or spaces or anything other than the exact code_function 3.
+Produce a marked up version of the sequence description where each step calling a function is annotated with references to the relevant logics that are implemented in that function, as per the logic to function mapping in input 3. Only do this for numbered steps. Tweak the function names in the step call to EACTLY match the code_function names provided in input with no extra details or spaces or anything other than the exact code_function 3.
 
-Take a look at the source code (input 1) if you need some help understanding exactly which step function a rule applies to. The rule must appear against the step function in the rule is implemented (as described in input 3 which identifies the rules as well as the function each rule is implemented in), not a call to some other function, and only in that one function.
+Take a look at the source code (input 1) if you need some help understanding exactly which step function a logic applies to. The logic must appear against the step function in the logic is implemented (as described in input 3 which identifies the logics as well as the function each logic is implemented in), not a call to some other function, and only in that one function.
 
-If there are any rules in input 3 that are for files and/or functions that are not in the sequence, then add them to the sequence using input 1 to figure out where.
+If there are any logics in input 3 that are for files and/or functions that are not in the sequence, then add them to the sequence using input 1 to figure out where.
 
-So the annotation must appear at the step function is called, with all the rules for that function in the single note.
+So the annotation must appear at the step function is called, with all the logics for that function in the single note.
 
-Here's an example of the format to use for output - example is for a single step and shows how the step is followed by a multi-line note listing the relevant business rules:
+Here's an example of the format to use for output - example is for a single step and shows how the step is followed by a multi-line note listing the relevant logics:
 
 1. **User** → **accountsSharedPartner LWC**: connectedCallback()
 (note: 
-"Rules: 
+Logics: 
 Product Approval Process Selection By Brand, 
 Brushless DFS Product Approval Entry Criteria, 
 Account Master Synchronization Date Filter, 
@@ -35,13 +35,13 @@ Related Record Ownership Udpate on Account Synch,
 Global Account Search Dispolay Control, 
 Attachment History Record Createion By Parent Type, 
 TMC Machine Attachment Processing, 
-Additional Reason Required for Other Closure")
+Additional Reason Required for Other Closure)
 
-This is indicating all the rules for the function connectedCallback(). Stick exactly to this multi-line format. Note that the function name specified on the message (e.g. connectedCallback()) may need to be tweakd to be EXACTLY the same as the function name on the annotated rule(s) in input 3.
+This is indicating all the logics for the function connectedCallback(). Stick exactly to this multi-line format. Note that the function name specified on the message (e.g. connectedCallback()) may need to be tweaked to be EXACTLY the same as the function name on the annotated logic(s) in input 3.
 
-If multiple rules are relevant to a single step, list them all in the note for that step.
+If multiple logics are relevant to a single step, list them all in the note for that step.
 
 Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting.
-* Don't change any of the content from the original sequence description except to add the rule references and potentially tweak the function name to exactly match the code_function name in input 3. Everything else should remain exactly the same including headings and other existing notes.
+* Don't change any of the content from the original sequence description except to add the logic references and potentially tweak the function name to exactly match the code_function name in input 3. Everything else should remain exactly the same including headings and other existing notes.
 * Do not put any special characters in the output.

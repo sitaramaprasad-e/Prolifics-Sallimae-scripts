@@ -2,7 +2,7 @@ INPUT 1: SOURCE CODE
 
 @@INPUT1@@
 
-INPUT 2: BUSINESS LOGIC
+INPUT 2: LOGIC
 
 @@INPUT_FILE_CONTENT@@
 
@@ -12,7 +12,7 @@ INPUT 3: SUGGESTED HIERARCHIES
 
 INSTRUCTIONS
 
-Take a look at the suggested decision hierarchies (input 3) - which describes how to organise the existing top-level decisions and base decisions in input 2, which are missing the middle layer that bind them together.
+Take a look at the suggested decision hierarchies (input 3) - which describes how to organise the existing logic in input 2, which are missing the middle layer that bind them together. I need you to create composite decisions that bind them together.
 
 VERY IMPORTANT: Composite decisions must add some value and not just pass through the input decisions. There should be some actual logic contained in them. It is fine to join a base decision straight into the top-level if there is no meaningful logic to add in the middle.
 
@@ -23,14 +23,14 @@ You must return a json that includes:
 1.2 Pay careful attention to the direction of decision flows in your hierarchy, starting from base decision and BKMs at the bottom, flowing into composite decisions in the middle, flowing into top-level decisions on top.
 1.3 Make sure the new middle-layer decisions doesn't implement the same logic in the existing base decisions, but rather takes outputs from the base layer and matching exactly to inputs. It is critical that the base outputs map to the middle composite inputs exactly, so formulate the inputs of the middle-layer to be an exact match for the output of the base layer.
 1.4 Make sure the new middle-layer decisions doesn't implement the same logic as the existing top-level decisions, but provides outputs that match their inputs. It is critical that the middle ouputs map to the top-level inputs exactly, so formulate the outputs of the middle-layer to be an exact match for the inputs of the top layer.
-1.5 Use blanks for the following json fields: rule_id, rule_category, ai_categorised, component, owner, category_explanation. Also set the kind to Decision (Composite) for these new decisions.
-1.6 It is very important that you set rule_id to "" for a new composite decision, do not try and come up with some value.
+1.5 Use blanks for the following json fields: id, category, ai_categorised, component, owner, category_explanation. Also set the kind to Decision (Composite) for these new decisions.
+1.6 It is very important that you set id to "" for a new composite decision, do not try and come up with some value.
 1.7 This may involve generating one, multiple, or no middle-layer composite decisions. If none, just return an empty json.
 1.8 Attempt to ensure that the there are composite decisions that cover all of the base decisions, except where that base decision should not part of the suggested hierarchy in input 3.
 1.9 Ensure that the DMN table and inputs/outputs are consistent with the purpose/spec/example of the new composite decision, and cover all of the behaviour implied by the base decisions that feed into it and the top-level decisions that it feeds into.
 1.10 The DMN table must include every dmn_input and dmn_output, and the table must describe the decision logic.
 
-2. Existing top-level decisions, with new links added to their links property that show the new links coming from the composite decisions. 
+2. Top-level decisions, with new links added to their links property that show the new links coming from the composite decisions. 
 2.1 Where you see a top-level decision with an empty rule_id (i.e. "") it will need to be created. To indicate that you need to include it in the output with an empty rule_id i.e. "", setting its kind to Decision (Top-Level) and giving it a suitable purpose, spec, example, and inputs and outputs, and incoming links.
 
 3. Any other existing decisions for which you need to add missing links to properly reflect the suggested hierarchy in input 3 (with new links added to their links property).
@@ -47,9 +47,9 @@ Reponse must be in this json structure:
 
 [
   {
-    "rule_name": "Persist Operation Result",
-    "rule_purpose": "Map a database save outcome into a normalized operation result and optional error message",
-    "rule_spec": "If Database.SaveResult.isSuccess is true set OperationResult to success and ErrorMessage to dash. Otherwise set OperationResult to error and copy Database.SaveResult.errors into ErrorMessage",
+    "name": "Persist Operation Result",
+    "purpose": "Map a database save outcome into a normalized operation result and optional error message",
+    "spec": "If Database.SaveResult.isSuccess is true set OperationResult to success and ErrorMessage to dash. Otherwise set OperationResult to error and copy Database.SaveResult.errors into ErrorMessage",
     "code_block": "",
     "code_file": "",
     "code_lines": [],
@@ -71,18 +71,16 @@ Reponse must be in this json structure:
     "component": "SF Code",
     "kind": "Decision",
     "links": [],
-    "doc_rule_id": null,
-    "rule_category": "Audit",
+    "category": "Audit",
     "business_area": null,
-    "doc_match_score": 0,
     "ai_categorized": true,
     "category_explanation": "Normalizes DB outcomes for audit and downstream decisions",
     "archived": false
   },
   {
-    "rule_name": "Should Error Email Be Sent",
-    "rule_purpose": "Determine whether to send an error notification email based on the presence of errors in the batch",
-    "rule_spec": "If ErrorMap is not empty send email otherwise do not send",
+    "name": "Should Error Email Be Sent",
+    "purpose": "Determine whether to send an error notification email based on the presence of errors in the batch",
+    "spec": "If ErrorMap is not empty send email otherwise do not send",
     "code_block": "",
     "code_file": "",
     "code_lines": [],
@@ -102,18 +100,16 @@ Reponse must be in this json structure:
     "component": "SF Code",
     "kind": "Decision",
     "links": [],
-    "doc_rule_id": null,
-    "rule_category": "Audit",
+    "category": "Audit",
     "business_area": null,
-    "doc_match_score": 0,
     "ai_categorized": true,
     "category_explanation": "Controls error notification behavior",
     "archived": false
   },
   {
-    "rule_name": "Compose Error Notification Outcome",
-    "rule_purpose": "Compose whether to notify and the message body by combining operation result and send email decision",
-    "rule_spec": "Send a notification only when SendEmail is true and OperationResult equals error. Set Notification.Body to ErrorMessage when sending otherwise dash",
+    "name": "Compose Error Notification Outcome",
+    "purpose": "Compose whether to notify and the message body by combining operation result and send email decision",
+    "spec": "Send a notification only when SendEmail is true and OperationResult equals error. Set Notification.Body to ErrorMessage when sending otherwise dash",
     "code_block": "",
     "code_file": "",
     "code_lines": [],
@@ -136,22 +132,20 @@ Reponse must be in this json structure:
     "component": "",
     "kind": "Decision (Composite)",
     "links": [
-      { "from_step": "Persist Operation Result", "from_output": "OperationResult", "to_input": "OperationResult", "kind": "depends_on" },
-      { "from_step": "Persist Operation Result", "from_output": "ErrorMessage", "to_input": "ErrorMessage", "kind": "depends_on" },
-      { "from_step": "Should Error Email Be Sent", "from_output": "SendEmail", "to_input": "SendEmail", "kind": "depends_on" }
+      { "from_logic": "Persist Operation Result", "from_output": "OperationResult", "to_input": "OperationResult", "kind": "depends_on" },
+      { "from_logic": "Persist Operation Result", "from_output": "ErrorMessage", "to_input": "ErrorMessage", "kind": "depends_on" },
+      { "from_logic": "Should Error Email Be Sent", "from_output": "SendEmail", "to_input": "SendEmail", "kind": "depends_on" }
     ],
-    "doc_rule_id": null,
-    "rule_category": "",
+    "category": "",
     "business_area": null,
-    "doc_match_score": 0,
     "ai_categorized": "",
     "category_explanation": "",
     "archived": false
   },
   {
-    "rule_name": "Execute Error Notification",
-    "rule_purpose": "Trigger the actual email send based on composed notification outcome",
-    "rule_spec": "If Notification.ShouldSend is true send an email using Notification.Body otherwise take no action",
+    "name": "Execute Error Notification",
+    "purpose": "Trigger the actual email send based on composed notification outcome",
+    "spec": "If Notification.ShouldSend is true send an email using Notification.Body otherwise take no action",
     "code_block": "",
     "code_file": "",
     "code_lines": [],
@@ -172,13 +166,11 @@ Reponse must be in this json structure:
     "component": "SF Code",
     "kind": "Decision (Top-Level)",
     "links": [
-      { "from_step": "Compose Error Notification Outcome", "from_output": "Notification.ShouldSend", "to_input": "Notification.ShouldSend", "kind": "depends_on" },
-      { "from_step": "Compose Error Notification Outcome", "from_output": "Notification.Body", "to_input": "Notification.Body", "kind": "depends_on" }
+      { "from_logic": "Compose Error Notification Outcome", "from_output": "Notification.ShouldSend", "to_input": "Notification.ShouldSend", "kind": "depends_on" },
+      { "from_logic": "Compose Error Notification Outcome", "from_output": "Notification.Body", "to_input": "Notification.Body", "kind": "depends_on" }
     ],
-    "doc_rule_id": null,
-    "rule_category": "Audit",
+    "category": "Audit",
     "business_area": null,
-    "doc_match_score": 0,
     "ai_categorized": true,
     "category_explanation": "Top level trigger based on composed outcome",
     "archived": false
@@ -187,7 +179,7 @@ Reponse must be in this json structure:
 
 Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting
-* Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_step_id rather than from_step, you should use from_step as per the example and populate it with the name of the step.
+* Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_logic_id rather than from_logic, you should use from_logic as per the example and populate it with the name of the step.
 * Do not put any special characters in the output.
 * For any newly generated rules, use blanks for the following json fields: id, rule_category, ai_categorised, component, owner, category_explanation
 * Do not change anything in the other decisions other than adding new links where needed for the hierarchy. 

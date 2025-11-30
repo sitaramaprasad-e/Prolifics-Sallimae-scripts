@@ -22,17 +22,17 @@ Take a look at these decisions (input 2), and work out what the decision hierarc
 6. If there are no top-level decisions, just return an empty json.
 7. The flow description needs to fully explain how the lower level decisions feed into the top-level decision, and any parallel flows that also feed into the top-level decision.
 8. Never suggest a hierarchy that is just a single decision. There must be at least one lower level decision feeding into the top-level decision. 
-9. Here's an example of the output I want, with the top-level decisions as top_decision, quoting the uuid of the decision.
+9. Here's an example of the output I want, with the top-level decisions as top, quoting the uuid of the decision.
 
 {
   "hierarchies": [
     {
       "name": "Account Processing Strategy",
-      "top_decision": {
+      "top": {
         "id": "520382fe-3e83-45f2-9849-cc8b874aac51",
         "name": "Decide Account Processing Strategy"
       },
-      "lower_decisions": [
+      "lower": [
         {
           "id": "599121f1-1ccf-48fc-ae7c-99969b9d862f",
           "name": "Evaluate Record Eligibility"
@@ -50,11 +50,11 @@ Take a look at these decisions (input 2), and work out what the decision hierarc
  
     {
       "name": "Account Visibility & Actions",
-      "top_decision": {
+      "top": {
         "id": "",
         "name": "Decide Visible Account Actions"
       },
-      "lower_decisions": [
+      "lower": [
         {
           "id": "18fd29b3-52de-4f46-a3f8-56c5f5815c0a",
           "name": "Assess Search Results Context"
@@ -72,11 +72,11 @@ Take a look at these decisions (input 2), and work out what the decision hierarc
     },
     {
       "name": "Account Data Readiness",
-      "top_decision": {
+      "top": {
         "id": "e6a06008-7001-4e90-a093-7886e448daf9",
         "name": "Approve Account for Downstream Use"
       },
-      "lower_decisions": [
+      "lower": [
         {
           "id": "8cbfaa4d-ece9-445e-8bf1-db5a391aba5a",
           "name": "Validate Required Fields"

@@ -23,9 +23,9 @@ Reponse must be in this json structure:
 
 [[
   {
-    "rule_name": "Persist Operation Result",
-    "rule_purpose": "Map a database save outcome into a normalized operation result and optional error message",
-    "rule_spec": "If Database.SaveResult.isSuccess is true set OperationResult to success and ErrorMessage to dash. Otherwise set OperationResult to error and copy Database.SaveResult.errors into ErrorMessage",
+    "name": "Persist Operation Result",
+    "purpose": "Map a database save outcome into a normalized operation result and optional error message",
+    "spec": "If Database.SaveResult.isSuccess is true set OperationResult to success and ErrorMessage to dash. Otherwise set OperationResult to error and copy Database.SaveResult.errors into ErrorMessage",
     "code_block": "",
     "code_file": "",
     "code_lines": [],
@@ -47,18 +47,16 @@ Reponse must be in this json structure:
     "component": "SF Code",
     "kind": "Decision",
     "links": [],
-    "doc_rule_id": null,
-    "rule_category": "Audit",
+    "category": "Audit",
     "business_area": null,
-    "doc_match_score": 0,
     "ai_categorized": true,
     "category_explanation": "Normalizes DB outcomes for audit and downstream decisions",
     "archived": false
   },
   {
-    "rule_name": "Should Error Email Be Sent",
-    "rule_purpose": "Determine whether to send an error notification email based on the presence of errors in the batch",
-    "rule_spec": "If ErrorMap is not empty send email otherwise do not send",
+    "name": "Should Error Email Be Sent",
+    "purpose": "Determine whether to send an error notification email based on the presence of errors in the batch",
+    "spec": "If ErrorMap is not empty send email otherwise do not send",
     "code_block": "",
     "code_file": "",
     "code_lines": [],
@@ -78,18 +76,16 @@ Reponse must be in this json structure:
     "component": "SF Code",
     "kind": "Decision",
     "links": [],
-    "doc_rule_id": null,
-    "rule_category": "Audit",
+    "category": "Audit",
     "business_area": null,
-    "doc_match_score": 0,
     "ai_categorized": true,
     "category_explanation": "Controls error notification behavior",
     "archived": false
   },
   {
-    "rule_name": "Execute Error Notification",
-    "rule_purpose": "Determine whether to send an error notification email and what body to use based directly on operation result and error presence",
-    "rule_spec": "If SendEmail is true and OperationResult equals error then set Email.Sent to true and Email.Body to ErrorMessage. Otherwise set Email.Sent to false and Email.Body to dash.",
+    "name": "Execute Error Notification",
+    "purpose": "Determine whether to send an error notification email and what body to use based directly on operation result and error presence",
+    "spec": "If SendEmail is true and OperationResult equals error then set Email.Sent to true and Email.Body to ErrorMessage. Otherwise set Email.Sent to false and Email.Body to dash.",
     "code_block": "",
     "code_file": "",
     "code_lines": [],
@@ -112,14 +108,12 @@ Reponse must be in this json structure:
     "component": "SF Code",
     "kind": "Decision (Top-Level)",
     "links": [
-      { "from_step": "Persist Operation Result", "from_output": "OperationResult", "to_input": "OperationResult", "kind": "depends_on" },
-      { "from_step": "Persist Operation Result", "from_output": "ErrorMessage", "to_input": "ErrorMessage", "kind": "depends_on" },
-      { "from_step": "Should Error Email Be Sent", "from_output": "SendEmail", "to_input": "SendEmail", "kind": "depends_on" }
+      { "from_logic": "Persist Operation Result", "from_output": "OperationResult", "to_input": "OperationResult", "kind": "depends_on" },
+      { "from_logic": "Persist Operation Result", "from_output": "ErrorMessage", "to_input": "ErrorMessage", "kind": "depends_on" },
+      { "from_logic": "Should Error Email Be Sent", "from_output": "SendEmail", "to_input": "SendEmail", "kind": "depends_on" }
     ],
-    "doc_rule_id": null,
-    "rule_category": "Audit",
+    "category": "Audit",
     "business_area": null,
-    "doc_match_score": 0,
     "ai_categorized": true,
     "category_explanation": "Top level trigger based on operation result and error presence",
     "archived": false
@@ -128,7 +122,7 @@ Reponse must be in this json structure:
 
 Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting
-* Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_step_id rather than from_step, you should use from_step as per the example and populate it with the name of the step.
+* Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_logic_id rather than from_logic, you should use from_logic as per the example and populate it with the name of the step.
 * Do not put any special characters in the output.
 * For any newly generated rules, use blanks for the following json fields: id, rule_category, ai_categorised, component, owner, category_explanation
 * Set kind to Decision (Top-Level)

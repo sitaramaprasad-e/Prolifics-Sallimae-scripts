@@ -6,21 +6,21 @@ INPUT 2: DOMAIN
 
 @@INPUT_FILE_CONTENT@@
 
-INPUT 3: RULES
+INPUT 3: LOGICS
 
 @@INPUT_FILE2_CONTENT@@
 
 INSTRUCTIONS
 
-You are an expert at taking a domain description (input 2) describing a set of code (input 1) and marking it up with reference to the business rules (input 3) that operate on each domain type.
+You are an expert at taking a domain description (input 2) describing a set of code (input 1) and marking it up with reference to the logics (input 3) that operate on each domain type.
 
-Produce a marked up version of the domain description where each domain type is annotated with references to the relevant business rules that operate on that domain type, as per the rules in input 3.
+Produce a marked up version of the domain description where each domain type is annotated with references to the relevant logics that operate on that domain type, as per the logics in input 3.
 
-Take a look at the source code (input 1) if you need some help understanding exactly which domain types a rule operates on. The rule must appear against the domain type on which the rule operates.
+Take a look at the source code (input 1) if you need some help understanding exactly which domain types a logic operates on. The logic must appear against the domain type on which the logic operates.
 
-If there are any rules in input 3 do not operate on the domain types in input 2, then leave those out.
+If there are any logics in input 3 do not operate on the domain types in input 2, then leave those out.
 
-So the annotation must appear at the domain type it operates on, with all the rules for that domain type in the single note.
+So the annotation must appear at the domain type it operates on, with all the logics for that domain type in the single note.
 
 Here's an example of the format to use for output - example:
 
@@ -33,7 +33,7 @@ This Lightning Web Component represents a partner portal interface for managing 
 ### Account
 **Description**: Core business entity representing companies or organizations within the AMETEK system.
 (note: 
-"Rules: 
+"Logics: 
 Should Account Shared List Be Displayed, 
 Generate Account URL Link, 
 Should Account Master Update Existing Account,
@@ -52,12 +52,11 @@ Determine Parent Object Type from Attachment")
 **Relationships**:
 - Has many Account Shares (one-to-many)
 
+This is indicating all the logics for the domain type Account. Stick exactly to this multi-line format.
 
-This is indicating all the rules for the domain type Account. Stick exactly to this multi-line format.
-
-If multiple rules are relevant to a single domain type, list them all in the note for that domain type. If a rule operates on multiple domain types, it should appear in the note for the most relevant domain type(s) only.
+If multiple logics are relevant to a single domain type, list them all in the note for that domain type. If a logic operates on multiple domain types, it should appear in the note for the most relevant domain type(s) only.
 
 Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting.
-* Don't change any of the content from the original domain description except to add the rule references. Everything else should remain exactly the same including headings and other existing notes.
+* Don't change any of the content from the original domain description except to add the logic references. Everything else should remain exactly the same including headings and other existing notes.
 * Do not put any special characters in the output.
