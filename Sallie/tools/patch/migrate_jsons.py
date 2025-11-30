@@ -278,7 +278,7 @@ def migrate_document(data: Any) -> Tuple[Any, bool, Optional[str]]:
         "doc_rule_id": "doc_logic_id",
         "from_step_id": "from_logic_id",
         "from_step": "from_logic",
-        "category": "category",
+        "rule_category": "category",
         "rule_name": "name",
         "rule_purpose": "purpose",
         "rule_spec": "spec",
@@ -329,7 +329,7 @@ def migrate_document(data: Any) -> Tuple[Any, bool, Optional[str]]:
                     changed = True
 
             # --- Cleanup: drop transient document-scoring and expression fields ---
-            for obsolete_key in ("doc_match_score", "doc_logic_id", "dmn_expression"):
+            for obsolete_key in ("doc_match_score", "doc_logic_id", "dmn_expression", "__modeloverlay"):
                 if obsolete_key in rule:
                     rule.pop(obsolete_key, None)
                     rule_changed = True
@@ -402,7 +402,7 @@ def migrate_document(data: Any) -> Tuple[Any, bool, Optional[str]]:
                 rule_changed = True
 
             # --- Cleanup: drop transient document-scoring and expression fields ---
-            for obsolete_key in ("doc_match_score", "doc_logic_id", "dmn_expression"):
+            for obsolete_key in ("doc_match_score", "doc_logic_id", "dmn_expression", "__modeloverlay"):
                 if obsolete_key in rule:
                     rule.pop(obsolete_key, None)
                     rule_changed = True
