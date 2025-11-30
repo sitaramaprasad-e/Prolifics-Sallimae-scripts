@@ -114,8 +114,9 @@ def build_rule_map(rules: list) -> dict:
 def diff_links_for_backup(
     current_rules: list,
     backup_rules: list,
+    show_new: bool,
     max_rules_to_show: int = 50,
-    max_links_per_section: int = 10,
+    max_links_per_section: int = 5,
 ) -> None:
     """
     Compare links in backup_rules vs current_rules and print concise differences.
@@ -162,8 +163,14 @@ def diff_links_for_backup(
         new_link_tuples = current_link_tuples - backup_link_tuples
         removed_link_tuples = backup_link_tuples - current_link_tuples
 
-        if not new_link_tuples and not removed_link_tuples:
-            continue
+        if show_new:
+            # Include rules with any change (new or removed links)
+            if not new_link_tuples and not removed_link_tuples:
+                continue
+        else:
+            # Removed-only mode: only include rules that lost links
+            if not removed_link_tuples:
+                continue
 
         changed_rules.append(
             (rid, current_rule, backup_rule, new_link_tuples, removed_link_tuples)
@@ -214,27 +221,23 @@ def diff_links_for_backup(
         new_links = links_from_tuples(current_rule, new_link_tuples)
         removed_links = links_from_tuples(backup_rule, removed_link_tuples)
 
-        if new_links:
-            print(f"    New links in current (not in this backup): {len(new_links)}")
+        if show_new and new_links:
+            print(f"    + {len(new_links)} new link(s) in current (not in this backup)")
             for l in new_links[:max_links_per_section]:
                 from_id = l.get("from_logic_id")
                 from_name = id_to_name.get(from_id) if from_id else None
                 print(f"      + {summarize_link(l, from_name)}")
             if len(new_links) > max_links_per_section:
-                print(f"      ... and {len(new_links) - max_links_per_section} more")
-        else:
-            print("    New links in current: 0")
+                print(f"      ... and {len(new_links) - max_links_per_section} more new link(s)")
 
         if removed_links:
-            print(f"    Removed links (in this backup, not in current): {len(removed_links)}")
+            print(f"    - {len(removed_links)} removed link(s) (in this backup, not in current)")
             for l in removed_links[:max_links_per_section]:
                 from_id = l.get("from_logic_id")
                 from_name = id_to_name.get(from_id) if from_id else None
                 print(f"      - {summarize_link(l, from_name)}")
             if len(removed_links) > max_links_per_section:
-                print(f"      ... and {len(removed_links) - max_links_per_section} more")
-        else:
-            print("    Removed links in this backup: 0")
+                print(f"      ... and {len(removed_links) - max_links_per_section} more removed link(s)")
 
 
 def main():
@@ -264,6 +267,12 @@ def main():
 
     print(f"\nFound {len(backups)} backup files. Starting from the most recent.")
     current_backup_pos = 0
+
+    mode_choice = prompt_with_default(
+        "Show [r]emoved links only, or [b]oth removed and new links? (r/b)",
+        "r",
+    ).lower()
+    show_new = mode_choice.startswith("b")
 
     while 0 <= current_backup_pos < len(backups):
         backup_path = backups[current_backup_pos]
@@ -315,7 +324,7 @@ def main():
             continue
 
         # Print concise diff of links vs current for this snapshot
-        diff_links_for_backup(current_rules, backup_rules)
+        diff_links_for_backup(current_rules, backup_rules, show_new)
 
         cmd = input(
             "\nCommand: [n]ext (older), [p]revious (newer), [q]uit: "
