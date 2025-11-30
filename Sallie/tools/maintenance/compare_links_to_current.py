@@ -115,6 +115,7 @@ def diff_links_for_backup(
     current_rules: list,
     backup_rules: list,
     show_new: bool,
+    target_logic_id: str | None = None,
     max_rules_to_show: int = 50,
     max_links_per_section: int = 5,
 ) -> None:
@@ -148,6 +149,9 @@ def diff_links_for_backup(
     changed_rules = []
 
     for rid in all_ids:
+        if target_logic_id and rid != target_logic_id:
+            continue
+
         current_rule = current_map.get(rid)
         backup_rule = backup_map.get(rid)
 
@@ -226,6 +230,8 @@ def diff_links_for_backup(
             for l in new_links[:max_links_per_section]:
                 from_id = l.get("from_logic_id")
                 from_name = id_to_name.get(from_id) if from_id else None
+                if from_id and from_id not in current_map:
+                    print(f"        [WARN] from_logic_id {from_id} not found in current json")
                 print(f"      + {summarize_link(l, from_name)}")
             if len(new_links) > max_links_per_section:
                 print(f"      ... and {len(new_links) - max_links_per_section} more new link(s)")
@@ -235,6 +241,8 @@ def diff_links_for_backup(
             for l in removed_links[:max_links_per_section]:
                 from_id = l.get("from_logic_id")
                 from_name = id_to_name.get(from_id) if from_id else None
+                if from_id and from_id not in current_map:
+                    print(f"        [WARN] from_logic_id {from_id} not found in current json")
                 print(f"      - {summarize_link(l, from_name)}")
             if len(removed_links) > max_links_per_section:
                 print(f"      ... and {len(removed_links) - max_links_per_section} more removed link(s)")
@@ -259,6 +267,53 @@ def main():
     except Exception as e:
         print(f"Error loading business_rules.json: {e}")
         return
+
+    # Optional filter: focus on a single logic by name prefix
+    current_map = build_rule_map(current_rules)
+    logic_filter_id: str | None = None
+
+    prefix = prompt_with_default(
+        "Filter to a single logic by name prefix (press Enter for all)",
+        "",
+    ).strip()
+
+    if prefix:
+        lowered = prefix.lower()
+        candidates = [
+            (rid, rule)
+            for rid, rule in current_map.items()
+            if isinstance(rule, dict)
+            and isinstance(rule.get("name"), str)
+            and rule.get("name").lower().startswith(lowered)
+        ]
+
+        if not candidates:
+            print(f"No logics found with name starting with '{prefix}'. Showing all.")
+        else:
+            candidates.sort(key=lambda item: (item[1].get('name') or '').lower())
+            print("\nMatching logics:")
+            for idx, (rid, rule) in enumerate(candidates, start=1):
+                name = rule.get("name") or "<unnamed>"
+                kind = rule.get("kind") or "<unknown-kind>"
+                print(f"  [{idx}] {name} (id={rid}, kind={kind})")
+
+            selection = prompt_with_default(
+                "Select logic number (or 0 for all)",
+                "1",
+            ).strip()
+
+            try:
+                sel_idx = int(selection)
+            except ValueError:
+                sel_idx = 1
+
+            if sel_idx <= 0 or sel_idx > len(candidates):
+                print("Showing all logics.")
+            else:
+                logic_filter_id = candidates[sel_idx - 1][0]
+                chosen = candidates[sel_idx - 1][1]
+                chosen_name = chosen.get("name") or "<unnamed>"
+                print(f"Filtering diffs to logic: {chosen_name} (id={logic_filter_id})")
 
     backups = list_backup_files(rules_dir)
     if not backups:
@@ -324,7 +379,7 @@ def main():
             continue
 
         # Print concise diff of links vs current for this snapshot
-        diff_links_for_backup(current_rules, backup_rules, show_new)
+        diff_links_for_backup(current_rules, backup_rules, show_new, target_logic_id=logic_filter_id)
 
         cmd = input(
             "\nCommand: [n]ext (older), [p]revious (newer), [q]uit: "
