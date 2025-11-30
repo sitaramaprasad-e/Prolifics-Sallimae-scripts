@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Generate decisions or hierarchies by selecting a model and composing its logic
-via PCPT. Supports six compose modes: 'top', 'comp', 'selected-top', 'mim' (meet‑in‑the‑middle), 'mim-minimal', and 'chain' (decision chain).
+via PCPT. Supports a single active compose mode: 'mim-minimal' (meet‑in‑the‑middle, minimal).
+
+All other modes ('top', 'comp', 'selected-top', 'mim', and 'chain') are **deprecated and disabled**; they cannot be selected or used.
 
 Current behaviour specification:
 
@@ -9,10 +11,10 @@ Current behaviour specification:
    models.json and business_rules.json.
 
 1) Load models.json, allow the user to select a model, and write a cleaned copy
-   (no businessLogicIds) into .tmp/generate_hierarchy/selected_model.json.
+   (no logicIds) into .tmp/generate_hierarchy/selected_model.json.
 
-2) Export only the rules referenced by the selected model’s businessLogicIds into
-   .tmp/generate_hierarchy/rules_for_model.json. Fields not required by PCPT are
+2) Export only the rules referenced by the selected model’s logicIds into
+   .tmp/generate_hierarchy/logics_for_model.json. Fields not required by PCPT are
    stripped. IDs are preserved.
 
 3) Require the user to select a sources_*.json spec. MODEL FILES mode is also
@@ -22,15 +24,12 @@ Current behaviour specification:
 4) If using the spec’s paths, allow selection of a path‑pair (source → output).
    In MODEL FILES mode, skip the path‑pair entirely.
 
-5) Prepare a PCPT‑specific copy of rules_for_model.json where link 'from_step_id'
-   UUIDs are converted to 'from_step' names so PCPT can reason over names.
+5) Prepare a PCPT‑specific copy of logics_for_model.json where link 'from_logic_id'
+   UUIDs are converted to 'from_logic' names so PCPT can reason over names.
 
 6) Determine the correct prompt template based on compose_mode:
-       top  → suggest-decisions-top.templ
-       selected-top → suggest-decisions-selected-top.templ
-       composite → suggest-decisions-comp.templ
-       mim / mim-minimal  → suggest-decisions-mim.templ
-       chain → suggest-decisions-chain.templ (decision chain)
+       mim-minimal  → suggest-decisions-mim-minimal.templ
+   (All other modes are deprecated and not available.)
 
 7) If --skip-generate is NOT used, call pcpt_run_custom_prompt with:
        - source directory/File
@@ -44,7 +43,7 @@ Current behaviour specification:
       • In top/next mode:
             - Add or update rules (DMN-aware diff)
             - Merge unique links
-            - Append created/updated ids into model.businessLogicIds
+            - Append created/updated ids into model.logicIds
       • In MIM mode:
             - Strict CREATE vs UPDATE semantics
             - Do not overwrite Kind for existing decisions
@@ -58,6 +57,8 @@ Current behaviour specification:
 This script is the orchestrator; per‑mode logic is isolated in run_simple_compose
 (top/next) and run_mim_compose (mim).
 """
+ACTIVE_MODES = ["mim-minimal"]
+DEPRECATED_MODES = ["top", "comp", "selected-top", "mim", "chain"]
 
 import json
 import sys
@@ -72,7 +73,7 @@ from helpers.hierarchy_simple import run_simple_compose
 from helpers.hierarchy_mim import run_mim_compose
 from helpers.hierarchy_chain import run_chain_compose
 
-from helpers.hierarchy_common import step_header, load_json, ensure_dir, eprint, _normalize_rule_for_compare, _load_rules_from_report, _safe_backup_json, write_json, TO_PCPT_DIR, TMP_DIR, choose_from_list, SPEC_DIR, prompt_with_default
+from helpers.hierarchy_common import step_header, load_json, ensure_dir, eprint, write_json, TMP_DIR, choose_from_list, SPEC_DIR, prompt_with_default
 
 # ---------------------------
 # Core steps
@@ -81,18 +82,26 @@ from helpers.hierarchy_common import step_header, load_json, ensure_dir, eprint,
 def step_select_model(model_home: Path, keep_ids: bool = True, compose_mode: Optional[str] = None) -> Dict[str, Any]:
     step_header(1, "Load models and select one", {"Model home": str(model_home)})
     models_path = model_home / "models.json"
-    rules_path = model_home / "business_rules.json"
+    logics_path = model_home / "business_rules.json"
 
     if not models_path.exists():
         eprint(f"ERROR: models.json not found at {models_path}")
         sys.exit(1)
-    if not rules_path.exists():
-        eprint(f"ERROR: business_rules.json not found at {rules_path}")
+    if not logics_path.exists():
+        eprint(f"ERROR: business_rules.json not found at {logics_path}")
         sys.exit(1)
 
-    models = load_json(models_path)
-    if not isinstance(models, list) or not models:
-        eprint("ERROR: models.json should be a non-empty list.")
+    models_data = load_json(models_path)
+    if isinstance(models_data, list):
+        models = models_data
+    elif isinstance(models_data, dict) and isinstance(models_data.get("models"), list):
+        models = models_data["models"]
+    else:
+        eprint("ERROR: models.json must be either a list of models or an object with a 'models' array.")
+        sys.exit(1)
+
+    if not models:
+        eprint("ERROR: models.json should be a non-empty list of models.")
         sys.exit(1)
 
     menu = [f"{m.get('name','(unnamed)')}  –  {m.get('id','')}" for m in models]
@@ -107,24 +116,24 @@ def step_select_model(model_home: Path, keep_ids: bool = True, compose_mode: Opt
     # Temp write selected model
     ensure_dir(TMP_DIR)
     selected_model_path = TMP_DIR / "selected_model.json"
-    # Remove businessLogicIds from temp model file (not needed downstream)
+    # Remove logicIds from temp model file (not needed downstream)
     model_copy = dict(selected_model)
-    model_copy.pop("businessLogicIds", None)
+    model_copy.pop("logicIds", None)
     write_json(selected_model_path, model_copy)
     print(f"→ Wrote selected model to {selected_model_path}")
 
     # For 'selected-top' mode, require at least one hierarchy with a top decision
     if (compose_mode or "").strip().lower() == "selected-top":
         hierarchies = selected_model.get("hierarchies") or []
-        has_top_decision = False
+        has_top = False
         for h in hierarchies:
             if not isinstance(h, dict):
                 continue
-            # Prefer explicit topDecisionId
-            if h.get("topDecisionId"):
-                has_top_decision = True
+            # Prefer explicit topId
+            if h.get("topId"):
+                has_top = True
                 break
-        if not has_top_decision:
+        if not has_top:
             eprint(
                 "ERROR: In 'selected-top' mode the selected model "
                 f"'{selected_model.get('name', '(unnamed)')}' must have at least one "
@@ -132,48 +141,52 @@ def step_select_model(model_home: Path, keep_ids: bool = True, compose_mode: Opt
             )
             sys.exit(1)
 
-    # Cross-reference rules
-    step_header(3, "Export rules belonging to the selected model", {
+    # Cross-reference logics
+    step_header(3, "Export logics belonging to the selected model", {
         "Model": f"{selected_model.get('name','(unnamed)')}",
         "Model ID": f"{selected_model.get('id','')}"
     })
-    rules_all = load_json(rules_path)
-    if not isinstance(rules_all, list):
-        eprint("ERROR: business_rules.json must be a list.")
+    logics_data = load_json(logics_path)
+    if isinstance(logics_data, list):
+        logics_all = logics_data
+    elif isinstance(logics_data, dict) and isinstance(logics_data.get("logics"), list):
+        logics_all = logics_data["logics"]
+    else:
+        eprint("ERROR: business_rules.json must be either a list of logics or an object with a 'logics' array.")
         sys.exit(1)
 
-    wanted_ids = selected_model.get("businessLogicIds") or []
+    wanted_ids = selected_model.get("logicIds") or []
     wanted_set = set(wanted_ids)
     # Keep order according to model's list
-    id_to_rule = {r.get("id"): r for r in rules_all if isinstance(r, dict) and r.get("id")}
-    filtered_rules: List[Dict[str, Any]] = [id_to_rule[rid] for rid in wanted_ids if rid in id_to_rule]
-    if not filtered_rules:
-        eprint(f"ERROR: No rules found in the selected model '{selected_model.get('name', '(unnamed)')}'.")
+    id_to_logic = {r.get("id"): r for r in logics_all if isinstance(r, dict) and r.get("id")}
+    filtered_logics: List[Dict[str, Any]] = [id_to_logic[rid] for rid in wanted_ids if rid in id_to_logic]
+    if not filtered_logics:
+        eprint(f"ERROR: No logics found in the selected model '{selected_model.get('name', '(unnamed)')}'.")
         sys.exit(1)
 
-    missing = [rid for rid in wanted_ids if rid not in id_to_rule]
+    missing = [rid for rid in wanted_ids if rid not in id_to_logic]
     if missing:
-        eprint(f"WARNING: {len(missing)} rule ids listed in the model were not found in business_rules.json")
+        eprint(f"WARNING: {len(missing)} logic ids listed in the model were not found in business_rules.json")
 
     # Strip fields not needed in composed decision temp output
-    cleaned_rules = []
-    for r in filtered_rules:
+    cleaned_logics = []
+    for r in filtered_logics:
         rc = dict(r)
-        drop_keys = ["timestamp", "doc_rule_id", "business_area", "doc_match_score", "archived"]
+        drop_keys = ["timestamp", "business_area", "archived"]
         for k in drop_keys:
             rc.pop(k, None)
-        cleaned_rules.append(rc)
+        cleaned_logics.append(rc)
 
-    rules_out_path = TMP_DIR / "rules_for_model.json"
-    write_json(rules_out_path, cleaned_rules)
-    print(f"→ Wrote {len(cleaned_rules)} rules to {rules_out_path}")
+    logics_out_path = TMP_DIR / "logics_for_model.json"
+    write_json(logics_out_path, cleaned_logics)
+    print(f"→ Wrote {len(cleaned_logics)} logics to {logics_out_path}")
 
     try:
-        rule_names_preview = [ (r.get("rule_name") or r.get("name") or "(unnamed)") for r in cleaned_rules ][:5]
-        if len(cleaned_rules) > 0:
-            step_header(4, "Rules prepared for compose", {
-                "Count": str(len(cleaned_rules)),
-                "Preview": ", ".join(rule_names_preview) + (" …" if len(cleaned_rules) > 5 else "")
+        names_preview = [ (r.get("name") or r.get("name") or "(unnamed)") for r in cleaned_logics ][:5]
+        if len(cleaned_logics) > 0:
+            step_header(4, "Logics prepared for compose", {
+                "Count": str(len(cleaned_logics)),
+                "Preview": ", ".join(names_preview) + (" …" if len(cleaned_logics) > 5 else "")
             })
     except Exception:
         pass
@@ -181,7 +194,7 @@ def step_select_model(model_home: Path, keep_ids: bool = True, compose_mode: Opt
     return {
         "selected_model": selected_model,
         "selected_model_path": str(selected_model_path),
-        "rules_out_path": str(rules_out_path),
+        "logics_out_path": str(logics_out_path),
     }
 
 
@@ -299,13 +312,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a composed decision report (single or multi).")
     parser.add_argument(
         "--mode",
-        choices=["top", "next", "selected-top", "mim", "mim-minimal", "chain"],
+        choices=ACTIVE_MODES + DEPRECATED_MODES,
         help=(
             "Select template behavior: "
-            "'top' uses suggest-decisions-top.templ; 'selected-top' uses suggest-decisions-selected-top.templ; "
-            "'next' (composite) uses suggest-decisions-comp.templ; "
-            "'mim' and 'mim-minimal' use suggest-decisions-mim.templ; "
-            "'chain' uses suggest-decisions-chain.templ for decision chains."
+            "'mim-minimal' uses suggest-decisions-mim-minimal.templ. "
+            "All other modes ('top', 'comp', 'selected-top', 'mim', 'chain') are deprecated and cannot be used."
         ),
     )
     parser.add_argument(
@@ -328,18 +339,22 @@ def main() -> None:
     compose_mode = args.mode
     skip_generate = args.skip_generate
     keep_going = args.keep_going
+    if compose_mode in DEPRECATED_MODES:
+        eprint(f"ERROR: compose mode '{compose_mode}' is deprecated and cannot be used. "
+               f"Please choose one of: {', '.join(ACTIVE_MODES)}.")
+        sys.exit(1)
     if not compose_mode:
         choice = choose_from_list(
             "Select compose mode:",
             [
-                "top          – single top decision template",
-                "comp         – composite decisions template",
-                "mim          – meet-in-the-middle (with full hierarchy suggestion)",
-                "mim-minimal  – meet-in-the-middle (minimal hierarchy suggestion)",
-                "selected-top – uses suggest-decisions-selected-top.templ (manual top decision)",
-                "chain        – decision chain template",
+                "top          – DEPRECATED (cannot be used)",
+                "comp         – DEPRECATED (cannot be used)",
+                "mim          – DEPRECATED (cannot be used)",
+                "mim-minimal  – meet-in-the-middle (minimal hierarchy)",
+                "selected-top – DEPRECATED (cannot be used)",
+                "chain        – DEPRECATED (cannot be used)",
             ],
-            default_index=1,
+            default_index=4,
         )
         if choice == 1:
             compose_mode = "top"
@@ -353,6 +368,12 @@ def main() -> None:
             compose_mode = "selected-top"
         else:
             compose_mode = "chain"
+        if compose_mode in DEPRECATED_MODES:
+            eprint(
+                f"ERROR: compose mode '{compose_mode}' is deprecated and cannot be used. "
+                f"Please choose one of: {', '.join(ACTIVE_MODES)}."
+            )
+            sys.exit(1)
 
     step_header("0", "Generate Hierarchy", {"Compose mode": compose_mode})
     print("=== Generate Hierarchy ===")
@@ -383,10 +404,10 @@ def main() -> None:
 
     model_home = Path(model_home_str).expanduser().resolve()
 
-    # Steps 1-2: Select model and export its rules
+    # Steps 1-2: Select model and export its logics
     model_info = step_select_model(
         model_home,
-        keep_ids=(compose_mode == "mim"),
+        keep_ids=(compose_mode in ("mim", "mim-minimal")),
         compose_mode=compose_mode,
     )
 

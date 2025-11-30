@@ -2,16 +2,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from helpers.hierarchy_common import step_header, ANSI_YELLOW, ANSI_RESET, load_json, build_temp_source_from_model,ensure_dir, resolve_optional_path, pcpt_run_custom_prompt, prepare_rules_file_for_pcpt, merge_generated_rules_into_model_home, eprint, REPO_ROOT, _resolve_template_path, _normalize_rule_for_compare, hashlib, json
-
-# --- Helper: content fingerprint for rules ---
-def _content_fingerprint(rule: dict) -> str:
-    try:
-        norm = _normalize_rule_for_compare(rule)
-        payload = json.dumps(norm, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()[:12]
-    except Exception:
-        return ""
+from helpers.hierarchy_common import step_header, ANSI_YELLOW, ANSI_RESET, load_json, build_temp_source_from_model,ensure_dir, resolve_optional_path, pcpt_run_custom_prompt, prepare_logics_file_for_pcpt, merge_generated_logics_into_model_home, eprint, REPO_ROOT, _resolve_template_path
     
 def run_simple_compose(
     model_info: Dict[str, Any],
@@ -73,10 +64,10 @@ def run_simple_compose(
     )
 
     # Inputs for the prompt (temp files created earlier)
-    rules_file = model_info["rules_out_path"]
+    logics_file = model_info["logics_out_path"]
     model_file = model_info["selected_model_path"]
-    # Prepare a copy of the rules file for PCPT with from_step names instead of ids
-    rules_file_for_pcpt = prepare_rules_file_for_pcpt(Path(rules_file))
+    # Prepare a copy of the rules file for PCPT with from_logic names instead of ids
+    logics_file_for_pcpt = prepare_logics_file_for_pcpt(Path(logics_file))
 
     # For 'selected-top' mode, annotate the selected model JSON with the explicit top-level decision
     if compose_mode == "selected-top":
@@ -84,40 +75,40 @@ def run_simple_compose(
             sel_model_path = Path(model_file)
             if sel_model_path.exists():
                 sel_model = load_json(sel_model_path)
-                top_decision_id = None
-                # Try to get topDecisionId from the first hierarchy (or any hierarchy that has it)
+                top_id = None
+                # Try to get topId from the first hierarchy (or any hierarchy that has it)
                 for h in sel_model.get("hierarchies", []):
-                    if isinstance(h, dict) and h.get("topDecisionId"):
-                        top_decision_id = h["topDecisionId"]
+                    if isinstance(h, dict) and h.get("topId"):
+                        top_id = h["topId"]
                         break
-                if top_decision_id:
+                if top_id:
                     # Locate business_rules.json in the model home to resolve the name
-                    rules_home_path = Path(model_home_prompted) / "business_rules.json"
+                    logics_home_path = Path(model_home_prompted) / "business_rules.json"
                     top_name = ""
-                    if rules_home_path.exists():
-                        rules_payload = load_json(rules_home_path)
-                        rules_list = []
-                        if isinstance(rules_payload, list):
-                            rules_list = rules_payload
-                        elif isinstance(rules_payload, dict):
-                            # Support either a flat dict of id->rule or a dict with 'rules' key
-                            if "rules" in rules_payload and isinstance(rules_payload["rules"], list):
-                                rules_list = rules_payload["rules"]
+                    if logics_home_path.exists():
+                        logics_payload = load_json(logics_home_path)
+                        logics_list = []
+                        if isinstance(logics_payload, list):
+                            logics_list = logics_payload
+                        elif isinstance(logics_payload, dict):
+                            # Support either a flat dict of id->logic or a dict with 'logics' key
+                            if "logics" in logics_payload and isinstance(logics_payload["logics"], list):
+                                logics_list = logics_payload["logics"]
                             else:
-                                # If dict of id -> rule, take values
-                                rules_list = list(rules_payload.values())
-                        for rule in rules_list:
+                                # If dict of id -> logic, take values
+                                logics_list = list(logics_payload.values())
+                        for rule in logics_list:
                             if not isinstance(rule, dict):
                                 continue
-                            rid = rule.get("id") or rule.get("rule_id")
-                            if rid == top_decision_id:
-                                top_name = rule.get("name") or rule.get("rule_name") or ""
+                            rid = rule.get("id")
+                            if rid == top_id:
+                                top_name = rule.get("name") or ""
                                 break
                     # Append the annotation line if we have an id (always) and optionally a name
                     annotation_name = top_name if top_name else "(name-not-found)"
                     try:
                         with sel_model_path.open("a", encoding="utf-8") as f:
-                            f.write(f"\nThe Top Level Decision Is: {top_decision_id} {annotation_name}\n")
+                            f.write(f"\nThe Top Level Decision Is: {top_id} {annotation_name}\n")
                     except Exception as inner_ex:
                         eprint(f"[WARN] Failed to append top-level decision annotation to selected model: {inner_ex}")
         except Exception as ex:
@@ -149,7 +140,7 @@ def run_simple_compose(
         print(f"→ Mode:   {pcpt_mode}")
     if domain_hints_path:
         print(f"→ Domain hints: {domain_hints_path}")
-    print(f"→ Input 1 (rules for PCPT): {rules_file_for_pcpt} (from {rules_file})")
+    print(f"→ Input 1 (logics for PCPT): {logics_file_for_pcpt} (from {logics_file})")
     print(f"→ Input 2 (model): {model_file}")
     print(f"→ Template: {template_path.name}")
     print(f"→ Compose Mode: {compose_mode}")
@@ -158,7 +149,7 @@ def run_simple_compose(
         pcpt_run_custom_prompt(
             source_path=str(source_path),
             custom_prompt_template=template_path.name,
-            input_file=str(rules_file_for_pcpt),
+            input_file=str(logics_file_for_pcpt),
             input_file2=str(model_file),
             output_dir_arg=str(output_path),
             domain_hints=str(domain_hints_path) if domain_hints_path else None,
@@ -168,7 +159,7 @@ def run_simple_compose(
     else:
         print("[INFO] --skip-generate supplied: not calling pcpt; proceeding to merge from existing report.")
 
-    # Merge the generated rule(s) back into business_rules.json and models.json
+    # Merge the generated logic(s) back into business_rules.json and models.json
     try:
         selected_model = model_info.get("selected_model") or {}
         sel_model_id = selected_model.get("id")
@@ -189,7 +180,7 @@ def run_simple_compose(
             print("\nMerge back to model home")
             print(f"→ Model home: {model_home_prompted}")
             print(f"→ Output path: {output_path}")
-            merge_generated_rules_into_model_home(
+            merge_generated_logics_into_model_home(
                 Path(model_home_prompted),
                 Path(output_path),
                 sel_model_id,

@@ -1,7 +1,7 @@
 # Here is the spec for what to create in Neo4j using the rules‑portal graph routes.
 #
 # Node labels:
-# - LogicStep   (one per business rule / decision)
+# - LogicStep   (one per logic)
 # - CodeFunction
 # - CodeFile
 #    + sourcePath
@@ -22,7 +22,7 @@
 # - INPUT         (LogicStep -> Parameter for inputs)
 # - OUTPUT        (LogicStep -> Parameter for outputs)
 # - LINKS_TO      (Parameter -> Parameter for hierarchy links between steps)
-# - SEQUENCED_BY (LogicStep -> Message)
+# - SEQUENCED_BY (CodeFunction -> Message)
 #
 # When ingesting, we populate the above structure, creating messages and sequences, and linking logic steps to messages and code functions to messages.
 #
@@ -58,9 +58,9 @@
 #       - Request query params: `nodeId`, optional `type`, `direction`.
 #       - Mainly useful for UI / exploration; not used directly by ingestion.
 #
-# In summary, rule ingestion is responsible for:
-#   1. Creating/merging Message and Sequence nodes.
-#   2. Wiring them together with SEQUENCED_BY and PART_OF relationships using the graph routes above.
+# In summary, sequence ingestion is responsible for:
+#   1. Creating Message and Sequence nodes for the parsed sequence diagram.
+#   2. Wiring Message nodes to Sequence via PART_OF and to CodeFunction via SEQUENCED_BY using the graph routes above.
 
 #!/usr/bin/env python3
 import warnings
@@ -80,9 +80,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 import requests
 import logging
-import difflib
 
-# ===== TRACE logger setup (same as ingest_rules.py) =====
+# ===== TRACE logger setup (same as ingest_logics.py) =====
 TRACE_LEVEL_NUM = 5
 logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
 

@@ -162,49 +162,6 @@ import logging
 TRACE_LEVEL_NUM = 5
 logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
 
-def _derive_short_code_from_uuid(uuid_str: str) -> str:
-    """
-    Derive the 3-hex short rule code from a UUID string by stripping dashes
-    and taking the last 3 characters, uppercased.
-    Example:
-      'e8972032-1c87-4670-a9e0-2329a15cd7c0' -> '7C0'
-    """
-    cleaned = uuid_str.replace("-", "")
-    if len(cleaned) < 3:
-        return cleaned.upper()
-    return cleaned[-3:].upper()
-
-
-def _find_logicstep_id_for_rule(
-    steps: List[Dict[str, Any]],
-    short_code: str,
-    rule_name: str,
-) -> Optional[str]:
-    """
-    Given a 3-hex short rule code from the domain model and a rule name,
-    find the corresponding LogicStep id by matching BOTH:
-      - last 3 hex chars of the UUID-derived id, and
-      - the rule name (case-insensitive exact match).
-    Returns the LogicStep id (UUID) if found, else None.
-    """
-    target_code = (short_code or "").strip().upper()
-    target_name = (rule_name or "").strip().lower()
-    if not target_code or not target_name:
-        return None
-
-    for step in steps:
-        step_id = str(step.get("id") or "").strip()
-        name = str(step.get("name") or "").strip()
-        if not step_id or not name:
-            continue
-
-        code = _derive_short_code_from_uuid(step_id)
-        if code == target_code and name.lower() == target_name:
-            return step_id
-
-    return None
-
-
 def _trace(self, message, *args, **kws):
     if self.isEnabledFor(TRACE_LEVEL_NUM):
         self._log(TRACE_LEVEL_NUM, message, args, **kws)
@@ -429,7 +386,7 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
           - name: str
           - kind: "class" | "enum"
           - attributes: List[str]
-          - rules: List[{code, name, raw}] (may be empty)
+          - logics: List[{code, name, raw}] (may be empty)
       * relationships is a list of dicts with keys:
           - from: str
           - to: str
@@ -473,7 +430,7 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
                 name=name,
                 kind="class",
                 attributes=attrs,
-                rules=[],
+                logics=[],
             )
         elif m_enum:
             name = m_enum.group(1)
@@ -488,12 +445,12 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
                 name=name,
                 kind="enum",
                 attributes=values,
-                rules=[],
+                logics=[],
             )
         else:
             i += 1
 
-    # ---- Second pass: notes (Rules) and relationships ----
+    # ---- Second pass: notes (Logics) and relationships ----
     note_inline_rx = re.compile(r"^\s*note\s+top\s+of\s+(\w+)\s*:\s*(.*)$")
     note_block_rx = re.compile(r"^\s*note\s+(top|right|left|bottom)\s+of\s+(\w+)\s*$")
     rel_rx = re.compile(
@@ -504,41 +461,41 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
     while i < n:
         line = lines[i]
 
-        # Inline note style: "note top of Account : Rules:\nE8B· ...,4AF· ..."
+        # Inline note style: "note top of Account : Logics:\nE8B· ...,4AF· ..."
         m_inline = note_inline_rx.match(line)
         if m_inline:
             dt_name = m_inline.group(1)
             rest = m_inline.group(2) or ""
-            if "Rules:" in rest:
-                rules_part = rest.split("Rules:", 1)[1].strip()
-                rules_text = rules_part.replace("\\n", "\n")
-                flat = rules_text.replace("\n", ",")
+            if "Logics:" in rest:
+                logics_part = rest.split("Logics:", 1)[1].strip()
+                logics_text = logics_part.replace("\\n", "\n")
+                flat = logics_text.replace("\n", ",")
                 pieces = [p.strip().strip("\"") for p in flat.split(",")]
 
                 dt = domain_types.setdefault(
                     dt_name,
-                    DomainTypeSpec(name=dt_name, kind="class", attributes=[], rules=[]),
+                    DomainTypeSpec(name=dt_name, kind="class", attributes=[], logics=[]),
                 )
-                if "rules" not in dt:
-                    dt["rules"] = []
+                if "logics" not in dt:
+                    dt["logics"] = []
 
                 for item in pieces:
                     if not item:
                         continue
-                    m_rule = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
-                    if m_rule:
-                        code = m_rule.group(1).strip()
-                        rname = m_rule.group(2).strip()
+                    m_logic = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
+                    if m_logic:
+                        code = m_logic.group(1).strip()
+                        rname = m_logic.group(2).strip()
                     else:
                         code = None
                         rname = item
-                    dt["rules"].append({"code": code, "name": rname, "raw": item})
+                    dt["logics"].append({"code": code, "name": rname, "raw": item})
             i += 1
             continue
 
         # Block note style:
         #   note right of Patient
-        #     Rules:
+        #     Logics:
         #     2B0· Standardize Gender,
         #     41F· Calculate Age At First Claim
         #   end note
@@ -547,35 +504,38 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
             dt_name = m_block.group(2)
             dt = domain_types.setdefault(
                 dt_name,
-                DomainTypeSpec(name=dt_name, kind="class", attributes=[], rules=[]),
+                DomainTypeSpec(name=dt_name, kind="class", attributes=[], logics=[]),
             )
-            if "rules" not in dt:
-                dt["rules"] = []
+            if "logics" not in dt:
+                dt["logics"] = []
 
             i += 1
-            in_rules = False
+            in_logics = False
             while i < n and "end note" not in lines[i]:
                 stripped = lines[i].strip()
                 if not stripped:
                     i += 1
                     continue
-                if stripped.startswith("Rules"):
-                    # Start of rules section inside this note
-                    in_rules = True
+                # Detect the start of a "Logics" section in a case-insensitive way,
+                # allowing for an optional trailing colon (e.g. "Logics" or "Logics:").
+                lower = stripped.lower()
+                if lower == "logics" or lower.startswith("logics:"):
+                    # Start of logics section inside this note
+                    in_logics = True
                     i += 1
                     continue
-                if in_rules:
+                if in_logics:
                     # Strip any trailing comma
                     item = stripped.rstrip(",").strip().strip("\"")
                     if item:
-                        m_rule = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
-                        if m_rule:
-                            code = m_rule.group(1).strip()
-                            rname = m_rule.group(2).strip()
+                        m_logic = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
+                        if m_logic:
+                            code = m_logic.group(1).strip()
+                            rname = m_logic.group(2).strip()
                         else:
                             code = None
                             rname = item
-                        dt["rules"].append({"code": code, "name": rname, "raw": item})
+                        dt["logics"].append({"code": code, "name": rname, "raw": item})
                 i += 1
             # Skip the "end note" line
             if i < n and "end note" in lines[i]:
@@ -699,7 +659,7 @@ def _parse_domain_description_file(path: str) -> Dict[str, Dict[str, Any]]:
         if collecting_entity_desc and current_entity is not None:
             stripped = line.strip()
             if stripped.lower().startswith("(note"):
-                # Stop collecting description when we hit the rules/note section.
+                # Stop collecting description when we hit the logics/note section.
                 collecting_entity_desc = False
                 i += 1
                 continue
@@ -750,23 +710,23 @@ def _parse_domain_description_file(path: str) -> Dict[str, Dict[str, Any]]:
 # ===== LogicStep lookup (for OPERATES_ON) =====
 
 
-def _find_logic_step_id(rule_code: Optional[str], rule_name: Optional[str]) -> Optional[int]:
+def _find_logic_step_id(logic_code: Optional[str], name: Optional[str]) -> Optional[int]:
     """Lookup a LogicStep id for a given rule using short code + name.
 
     The matching strategy is:
       * Derive a 3-hex short code from the LogicStep `id` property using
         `toUpper(right(replace(ls.id, '-', ''), 3))`, and require it to equal
-        the provided `rule_code` (case-insensitive).
+        the provided `logic_code` (case-insensitive).
       * Require an exact, case-insensitive match between `ls.name` and the
-        provided `rule_name`.
+        provided `name`.
 
-    This reflects the convention that the domain model rule code (e.g. '2B0')
+    This reflects the convention that the domain model logic code (e.g. '2B0')
     is the last 3 hex characters of the LogicStep UUID, and we also harden the
-    match by checking the rule name.
+    match by checking the logic name.
     """
 
-    short = (rule_code or "").strip().upper()
-    name = (rule_name or "").strip()
+    short = (logic_code or "").strip().upper()
+    name = (name or "").strip()
     if not short and not name:
         return None
 
@@ -810,7 +770,7 @@ def _find_logic_step_id(rule_code: Optional[str], rule_name: Optional[str]) -> O
 
     if ls_id is not None:
         LOG.info(
-            "[info] Matched rule '%s' (code=%s) to LogicStep id=%s name='%s'",
+            "[info] Matched logic '%s' (code=%s) to LogicStep id=%s name='%s'",
             name or short,
             short or "",
             ls_id,
@@ -1080,28 +1040,28 @@ def main() -> None:
         dt_id = dt_name_to_id.get(dt_name)
         if dt_id is None:
             continue
-        rules = dt.get("rules") or []
-        if not rules:
+        logics = dt.get("logics") or []
+        if not logics:
             continue
 
-        for rule in rules:
-            code = rule.get("code")
-            rname = rule.get("name")
+        for logic in logics:
+            code = logic.get("code")
+            rname = logic.get("name")
             key = (code, rname)
             if key not in cache:
                 cache[key] = _find_logic_step_id(code, rname)
             ls_id = cache[key]
             if ls_id is None:
                 LOG.info(
-                    "[info] No LogicStep match found for rule '%s' (code=%s)",
+                    "[info] No LogicStep match found for logic '%s' (code=%s)",
                     rname or code or "",
                     code or "",
                 )
                 continue
 
             props = {
-                "ruleCode": code,
-                "ruleName": rname,
+                "logicCode": code,
+                "logicName": rname,
                 "domainType": dt_name,
                 "diagramPath": abs_domain_path,
                 "ingestionTimestamp": ts,

@@ -13,7 +13,7 @@ from datetime import datetime
 import zipfile
 import argparse
 import requests
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--report-only", action="store_true")
@@ -32,7 +32,7 @@ _GRAPH_AVAILABLE = False
 def graph_is_enabled() -> bool:
     """Return True if graph population is enabled and the backend is reachable.
 
-    We reuse the same env vars as rule_ingest_core and call /api/graph/status
+    We reuse the same env vars as logic_ingest_core and call /api/graph/status
     once per process. Failures are logged but do not stop this script.
     """
     global _GRAPH_STATUS_CHECKED, _GRAPH_AVAILABLE
@@ -94,56 +94,68 @@ def main():
     user_input = input(f"Enter model home directory [{default_home}]: ").strip()
     model_home = Path(user_input) if user_input else default_home
 
-    business_rules_path = model_home / "business_rules.json"
-    if not business_rules_path.exists():
-        print(f"[ERROR] business_rules.json not found at {business_rules_path}")
+    logics_path = model_home / "business_rules.json"
+    if not logics_path.exists():
+        print(f"[ERROR] business_rules.json not found at {logics_path}")
         return
 
     # Create a timestamped ZIP backup
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_backup_path = business_rules_path.parent / f"business_rules_backup_{timestamp}.zip"
+    zip_backup_path = logics_path.parent / f"business_rules_backup_{timestamp}.zip"
     try:
         with zipfile.ZipFile(zip_backup_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(business_rules_path, arcname="business_rules.json")
+            zipf.write(logics_path, arcname="business_rules.json")
         print(f"[INFO] ZIP backup created: {zip_backup_path}")
     except Exception as e:
         print(f"[WARN] Could not create ZIP backup: {e}")
 
-    # Load and filter rules
-    with open(business_rules_path, "r", encoding="utf-8") as f:
-        try:
-            rules = json.load(f)
-            if not isinstance(rules, list):
-                print(f"[ERROR] business_rules.json format invalid: expected a list.")
-                return
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] Failed to parse JSON: {e}")
-            return
+    # Load and filter logic (support legacy list and rooted {"version", "logics"})
+    br_root: Any = None
+    br_version: Optional[int] = None
+    try:
+        with open(logics_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Failed to parse JSON: {e}")
+        return
 
-    archived_rules = [r for r in rules if r.get("archived", False)]
+    if isinstance(raw, dict) and isinstance(raw.get("logics"), list):
+        br_root = raw
+        if isinstance(raw.get("version"), int):
+            br_version = raw["version"]
+        logics = raw["logics"]
+    elif isinstance(raw, list):
+        logics = raw
+    else:
+        print(
+            "[ERROR] business_rules.json format invalid: expected a list or an object with a 'logics' array."
+        )
+        return
 
-    before_count = len(rules)
-    # Remove archived rules (existing behavior)
-    filtered = [r for r in rules if not r.get("archived", False)]
+    archived_logics = [r for r in logics if r.get("archived", False)]
+
+    before_count = len(logics)
+    # Remove archived logics (existing behavior)
+    filtered = [r for r in logics if not r.get("archived", False)]
     removed_count = before_count - len(filtered)
 
-    # Precompute IDs for archived rules (those we are deleting)
+    # Precompute IDs for archived logics (those we are deleting)
     archived_ids = set()
-    for r in archived_rules:
+    for r in archived_logics:
         rid = r.get("id")
         if isinstance(rid, str) and rid.strip():
             archived_ids.add(rid.strip())
 
     # --- Dangling link cleanup ---
-    # Build a set of ALL rule IDs (including archived).
+    # Build a set of ALL logic IDs (including archived).
     all_ids = set()
-    for r in rules:
+    for r in logics:
         rid = r.get("id")
         if isinstance(rid, str) and rid.strip():
             all_ids.add(rid.strip())
 
-    def _clean_links(rule_obj, all_ids, archived_ids, dry_run=False):
-        links = rule_obj.get("links")
+    def _clean_links(logic_obj, all_ids, archived_ids, dry_run=False):
+        links = logic_obj.get("links")
         if not isinstance(links, list):
             return [], 0
         removed_links = []
@@ -151,18 +163,18 @@ def main():
             if not isinstance(l, dict):
                 removed_links.append(l)
                 continue
-            fsid = (l.get("from_step_id") or "").strip()
+            fsid = (l.get("from_logic_id") or "").strip()
             # Always treat links whose source ID does not exist in all_ids as dangling
             if not fsid or fsid not in all_ids:
                 removed_links.append(l)
                 continue
-            # When we are actually deleting archived rules (not report-only),
-            # also remove links whose source points at an archived rule ID,
-            # because those rules will no longer exist after this script runs.
+            # When we are actually deleting archived logics (not report-only),
+            # also remove links whose source points at an archived logic ID,
+            # because those logics will no longer exist after this script runs.
             if not dry_run and fsid in archived_ids:
                 removed_links.append(l)
         if not dry_run:
-            rule_obj["links"] = [l for l in links if l not in removed_links]
+            logic_obj["links"] = [l for l in links if l not in removed_links]
         return removed_links, len(removed_links)
 
     total_links_removed = 0
@@ -172,22 +184,24 @@ def main():
             total_links_removed += count
             if report_only and count > 0:
                 if "id" in r:
-                    print(f"[REPORT] Rule {r['id']} has {count} dangling link(s):")
+                    print(f"[REPORT] Logic {r['id']} has {count} dangling link(s):")
                     for dl in removed_links:
-                        print(f"         from_step_id={dl.get('from_step_id')} to_input={dl.get('to_input')}")
+                        print(f"         from_logic_id={dl.get('from_logic_id')} to_input={dl.get('to_input')}")
         except Exception:
             # Be robust; if links are malformed, skip cleaning that rule
             pass
 
-    # --- Model businessLogicIds dangling cleanup ---
-    # Build a set of remaining (non-archived) rule IDs.
-    remaining_rule_ids = set()
+    # --- Model logicIds dangling cleanup ---
+    # Build a set of remaining (non-archived) logic IDs.
+    remaining_logic_ids = set()
     for r in filtered:
         rid = r.get("id")
         if isinstance(rid, str) and rid.strip():
-            remaining_rule_ids.add(rid.strip())
+            remaining_logic_ids.add(rid.strip())
 
     models_path = model_home / "models.json"
+    models_root: Any = None
+    models_version: Optional[int] = None
     models = None
     dangling_model_refs_total = 0
     models_with_dangling = 0
@@ -195,9 +209,18 @@ def main():
     if models_path.exists():
         try:
             with open(models_path, "r", encoding="utf-8") as mf:
-                models = json.load(mf)
-            if not isinstance(models, list):
-                print(f"[WARN] models.json format invalid at {models_path}: expected a list.")
+                raw_models = json.load(mf)
+            if isinstance(raw_models, dict) and isinstance(raw_models.get("models"), list):
+                models_root = raw_models
+                if isinstance(raw_models.get("version"), int):
+                    models_version = raw_models["version"]
+                models = raw_models["models"]
+            elif isinstance(raw_models, list):
+                models = raw_models
+            else:
+                print(
+                    f"[WARN] models.json format invalid at {models_path}: expected a list or an object with a 'models' array."
+                )
                 models = None
         except json.JSONDecodeError as e:
             print(f"[WARN] Failed to parse models.json at {models_path}: {e}")
@@ -209,7 +232,7 @@ def main():
         for m in models:
             model_id = m.get("id")
             model_name = m.get("name")
-            bl_ids = m.get("businessLogicIds")
+            bl_ids = m.get("logicIds")
             if not isinstance(bl_ids, list):
                 continue
 
@@ -217,12 +240,12 @@ def main():
             dangling_ids = []
 
             for bid in bl_ids:
-                # We only treat string IDs that are non-empty and present in remaining_rule_ids as valid.
+                # We only treat string IDs that are non-empty and present in remaining_logic_ids as valid.
                 if not isinstance(bid, str) or not bid.strip():
                     dangling_ids.append(bid)
                     continue
                 bid_str = bid.strip()
-                if bid_str not in remaining_rule_ids:
+                if bid_str not in remaining_logic_ids:
                     dangling_ids.append(bid_str)
                 else:
                     cleaned_ids.append(bid_str)
@@ -233,19 +256,51 @@ def main():
                 if report_only:
                     print(
                         f"[REPORT] Model {model_id} ({model_name}) has {len(dangling_ids)} "
-                        f"dangling businessLogicId(s) (rule(s) no longer exist): {', '.join(map(str, dangling_ids))}"
+                        f"dangling logicId(s) (logic(s) no longer exist): {', '.join(map(str, dangling_ids))}"
                     )
                 else:
                     # Apply the cleanup only when not in report-only mode.
-                    m["businessLogicIds"] = cleaned_ids
+                    m["logicIds"] = cleaned_ids
 
         # If not report-only and we modified any models, write them back out.
         if not report_only and dangling_model_refs_total > 0:
             try:
+                # Best-effort optimistic concurrency using models_version
+                if models_path.exists() and models_version is not None:
+                    try:
+                        with open(models_path, "r", encoding="utf-8") as mf:
+                            cur_raw_models = json.load(mf)
+                        if isinstance(cur_raw_models, dict) and isinstance(cur_raw_models.get("models"), list):
+                            cur_version = cur_raw_models.get("version")
+                            if isinstance(cur_version, int) and cur_version != models_version:
+                                print(
+                                    f"[ERROR] models.json version changed on disk (expected {models_version}, found {cur_version}); "
+                                    f"aborting write to avoid overwriting concurrent changes."
+                                )
+                                return
+                    except Exception as ex:
+                        print(
+                            f"[WARN] Could not re-read models.json for concurrency check; proceeding anyway: {ex}"
+                        )
+
+                # Persist using rooted {"version", "models"} where possible
+                if isinstance(models_root, dict):
+                    current_version = models_root.get("version")
+                    if not isinstance(current_version, int):
+                        current_version = models_version or 0
+                    new_version = current_version + 1
+                    models_root["models"] = models
+                    models_root["version"] = new_version
+                    to_write = models_root
+                else:
+                    # Legacy list-only models.json; upgrade to rooted structure on write
+                    new_version = (models_version or 0) + 1
+                    to_write = {"version": new_version, "models": models}
+
                 with open(models_path, "w", encoding="utf-8") as mf:
-                    json.dump(models, mf, indent=2, ensure_ascii=False)
+                    json.dump(to_write, mf, indent=2, ensure_ascii=False)
                 print(
-                    f"[INFO] Removed {dangling_model_refs_total} dangling businessLogicId(s) "
+                    f"[INFO] Removed {dangling_model_refs_total} dangling logicId(s) "
                     f"from {models_with_dangling} model(s) in {models_path}"
                 )
             except Exception as e:
@@ -253,24 +308,24 @@ def main():
 
     if report_only:
         print("[INFO] --report-only mode: no changes written.")
-        print(f"[INFO] {len(archived_rules)} rule(s) would be deleted:")
-        for r in archived_rules:
-            print(f"       {r.get('id')}  {r.get('rule_name')}")
+        print(f"[INFO] {len(archived_logics)} logic(s) would be deleted:")
+        for r in archived_logics:
+            print(f"       {r.get('id')}  {r.get('name')}")
         print(
-            f"[INFO] {total_links_removed} link(s) would be cleaned up where the from_step_id no longer matches an existing rule id or would refer to a rule being deleted."
+            f"[INFO] {total_links_removed} link(s) would be cleaned up where the from_logic_id no longer matches an existing logic id or would refer to a logic being deleted."
         )
         return
 
-    # --- Neo4j graph cleanup for deleted rules ---
+    # --- Neo4j graph cleanup for deleted logics ---
     # We use DETACH DELETE so that relationships are removed automatically
     # when their endpoint nodes are deleted.
-    if graph_is_enabled() and archived_rules:
-        deleted_rule_ids = {rid for rid in archived_ids}
+    if graph_is_enabled() and archived_logics:
+        deleted_logic_ids = {rid for rid in archived_ids}
 
         # Collect candidate code functions and files from the rules being deleted
         code_functions = set()
         code_files = set()
-        for r in archived_rules:
+        for r in archived_logics:
             cf = r.get("code_function")
             if isinstance(cf, str) and cf.strip():
                 code_functions.add(cf.strip())
@@ -279,26 +334,26 @@ def main():
                 code_files.add(cfile.strip())
 
         print(
-            f"[INFO] Cleaning Neo4j graph for {len(deleted_rule_ids)} archived rule(s) "
+            f"[INFO] Cleaning Neo4j graph for {len(deleted_logic_ids)} archived logic(s) "
             f"(base={GRAPH_BASE_URL})..."
         )
 
-        # 1) Delete LogicStep nodes for each archived rule id (and all their relationships)
-        for rid in sorted(deleted_rule_ids):
+        # 1) Delete LogicStep nodes for each archived logic id (and all their relationships)
+        for rid in sorted(deleted_logic_ids):
             # Delete any Message nodes sequenced by this LogicStep, then delete the LogicStep
             graph_run_cypher(
                 """
-                MATCH (l:LogicStep {id: $ruleId})
+                MATCH (l:LogicStep {id: $logicId})
                 OPTIONAL MATCH (l)-[:SEQUENCED_BY]->(m:Message)
                 DETACH DELETE m, l
                 """,
-                {"ruleId": rid},
+                {"logicId": rid},
             )
 
-            # Delete any Parameter nodes belonging to this rule
+            # Delete any Parameter nodes belonging to this logic
             graph_run_cypher(
-                "MATCH (p:Parameter {ruleId: $ruleId}) DETACH DELETE p",
-                {"ruleId": rid},
+                "MATCH (p:Parameter {logicId: $logicId}) DETACH DELETE p",
+                {"logicId": rid},
             )
 
         # 2) Delete CodeFunction nodes that are no longer referenced by any LogicStep
@@ -365,15 +420,49 @@ def main():
             {},
         )
 
-    # Write updated rules including cleaned links
-    with open(business_rules_path, "w", encoding="utf-8") as f:
-        json.dump(filtered, f, indent=2, ensure_ascii=False)
+    # Write updated logics including cleaned links, using rooted {"version", "logics"} and a best-effort optimistic check
+    try:
+        if logics_path.exists() and br_version is not None:
+            try:
+                with open(logics_path, "r", encoding="utf-8") as f:
+                    cur_raw = json.load(f)
+                if isinstance(cur_raw, dict) and isinstance(cur_raw.get("logics"), list):
+                    cur_version = cur_raw.get("version")
+                    if isinstance(cur_version, int) and cur_version != br_version:
+                        print(
+                            f"[ERROR] business_rules.json version changed on disk (expected {br_version}, found {cur_version}); "
+                            f"aborting write to avoid overwriting concurrent changes."
+                        )
+                        return
+            except Exception as ex:
+                print(
+                    f"[WARN] Could not re-read business_rules.json for concurrency check; proceeding anyway: {ex}"
+                )
 
-    print(f"[INFO] Deleted {removed_count} archived rule(s).")
+        if isinstance(br_root, dict):
+            current_version = br_root.get("version")
+            if not isinstance(current_version, int):
+                current_version = br_version or 0
+            new_version = current_version + 1
+            br_root["logics"] = filtered
+            br_root["version"] = new_version
+            to_write = br_root
+        else:
+            # Legacy list-only business_rules.json; upgrade to rooted structure on write
+            new_version = (br_version or 0) + 1
+            to_write = {"version": new_version, "logics": filtered}
+
+        with open(logics_path, "w", encoding="utf-8") as f:
+            json.dump(to_write, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[ERROR] Failed to write updated business_rules.json: {e}")
+        return
+
+    print(f"[INFO] Deleted {removed_count} archived logic(s).")
     print(
-        f"[INFO] Removed {total_links_removed} dangling link(s) where from_step_id no longer matches an existing rule id."
+        f"[INFO] Removed {total_links_removed} dangling link(s) where from_logic_id no longer matches an existing logic id."
     )
-    print(f"[INFO] {len(filtered)} rule(s) remain in {business_rules_path}")
+    print(f"[INFO] {len(filtered)} logic(s) remain in {logics_path}")
 
 if __name__ == "__main__":
     main()

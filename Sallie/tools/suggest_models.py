@@ -20,7 +20,7 @@ PROMPTS_DIR = os.path.join(os.getcwd(), "prompts")
 # Constants / Defaults
 # ----------------------------
 TMP_DIR = ".tmp/suggest_models"
-RULES_EXPORT_FILE = os.path.join(TMP_DIR, "rules_export.json")
+LOGICS_EXPORT_FILE = os.path.join(TMP_DIR, "logics_export.json")
 MODELS_INPUT_FILE = os.path.join(TMP_DIR, "models_input.json")
 
 # ----------------------------
@@ -213,48 +213,48 @@ def _derive_output_from_prompt(prompt_filename: str) -> tuple[str, str]:
 
 
 
-# Helper to detect archived rules
-def _is_archived(rule: Dict[str, Any]) -> bool:
-    val = rule.get("archived")
+# Helper to detect archived logics
+def _is_archived(logic: Dict[str, Any]) -> bool:
+    val = logic.get("archived")
     if val is None:
-        val = rule.get("is_archived")
+        val = logic.get("is_archived")
     # Normalize strings like "true", "yes", "1"
     if isinstance(val, str):
         val = val.strip().lower() in {"true", "yes", "y", "1"}
 
     # Also support schemas where a generic 'flag' field denotes archived status
-    flag_val = rule.get("flag")
+    flag_val = logic.get("flag")
     if isinstance(flag_val, str) and flag_val.strip().lower() == "archived":
         return True
 
     return bool(val)
 
-def _export_rules(business_rules_path: str) -> int:
-    data = _load_json(business_rules_path)
+def _export_logics(logics_path: str) -> int:
+    data = _load_json(logics_path)
     if not isinstance(data, list):
-        raise ValueError(f"{business_rules_path} must be a JSON array of rules")
+        raise ValueError(f"{logics_path} must be a JSON array of logics")
 
-    def pick(rule: Dict[str, Any]) -> Dict[str, Any]:
+    def pick(logic: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "id": rule.get("id"),
-            "rule_name": rule.get("rule_name"),
-            "rule_spec": rule.get("rule_spec"),
-            "rule_category": rule.get("rule_category"),
-            "owner": rule.get("owner"),
-            "component": rule.get("component"),
-            "code_file": rule.get("code_file"),
-            "code_function": rule.get("code_function"),
-            "dmn_inputs": rule.get("dmn_inputs"),
-            "dmn_outputs": rule.get("dmn_outputs"),
+            "id": logic.get("id"),
+            "name": logic.get("name"),
+            "spec": logic.get("spec"),
+            "category": logic.get("category"),
+            "owner": logic.get("owner"),
+            "component": logic.get("component"),
+            "code_file": logic.get("code_file"),
+            "code_function": logic.get("code_function"),
+            "dmn_inputs": logic.get("dmn_inputs"),
+            "dmn_outputs": logic.get("dmn_outputs"),
         }
 
     # Filter out archived rules
-    active_rules = [r for r in data if isinstance(r, dict) and not _is_archived(r)]
+    active_logics = [r for r in data if isinstance(r, dict) and not _is_archived(r)]
     archived_count = len([r for r in data if isinstance(r, dict) and _is_archived(r)])
 
-    exported = [pick(r) for r in active_rules]
-    _dump_json(RULES_EXPORT_FILE, {"rules": exported})
-    _log(f"Exported {len(exported)} active rules (skipped {archived_count} archived)")
+    exported = [pick(r) for r in active_logics]
+    _dump_json(LOGICS_EXPORT_FILE, {"logics": exported})
+    _log(f"Exported {len(exported)} active logics (skipped {archived_count} archived)")
     return len(exported)
 
 
@@ -416,23 +416,23 @@ def main() -> None:
     # Prompt for MODEL_HOME
     model_home = _prompt_model_home()
     model_dir = os.path.join(model_home, ".model")
-    business_rules_path = os.path.join(model_dir, "business_rules.json")
+    logics_path = os.path.join(model_dir, "business_rules.json")
     models_json_path = os.path.join(model_dir, "models.json")
 
-    if not os.path.exists(business_rules_path):
-        raise FileNotFoundError(f"Missing {business_rules_path}")
+    if not os.path.exists(logics_path):
+        raise FileNotFoundError(f"Missing {logics_path}")
 
     _ensure_dir(TMP_DIR)
 
     _step("Setup", "Resolving directories and inputs")
     print(f"Model home         : {model_home}")
-    print(f"Business rules JSON: {business_rules_path}")
+    print(f"Logics JSON: {logics_path}")
     print(f"Existing models JSON: {models_json_path}")
     print(f"Prompts directory  : {PROMPTS_DIR}")
 
-    _step("Export rules", f"→ {RULES_EXPORT_FILE}")
-    rule_count = _export_rules(business_rules_path)
-    print(f"Export complete. File     : {RULES_EXPORT_FILE}")
+    _step("Export logics", f"→ {LOGICS_EXPORT_FILE}")
+    logic_count = _export_logics(logics_path)
+    print(f"Export complete. File     : {LOGICS_EXPORT_FILE}")
 
     _step("Prepare models input", f"→ {MODELS_INPUT_FILE}")
     existing_models_doc = _prepare_models_input(models_json_path)
@@ -467,9 +467,9 @@ def main() -> None:
     print("  pcpt.sh run-custom-prompt \\")
     print(f"    --input-file {MODELS_INPUT_FILE} \\")
     print(f"    --output {pcpt_output_dir} \\")
-    print(f"    {RULES_EXPORT_FILE} \\")
+    print(f"    {LOGICS_EXPORT_FILE} \\")
     print(f"    {prompt_name}")
-    _run_pcpt(RULES_EXPORT_FILE, MODELS_INPUT_FILE, pcpt_output_dir, prompt_name)
+    _run_pcpt(LOGICS_EXPORT_FILE, MODELS_INPUT_FILE, pcpt_output_dir, prompt_name)
 
     # Determine which expected file was produced (MD only)
     produced_path = expected_md if os.path.exists(expected_md) else None
@@ -496,7 +496,7 @@ def main() -> None:
     _dump_json(models_json_path, final_doc)
 
     print("\n════════ Suggest Models Summary ════════")
-    print(f"Rules exported:           {rule_count}")
+    print(f"Logics exported:           {logic_count}")
     print(f"Models suggested:         {len(suggested)}")
     print(f"Models file updated:      {models_json_path}")
     print(f"PCPT output (report):     {produced_path}")

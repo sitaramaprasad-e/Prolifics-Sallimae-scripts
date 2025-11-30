@@ -7,7 +7,7 @@ its output files, without leaking any CLI details to caller scripts.
 
 These functions are intentionally generic and accept the output
 directory, output file, and prompt name as parameters so that
-callers (e.g., categorize_rules.py) retain full control over where
+callers (e.g., categorize_logics.py) retain full control over where
 artifacts go without duplicating the invocation details.
 
 Also includes a helper for calling `pcpt.sh sequence` with optional
@@ -30,8 +30,8 @@ def _derive_output_parts(output_dir_arg: str, output_file_arg: str) -> Tuple[str
 
     Example:
       output_dir_arg="docs"
-      output_file_arg="categorise-rule/categorise-rule.md"
-      -> ("docs/categorise-rule", "categorise-rule", ".md")
+      output_file_arg="categorise-logic/categorise-logic.md"
+      -> ("docs/categorise-logic", "categorise-logic", ".md")
     """
     output_parent_dir = os.path.join(output_dir_arg, os.path.dirname(output_file_arg)) if os.path.dirname(output_file_arg) else output_dir_arg
     base_name, ext = os.path.splitext(os.path.basename(output_file_arg))
@@ -263,8 +263,8 @@ def pcpt_run_custom_prompt(
 
     subprocess.run(cmd, check=True)
 
-def run_pcpt_for_rule(
-    dynamic_rule_file: str,
+def run_pcpt_for_logic(
+    dynamic_logic_file: str,
     categories_path: str,
     output_dir_arg: str,
     output_file_arg: str,
@@ -276,10 +276,10 @@ def run_pcpt_for_rule(
     Wrapper around:
       pcpt.sh run-custom-prompt \
         --input-file <categories_path> \
-        --input-file2 <dynamic_rule_file> \
+        --input-file2 <dynamic_logic_file> \
         --output <output_dir_arg> \
         [--index X --total Y] \
-        <dynamic_rule_file> <prompt_name>
+        <dynamic_logic_file> <prompt_name>
 
     Returns parsed JSON from the expected output file, or None on failure.
     """
@@ -301,7 +301,7 @@ def run_pcpt_for_rule(
         "--input-file",
         categories_path,
         "--input-file2",
-        dynamic_rule_file,
+        dynamic_logic_file,
         "--output",
         output_dir_arg,
     ]
@@ -310,7 +310,7 @@ def run_pcpt_for_rule(
         cmd.append(f"--total={total}")
     if index is not None:
         cmd.append(f"--index={index}")
-    cmd.extend([dynamic_rule_file, prompt_name])
+    cmd.extend([dynamic_logic_file, prompt_name])
 
     try:
         subprocess.run(cmd, check=True)

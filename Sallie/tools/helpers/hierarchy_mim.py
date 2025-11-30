@@ -7,30 +7,30 @@ from typing import Any, Dict, List, Set
 
 from helpers.hierarchy_common import (
     step_header, ANSI_YELLOW, ANSI_RESET, load_json, build_temp_source_from_model, ensure_dir, resolve_optional_path,
-    pcpt_run_custom_prompt, prepare_rules_file_for_pcpt, merge_generated_rules_into_model_home, eprint, REPO_ROOT, _resolve_template_path,
-    SUGGEST_HIERARCHY_TEMPLATE_DIR, SUGGEST_HIERARCHY_MINIMAL_TEMPLATE_DIR, TMP_DIR, _load_rules_from_report, write_json, _safe_backup_json
+    pcpt_run_custom_prompt, prepare_logics_file_for_pcpt, merge_generated_logics_into_model_home, eprint, REPO_ROOT, _resolve_template_path,
+    SUGGEST_HIERARCHY_TEMPLATE_DIR, SUGGEST_HIERARCHY_MINIMAL_TEMPLATE_DIR, TMP_DIR, _load_logics_from_report, write_json, _safe_backup_json
 )
 
-def _scrub_links_to_hierarchy_scope(rules: List[dict], allowed_ids: Set[str], allowed_names_cf: Set[str]) -> List[dict]:
+def _scrub_links_to_hierarchy_scope(logics: List[dict], allowed_ids: Set[str], allowed_names_cf: Set[str]) -> List[dict]:
     """
     Remove links that point to producers outside the current hierarchy scope.
     Rules:
-      - Keep only links whose from_step_id resolves to one of allowed_ids.
-      - If only a name is present (from_step) and it matches allowed_names_cf, resolve to id; else drop.
-      - Drop any link with empty/unresolvable from_step_id.
-      - Always persist id-only (remove from_step).
-      - Deduplicate by (from_step_id, from_output, to_input, kind).
+      - Keep only links whose from_logic_id resolves to one of allowed_ids.
+      - If only a name is present (from_logic) and it matches allowed_names_cf, resolve to id; else drop.
+      - Drop any link with empty/unresolvable from_logic_id.
+      - Always persist id-only (remove from_logic).
+      - Deduplicate by (from_logic_id, from_output, to_input, kind).
     """
-    if not isinstance(rules, list) or not rules:
-        return rules or []
+    if not isinstance(logics, list) or not logics:
+        return logics or []
 
     # Build in-scope name -> id map
     name_to_id: Dict[str, str] = {}
-    for r in rules:
+    for r in logics:
         if not isinstance(r, dict):
             continue
         rid = (r.get("id") or "").strip()
-        rn  = (r.get("rule_name") or r.get("name") or "").strip()
+        rn  = (r.get("name") or r.get("name") or "").strip()
         if rid and rn:
             name_to_id[rn.casefold()] = rid
 
@@ -38,7 +38,7 @@ def _scrub_links_to_hierarchy_scope(rules: List[dict], allowed_ids: Set[str], al
         s = (s or "").strip()
         return len(s) == 36 and s.count("-") == 4
 
-    for r in rules:
+    for r in logics:
         if not isinstance(r, dict):
             continue
         links = r.get("links") or []
@@ -51,8 +51,8 @@ def _scrub_links_to_hierarchy_scope(rules: List[dict], allowed_ids: Set[str], al
         for l in links:
             if not isinstance(l, dict):
                 continue
-            fs = (l.get("from_step") or "").strip()
-            fsid = (l.get("from_step_id") or "").strip()
+            fs = (l.get("from_logic") or "").strip()
+            fsid = (l.get("from_logic_id") or "").strip()
 
             # Resolve names -> ids
             if not fsid and fs:
@@ -86,13 +86,13 @@ def _scrub_links_to_hierarchy_scope(rules: List[dict], allowed_ids: Set[str], al
             seen.add(key)
 
             l = dict(l)
-            l["from_step_id"] = fsid
-            l.pop("from_step", None)
+            l["from_logic_id"] = fsid
+            l.pop("from_logic", None)
             cleaned.append(l)
 
         r["links"] = cleaned
 
-    return rules
+    return logics
 
 
 
@@ -101,18 +101,18 @@ def _scrub_links_to_hierarchy_scope(rules: List[dict], allowed_ids: Set[str], al
 # ---------------------------
 from typing import Tuple, Set
 
-def _extract_top_decision_suggestions_from_report(report_path: Path) -> Tuple[Set[str], Set[str]]:
+def _extract_top_suggestions_from_report(report_path: Path) -> Tuple[Set[str], Set[str]]:
     """Parse a suggestion report for MIM pre-step and extract Top-Level decision ids/names.
 
     Supports two formats:
       1) New hierarchy JSON:
          {
            "hierarchies": [
-             { "top_decision": {"id": "...", "name": "..."}, ... }, ...
+             { "top": {"id": "...", "name": "..."}, ... }, ...
            ]
          }
       2) Legacy rules-style JSON or markdown with embedded JSON that can be handled
-         by _load_rules_from_report(), where each object may include id/rule_name/name.
+         by _load_logics_from_report(), where each object may include id/name/name.
     Returns (ids, names) as sets.
     """
     raw = report_path.read_text(encoding="utf-8").strip()
@@ -143,9 +143,9 @@ def _extract_top_decision_suggestions_from_report(report_path: Path) -> Tuple[Se
         for h in obj["hierarchies"]:
             if not isinstance(h, dict):
                 continue
-            td = h.get("top_decision") or {}
+            td = h.get("top") or {}
             tid = (td.get("id") or "").strip()
-            tname = (td.get("name") or td.get("rule_name") or "").strip()
+            tname = (td.get("name") or td.get("name") or "").strip()
             if tid:
                 ids.add(tid)
             if tname:
@@ -154,12 +154,12 @@ def _extract_top_decision_suggestions_from_report(report_path: Path) -> Tuple[Se
 
     # Case 2: Fall back to legacy rules parsing
     try:
-        rules = _load_rules_from_report(report_path)
+        rules = _load_logics_from_report(report_path)
     except Exception:
         rules = []
     for r in rules:
         rid = (r.get("id") or r.get("uuid") or r.get("rule_id") or "").strip()
-        rn = (r.get("rule_name") or r.get("name") or "").strip()
+        rn = (r.get("name") or r.get("name") or "").strip()
         if rid:
             ids.add(rid)
         if rn:
@@ -225,10 +225,10 @@ def run_mim_compose(
         base_candidates=[spec_dir, REPO_ROOT, root_dir],
     )
 
-    rules_file = model_info["rules_out_path"]
+    logics_file = model_info["logics_out_path"]
     model_file = model_info["selected_model_path"]
     # Prepare a PCPT-specific copy of the rules file for the Top-Level suggestion pre-step
-    rules_file_for_pcpt_suggest = prepare_rules_file_for_pcpt(Path(rules_file))
+    logics_file_for_pcpt_suggest = prepare_logics_file_for_pcpt(Path(logics_file))
 
     template_path = _resolve_template_path("mim")
     if not template_path.exists():
@@ -245,18 +245,18 @@ def run_mim_compose(
     else:
         suggest_template = SUGGEST_HIERARCHY_TEMPLATE_DIR
 
-    # Now also looking to see if there is a selected model topDecisionId to annotate
+    # Now also looking to see if there is a selected model topId to annotate
     try:
         sel_model_path = Path(model_file)
         if sel_model_path.exists():
             sel_model = load_json(sel_model_path)
-            top_decision_id = None
-            # Try to get topDecisionId from the first hierarchy (or any hierarchy that has it)
+            top_id = None
+            # Try to get topId from the first hierarchy (or any hierarchy that has it)
             for h in sel_model.get("hierarchies", []):
-                if isinstance(h, dict) and h.get("topDecisionId"):
-                    top_decision_id = h["topDecisionId"]
+                if isinstance(h, dict) and h.get("topId"):
+                    top_id = h["topId"]
                     break
-            if top_decision_id:
+            if top_id:
                 # Locate business_rules.json in the model home to resolve the name
                 rules_home_path = Path(model_home_prompted) / "business_rules.json"
                 top_name = ""
@@ -267,8 +267,8 @@ def run_mim_compose(
                         rules_list = rules_payload
                     elif isinstance(rules_payload, dict):
                         # Support either a flat dict of id->rule or a dict with 'rules' key
-                        if "rules" in rules_payload and isinstance(rules_payload["rules"], list):
-                            rules_list = rules_payload["rules"]
+                        if "logics" in rules_payload and isinstance(rules_payload["logics"], list):
+                            rules_list = rules_payload["logics"]
                         else:
                             # If dict of id -> rule, take values
                             rules_list = list(rules_payload.values())
@@ -276,14 +276,14 @@ def run_mim_compose(
                         if not isinstance(rule, dict):
                             continue
                         rid = rule.get("id") or rule.get("rule_id")
-                        if rid == top_decision_id:
-                            top_name = rule.get("name") or rule.get("rule_name") or ""
+                        if rid == top_id:
+                            top_name = rule.get("name") or rule.get("name") or ""
                             break
                 # Append the annotation line if we have an id (always) and optionally a name
                 annotation_name = top_name if top_name else "(name-not-found)"
                 try:
                     with sel_model_path.open("a", encoding="utf-8") as f:
-                        f.write(f"\nThe Top Level Decision Is: {top_decision_id} {annotation_name}\n")
+                        f.write(f"\nThe Top Level Decision Is: {top_id} {annotation_name}\n")
                 except Exception as inner_ex:
                     eprint(f"[WARN] Failed to append top-level decision annotation to selected model: {inner_ex}")
     except Exception as ex:
@@ -302,7 +302,7 @@ def run_mim_compose(
         pcpt_run_custom_prompt(
             source_path=str(source_path),
             custom_prompt_template=suggest_template.name,
-            input_file=str(rules_file_for_pcpt_suggest),
+            input_file=str(logics_file_for_pcpt_suggest),
             input_file2=str(model_file),
             output_dir_arg=str(output_path),
             domain_hints=str(domain_hints_path) if domain_hints_path else None,
@@ -333,30 +333,30 @@ def run_mim_compose(
             eprint(f"[WARN] MIM: Failed to copy hierarchy report into TMP_DIR: {ex}. Using original path.")
 
         try:
-            select_ids, select_names = _extract_top_decision_suggestions_from_report(Path(suggest_report_path))
+            select_ids, select_names = _extract_top_suggestions_from_report(Path(suggest_report_path))
         except Exception as ex:
             eprint(f"[WARN] MIM: Failed to parse suggestion report for Top-Level discovery: {ex}; proceeding without Top-Level overrides.")
             select_ids, select_names = set(), set()
         if select_ids or select_names:
             try:
-                rules_data = load_json(Path(rules_file))
+                logics_data = load_json(Path(logics_file))
                 changed = 0
-                for rr in rules_data:
+                for rr in logics_data:
                     if not isinstance(rr, dict):
                         continue
                     rid0 = (rr.get("id") or "").strip()
-                    #rn0 = (rr.get("rule_name") or rr.get("name") or "").strip()
+                    #rn0 = (rr.get("name") or rr.get("name") or "").strip()
                     if rid0 and rid0 in select_ids:
                         rr["kind"] = "Decision (Top-Level)"
                         rr.pop("Kind", None)
                         changed += 1
                 if changed:
-                    write_json(Path(rules_file), rules_data)
-                    print(f"[MIM] Marked {changed} rule(s) as Top-Level in rules_for_model.json before main prompt.")
+                    write_json(Path(logics_file), logics_data)
+                    print(f"[MIM] Marked {changed} rule(s) as Top-Level in logics_for_model.json before main prompt.")
                 else:
                     print("[MIM] No matching rules found to mark as Top-Level; proceeding as-is.")
             except Exception as ex:
-                eprint(f"[WARN] MIM: Failed to update rules_for_model.json with Top-Level kinds: {ex}")
+                eprint(f"[WARN] MIM: Failed to update logics_for_model.json with Top-Level kinds: {ex}")
 
     # If we have a hierarchy doc, process one hierarchy at a time
     if suggest_report_path:
@@ -396,7 +396,20 @@ def run_mim_compose(
         if isinstance(hierarchies, list) and hierarchies and sel_model_id:
             try:
                 models_path = (model_home_prompted / "models.json").resolve()
-                models = load_json(models_path) if models_path.exists() else []
+                models_root: Any = None
+                models_version = None
+                models_payload = load_json(models_path) if models_path.exists() else []
+                models = []
+                if isinstance(models_payload, dict) and isinstance(models_payload.get("models"), list):
+                    models_root = models_payload
+                    models_version = models_payload.get("version")
+                    models = models_payload.get("models", [])
+                elif isinstance(models_payload, list):
+                    models = models_payload
+                else:
+                    eprint("[WARN] models.json has unexpected shape when clearing hierarchies; skipping clear.")
+                    return
+
                 if isinstance(models, list):
                     sel_idx = None
                     for idx, m in enumerate(models):
@@ -404,11 +417,40 @@ def run_mim_compose(
                             sel_idx = idx
                             break
                     if sel_idx is not None:
+                        # Optimistic concurrency check for models.json before clearing hierarchies
+                        if models_path.exists() and models_version is not None:
+                            try:
+                                cur_raw = load_json(models_path)
+                                if isinstance(cur_raw, dict) and isinstance(cur_raw.get("models"), list):
+                                    cur_version = cur_raw.get("version")
+                                    if cur_version is not None and cur_version != models_version:
+                                        eprint(
+                                            f"[ERROR] models.json version changed on disk "
+                                            f"(expected {models_version}, found {cur_version}); "
+                                            f"aborting hierarchy clear to avoid overwriting concurrent changes."
+                                        )
+                                        return
+                            except Exception as inner_ex:
+                                eprint(f"[WARN] Could not re-read models.json for concurrency check during hierarchy clear: {inner_ex}")
+
                         _safe_backup_json(models_path)
                         model_obj = models[sel_idx]
                         model_obj["hierarchies"] = []
                         models[sel_idx] = model_obj
-                        write_json(models_path, models)
+
+                        # Persist using rooted structure {"version": N, "models": [...]}, incrementing version on success
+                        if isinstance(models_root, dict):
+                            current_version = models_root.get("version")
+                            if current_version is None:
+                                current_version = models_version
+                            new_version = (current_version or 0) + 1
+                            models_root["models"] = models
+                            models_root["version"] = new_version
+                            write_json(models_path, models_root)
+                        else:
+                            new_version = (models_version or 0) + 1
+                            write_json(models_path, {"version": new_version, "models": models})
+
                         print(f"[INFO] Cleared existing hierarchies for model {sel_model_id} at start of MIM run")
             except Exception as ex:
                 eprint(f"[WARN] Could not clear existing hierarchies for model {sel_model_id}: {ex}")
@@ -427,50 +469,50 @@ def run_mim_compose(
                 # Collect ids/names from this hierarchy
                 def _collect_ids_names_from_hierarchy(h: dict) -> tuple[set[str], set[str]]:
                     ids, names = set(), set()
-                    td = h.get("top_decision") or {}
+                    td = h.get("top") or {}
                     if isinstance(td, dict):
                         tid = (td.get("id") or "").strip()
-                        tname = (td.get("name") or td.get("rule_name") or "").strip()
+                        tname = (td.get("name") or td.get("name") or "").strip()
                         if tid: ids.add(tid)
                         if tname: names.add(tname)
-                    for d in (h.get("lower_decisions") or []):
+                    for d in (h.get("lower") or []):
                         if not isinstance(d, dict):
                             continue
                         did = (d.get("id") or "").strip()
-                        dname = (d.get("name") or d.get("rule_name") or "").strip()
+                        dname = (d.get("name") or d.get("name") or "").strip()
                         if did: ids.add(did)
                         if dname: names.add(dname)
                     return ids, names
 
                 try:
                     hier_ids, hier_names = _collect_ids_names_from_hierarchy(hier)
-                    all_rules = load_json(Path(rules_file))
+                    all_rules = load_json(Path(logics_file))
                     per_hier_rules = []
                     for rr in all_rules:
                         if not isinstance(rr, dict):
                             continue
                         rid = (rr.get("id") or "").strip()
-                        #rn  = (rr.get("rule_name") or rr.get("name") or "").strip()
+                        #rn  = (rr.get("name") or rr.get("name") or "").strip()
                         if rid and rid in hier_ids:
                             per_hier_rules.append(rr)
                     if not per_hier_rules:
-                        eprint(f"[WARN] MIM: No matching rules found in rules_for_model.json for hierarchy {i+1}; proceeding with empty subset.")
-                    rules_file_for_iter = str(TMP_DIR / f"rules_for_model_h{i+1}.json")
+                        eprint(f"[WARN] MIM: No matching logics found in logics_for_model.json for hierarchy {i+1}; proceeding with empty subset.")
+                    logics_file_for_iter = str(TMP_DIR / f"logics_for_model_h{i+1}.json")
 
                     # Scrub links so only in-hierarchy producer links remain
                     _allowed_ids = { (r.get("id") or "").strip() for r in per_hier_rules if isinstance(r, dict) and r.get("id") }
-                    _allowed_names_cf = { (r.get("rule_name") or r.get("name") or "").strip().casefold()
-                                        for r in per_hier_rules if isinstance(r, dict) and (r.get("rule_name") or r.get("name")) }
+                    _allowed_names_cf = { (r.get("name") or r.get("name") or "").strip().casefold()
+                                        for r in per_hier_rules if isinstance(r, dict) and (r.get("name") or r.get("name")) }
                     per_hier_rules = _scrub_links_to_hierarchy_scope(per_hier_rules, _allowed_ids, _allowed_names_cf)
 
-                    write_json(Path(rules_file_for_iter), per_hier_rules)
+                    write_json(Path(logics_file_for_iter), per_hier_rules)
                     print(f"[TRACE] Hierarchy {i+1}: prepared {len(per_hier_rules)} rule(s) for input.")
                 except Exception as ex:
                     eprint(f"[WARN] MIM: Failed to filter rules for hierarchy {i+1}: {ex}. Using full rules file.")
-                    rules_file_for_iter = str(rules_file)
+                    logics_file_for_iter = str(logics_file)
 
-                # Prepare a PCPT-specific copy of the per-hierarchy rules file (from_step names instead of ids)
-                rules_file_for_pcpt_h = prepare_rules_file_for_pcpt(Path(rules_file_for_iter))
+                # Prepare a PCPT-specific copy of the per-hierarchy rules file (from_logic names instead of ids)
+                logics_file_for_pcpt_h = prepare_logics_file_for_pcpt(Path(logics_file_for_iter))
 
                 input2_file = str(tmp_one)
                 input2_label = "hierarchy"
@@ -485,7 +527,7 @@ def run_mim_compose(
                     print(f"→ Filter: {filt_rel}")
                 if pcpt_mode:
                     print(f"→ Mode:   {pcpt_mode}")
-                print(f"→ Input 1 (rules): {rules_file_for_iter}")
+                print(f"→ Input 1 (logics): {logics_file_for_iter}")
                 print(f"→ Input 2 ({input2_label}): {input2_file}")
                 print(f"→ Template: {template_path.name}")
                 print(f"→ Compose Mode: {compose_mode}")
@@ -494,7 +536,7 @@ def run_mim_compose(
                     pcpt_run_custom_prompt(
                         source_path=str(source_path),
                         custom_prompt_template=template_path.name,
-                        input_file=str(rules_file_for_pcpt_h),
+                        input_file=str(logics_file_for_pcpt_h),
                         input_file2=str(input2_file),
                         output_dir_arg=str(output_path),
                         domain_hints=str(domain_hints_path) if domain_hints_path else None,
@@ -520,22 +562,22 @@ def run_mim_compose(
                         print(f"→ Model home: {model_home_prompted}")
                         print(f"→ Output path: {output_path}")
                         # Build hierarchy_meta for this top decision
-                        td = (hier.get("top_decision") or {}) if isinstance(hier, dict) else {}
+                        td = (hier.get("top") or {}) if isinstance(hier, dict) else {}
                         td_id = (td.get("id") or "").strip()
-                        td_name = (td.get("name") or td.get("rule_name") or "").strip()
+                        td_name = (td.get("name") or td.get("name") or "").strip()
                         h_name = (hier.get("name") or "").strip()
                         h_desc = (hier.get("flow_description") or "").strip()
-                        # Minimal fix: if topDecisionId is missing but we have a name, resolve id from rules_for_model.json
+                        # Minimal fix: if topId is missing but we have a name, resolve id from logics_for_model.json
                         if not td_id and td_name:
                             try:
-                                all_rules_resolve = load_json(Path(rules_file))
+                                all_logics_resolve = load_json(Path(logics_file))
                             except Exception:
-                                all_rules_resolve = []
+                                all_logics_resolve = []
                             td_name_cf = td_name.casefold()
-                            for rr in all_rules_resolve:
+                            for rr in all_logics_resolve:
                                 if not isinstance(rr, dict):
                                     continue
-                                rn = (rr.get("rule_name") or rr.get("name") or "").strip()
+                                rn = (rr.get("name") or rr.get("name") or "").strip()
                                 rid = (rr.get("id") or "").strip()
                                 if rn and rid and rn.casefold() == td_name_cf:
                                     td_id = rid
@@ -546,7 +588,7 @@ def run_mim_compose(
                             hier_meta["by_id"][td_id] = payload
                         if td_name:
                             hier_meta["by_name"][td_name] = payload
-                        merge_generated_rules_into_model_home(
+                        merge_generated_logics_into_model_home(
                             model_home=model_home_prompted,
                             output_path=output_path,
                             selected_model_id=sel_model_id,
@@ -556,7 +598,7 @@ def run_mim_compose(
                             hierarchy_meta=hier_meta,        # <- includes top decision (by id OR by name)
                         )
                 except Exception as ex:
-                    eprint(f"[WARN] Merge step failed for hierarchy {i+1}/{total}: {ex}")
+                    eprint(f"[WARN] Merge failed for hierarchy {i+1}/{total}: {ex}")
 
                 if keep_going:
                     print(f"\n{ANSI_YELLOW}--- Completed hierarchy {i+1}/{total} ---{ANSI_RESET}")
@@ -582,7 +624,7 @@ def run_mim_compose(
         print(f"→ Mode:   {pcpt_mode}")
     if domain_hints_path:
         print(f"→ Domain hints: {domain_hints_path}")
-    print(f"→ Input 1 (rules for PCPT): {rules_file_for_pcpt_suggest} (from {rules_file})")
+    print(f"→ Input 1 (rules for PCPT): {logics_file_for_pcpt_suggest} (from {logics_file})")
     print(f"→ Input 2 (hierarchy): {suggest_report_path or model_file}")
     print(f"→ Template: {template_path.name}")
     print(f"→ Compose Mode: {compose_mode}")
@@ -591,7 +633,7 @@ def run_mim_compose(
         pcpt_run_custom_prompt(
             source_path=str(source_path),
             custom_prompt_template=template_path.name,
-            input_file=str(rules_file_for_pcpt_suggest),
+            input_file=str(logics_file_for_pcpt_suggest),
             input_file2=str(suggest_report_path or model_file),
             output_dir_arg=str(output_path),
             domain_hints=str(domain_hints_path) if domain_hints_path else None,
@@ -625,9 +667,9 @@ def run_mim_compose(
                     for hh in doc.get("hierarchies"):
                         if not isinstance(hh, dict):
                             continue
-                        td = hh.get("top_decision") or {}
+                        td = hh.get("top") or {}
                         td_id = (td.get("id") or "").strip()
-                        td_name = (td.get("name") or td.get("rule_name") or "").strip()
+                        td_name = (td.get("name") or td.get("name") or "").strip()
                         h_name = (hh.get("name") or "").strip()
                         h_desc = (hh.get("flow_description") or "").strip()
                         payload = {"hierarchy_name": h_name, "hierarchy_description": h_desc}
@@ -644,7 +686,7 @@ def run_mim_compose(
             print("\nMerge back to model home")
             print(f"→ Model home: {model_home_prompted}")
             print(f"→ Output path: {output_path}")
-            merge_generated_rules_into_model_home(
+            merge_generated_logics_into_model_home(
                 Path(model_home_prompted),
                 Path(output_path),
                 sel_model_id,

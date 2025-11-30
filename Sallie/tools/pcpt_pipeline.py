@@ -28,8 +28,8 @@
 # 4 iterate through each path-pair and do the following
 # 4.1 Domain model run using function call pcpt_domain_model(output_dir_arg=<output-path>, domain_hints=<domain-hints>, visualize=True, filter_path=<filter>, source_path=<source-path>,) which can be imported as "from tools.call_pcpt import pcpt_domain_model" 
 # 4.2 Business logic run using pcpt_business_logic(output_dir_arg=<output-path>, domain_path=<output-path>/domain_model_report/domain_model_report.txt, domain_hints=<domain-hints>, filter_path=<filter>, source_path=<source-path>,) which can be imported as "from tools.call_pcpt import pcpt_business_logic" 
-# 4.3 Ingest the business logic outputs using run_ingest("<output_path>/business_logic_report/business_logic_report.md") which can be imported as "from tools.ingest_rules import run_ingest"
-# 4.4 Run the categorize command to categorize the ingested business logic using subprocess.run([sys.executable, "tools/categorise_rules.py"],input="/path/to/model/home\n",   # e.g. "/Users/greg"text=True,check=True,) which needs import "import sys, subprocess"
+# 4.3 Ingest the business logic outputs using run_ingest("<output_path>/business_logic_report/business_logic_report.md") which can be imported as "from tools.ingest_logics import run_ingest"
+# 4.4 Run the categorize command to categorize the ingested business logic using subprocess.run([sys.executable, "tools/categorise_logic.py"],input="/path/to/model/home\n",   # e.g. "/Users/greg"text=True,check=True,) which needs import "import sys, subprocess"
 # 4.5 Provide summary for this path-pair
 # 5 Declare overall victory and provide summary
 # Note - you must elegantly and concisely write to output along the way so we know what is going on. Including streaming all output from called programs where needed
@@ -52,7 +52,7 @@ Implements a pipeline that:
       4.1 Domain model via pcpt_domain_model(...)
       4.2 Business logic via pcpt_business_logic(...)
       4.3 Ingest via run_ingest(<output-path>/business_logic_report/business_logic_report.md)
-      4.4 Categorize via subprocess calling tools/categorise_rules.py, piping model-home as stdin
+      4.4 Categorize via subprocess calling tools/categorise_logic.py, piping model-home as stdin
       4.5 Summarize result for this path-pair
  5) Prints overall summary
 
@@ -444,7 +444,7 @@ def run_pipeline(
                             mode=mode,
                         )
                         # For multi-mode runs, provide index/total for progress; for single-mode, omit them
-                        if mode == "multi":
+                        if mode == "single":
                             run_kwargs["total"] = len(pairs)
                             run_kwargs["index"] = idx
                         pcpt_run_custom_prompt(**run_kwargs)
@@ -494,24 +494,24 @@ def run_pipeline(
                 ingest_md = os.path.join(output_path, "business_logic_report", "business_logic_report.md")
                 cmd_ingest = [
                     sys.executable,
-                    os.path.join(os.path.dirname(__file__), "ingest_rules.py"),
+                    os.path.join(os.path.dirname(__file__), "ingest_logics.py"),
                     ingest_md,
                     "--force",
                 ]
-                # Pass root-dir and source-path through so ingest_rules can propagate them to CodeFile nodes
+                # Pass root-dir and source-path through so ingest_logics can propagate them to CodeFile nodes
                 if root:
                     cmd_ingest.extend(["--root-dir", root])
                 if source_path:
                     cmd_ingest.extend(["--source-path", source_path])
-                # Forward KG-related flags to ingest_rules.py if requested
+                # Forward KG-related flags to ingest_logics.py if requested
                 if kg_only:
                     cmd_ingest.append("--KG-ONLY")
                 if no_kg:
                     cmd_ingest.append("--NO-KG")
-                # Forward graph-url from spec to ingest_rules.py so it can override the graph base URL
+                # Forward graph-url from spec to ingest_logics.py so it can override the graph base URL
                 if graph_url:
                     cmd_ingest.extend(["--graph-url", str(graph_url)])
-                # Feed model_home, team, and component to ingest_rules.py (matches its prompt order)
+                # Feed model_home, team, and component to ingest_logics.py (matches its prompt order)
                 stdin_values = f"{model_home}\n{pair.get('team', '')}\n{pair.get('component', '')}\n"
                 subprocess.run(
                     cmd_ingest,
@@ -532,7 +532,7 @@ def run_pipeline(
         if start_step <= 4 and not skip_cat:
             _subhdr("4.4 Categorize")
             try:
-                cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "categorise_rules.py")]
+                cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "categorise_logic.py")]
                 # Ensure we run from repo root so relative paths resolve as the tools normally expect
                 # (most of your scripts assume CWD = repo root)
                 subprocess.run(
@@ -574,14 +574,14 @@ def main() -> None:
         "--kg-only",
         dest="kg_only",
         action="store_true",
-        help="Forward KG-only mode to ingest_rules.py (reuse existing rules and only emit KG export)",
+        help="Forward KG-only mode to ingest_logics.py (reuse existing rules and only emit KG export)",
     )
     parser.add_argument(
         "--NO-KG",
         "--no-kg",
         dest="no_kg",
         action="store_true",
-        help="Forward NO-KG mode to ingest_rules.py (disable Neo4j/graph export for this run)",
+        help="Forward NO-KG mode to ingest_logics.py (disable Neo4j/graph export for this run)",
     )
     args = parser.parse_args()
 

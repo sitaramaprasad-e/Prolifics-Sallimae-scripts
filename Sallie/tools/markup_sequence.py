@@ -9,14 +9,14 @@ Steps (default values shown):
      pcpt.sh sequence --output docs/sf --domain-hints sf.hints --visualize code/sf
 
   2) Copy existing sequence report to temp folder
-     mkdir -p .tmp/rules-for-markup
-     cp docs/sf/sequence_report/sequence_report.txt .tmp/rules-for-markup/sequence_report.txt
+     mkdir -p .tmp/logics-for-markup
+     cp docs/sf/sequence_report/sequence_report.txt .tmp/logics-for-markup/sequence_report.txt
 
   3) Export list of current business rules for code
-     python tools/export_rules_for_markup.py code/sf
+     python tools/export_logic_for_markup.py code/sf
 
   4) Markup sequence description
-     pcpt.sh run-custom-prompt --input-file .tmp/rules-for-markup/sequence_report.txt --input-file2 .tmp/rules-for-markup/exported-rules.json --output docs/sf code/sf markup-sequence.templ
+     pcpt.sh run-custom-prompt --input-file .tmp/logics-for-markup/sequence_report.txt --input-file2 .tmp/logics-for-markup/exported-logics.json --output docs/sf code/sf markup-sequence.templ
 
   5) Regenerate sequence diagram
      pcpt.sh sequence --output docs/sf --visualize docs/sf/markup-sequence/markup-sequence.md
@@ -34,6 +34,7 @@ import sys
 from datetime import datetime
 from typing import List, Optional
 import json
+import re
 from typing import Any, Dict
 
 # Resolve directory of this script (so we can locate sibling tools reliably)
@@ -51,9 +52,9 @@ SPEC_DIR = os.path.join(SCRIPT_DIR, "spec")
 
 DEFAULT_PROMPT_NAME = "markup-sequence.templ"
 
-TMP_ROOT = ".tmp/rules-for-markup"
+TMP_ROOT = ".tmp/logics-for-markup"
 TMP_SEQUENCE_TXT = os.path.join(TMP_ROOT, "sequence_report.txt")
-TMP_EXPORTED_RULES = os.path.join(TMP_ROOT, "exported-rules.json")
+TMP_EXPORTED_LOGICS = os.path.join(TMP_ROOT, "exported-logics.json")
 MARKUP_OUT_DIRNAME = "markup-sequence"
 MARKUP_OUT_FILENAME = "markup-sequence.md"
 
@@ -103,6 +104,131 @@ def _load_json(path: str) -> Any:
 def _write_json(path: str, data: Any) -> None:
   with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ----------------------------
+# Inject short codes into markup-sequence.md Logics notes (markdown format)
+# ----------------------------
+def _inject_short_codes_into_markup_md(markup_md_path: str, exported_logics_path: str) -> None:
+  """
+  Rewrite (note: "Logics: ...) blocks in markup-sequence.md so that each logic line inside the note
+  is prefixed with its short code, e.g. 298· Find First Claim Date, etc.
+  """
+  # Load logics from exported_logics_path using same normalization logic as in markup_domain.py
+  try:
+    data = _load_json(exported_logics_path)
+  except Exception as e:
+    _log(f"WARNING: Failed to load exported logics from {exported_logics_path}: {e}")
+    return
+
+  # Normalize to a flat list of logic dicts
+  logics_list: list[dict[str, Any]] = []
+  if isinstance(data, dict):
+    maybe_list = data.get("logics")
+    if isinstance(maybe_list, list):
+      logics_list.extend([x for x in maybe_list if isinstance(x, dict)])
+    else:
+      for v in data.values():
+        if isinstance(v, list):
+          logics_list.extend([x for x in v if isinstance(x, dict)])
+  elif isinstance(data, list):
+    logics_list.extend([x for x in data if isinstance(x, dict)])
+  else:
+    _log(f"WARNING: Exported logics at {exported_logics_path} is not a recognized list or dict with logic entries")
+    return
+
+  if not logics_list:
+    _log(f"WARNING: No logic entries found in exported logics at {exported_logics_path}")
+    return
+
+  # Build mapping: logic name (stripped; case-sensitive and lower-case variants) → short code
+  name_to_code: dict[str, str] = {}
+  for item in logics_list:
+    logic_name = str(item.get("name_base") or item.get("name") or "").strip()
+    if not logic_name:
+      continue
+    code = str(item.get("code") or "").strip()
+    if not code:
+      logic_id = str(item.get("id") or "").strip()
+      if logic_id:
+        hex_chars = "".join([c for c in logic_id if c in "0123456789abcdefABCDEF"])
+        if len(hex_chars) >= 3:
+          code = hex_chars[-3:].upper()
+        else:
+          code = logic_id[:3].upper()
+      else:
+        continue
+    name_to_code[logic_name] = code
+    name_to_code[logic_name.lower()] = code
+    if logic_name.endswith("."):
+      base = logic_name[:-1]
+      name_to_code[base] = code
+      name_to_code[base.lower()] = code
+
+  # Read markup_md_path lines
+  with open(markup_md_path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+  out_lines: list[str] = []
+  in_note = False
+  in_logics = False
+  for idx, line in enumerate(lines):
+    stripped = line.strip()
+    # Entering note block? (markdown: (note: ... or (note ...)
+    if not in_note and stripped.startswith("(note"):
+      in_note = True
+      in_logics = False
+      out_lines.append(line)
+      continue
+    # If in note and not in logics, look for Logics: header (possibly quoted)
+    if in_note and not in_logics:
+      cleaned = stripped.strip('"').strip("'")
+      if cleaned.lower().startswith("logics:"):
+        in_logics = True
+        out_lines.append(line)
+        continue
+      # Not Logics: header, still in note
+      out_lines.append(line)
+      continue
+    # If in logics section, treat each subsequent line as a logic name until closing ")
+    if in_note and in_logics:
+      # Check for closing line (ends with ) or )" or ), possibly with comma.
+      if stripped in ('")', ')', '),'):
+        out_lines.append(line)
+        in_logics = False
+        in_note = False
+        continue
+      # Otherwise, treat as logic line
+      indent_match = re.match(r'^(\s*)', line)
+      indent = indent_match.group(1) if indent_match else ""
+      has_comma = line.rstrip().endswith(",")
+      logic_raw = stripped.strip('"').strip("'").rstrip(",").rstrip()
+      if logic_raw.endswith(")") or logic_raw.endswith('")'):
+        logic_raw = logic_raw.rstrip(')"').rstrip(')')
+      name = logic_raw
+      code = name_to_code.get(name)
+      if code is None and name.endswith("."):
+        code = name_to_code.get(name[:-1])
+      if code is None:
+        code = name_to_code.get(name.lower())
+      if code is not None and name:
+        # Inject short code without adding extra quotes; keep existing comma semantics.
+        out_lines.append(f"{indent}{code}· {name}" + (",\n" if has_comma else "\n"))
+      else:
+        # If a prior run left a leading quote on the line, strip it off to avoid \"xyz\" artifacts.
+        out_lines.append(line.lstrip('"'))
+      continue
+    # Exiting note block (for markdown, closing is ) or )")
+    if in_note and (stripped.endswith('")') or stripped.endswith(')')):
+      in_note = False
+      in_logics = False
+      out_lines.append(line)
+      continue
+    # Default: just copy line
+    out_lines.append(line)
+
+  with open(markup_md_path, "w", encoding="utf-8") as f:
+    f.writelines(out_lines)
 
 
 
@@ -245,7 +371,7 @@ def _select_spec_pair() -> Dict[str, Any]:
 
 
 # ----------------------------
-# PCPT helpers (inspired by categorize_rules.py)
+# PCPT helpers (inspired by categorize_logics.py)
 # ----------------------------
 def pcpt_sequence(output_dir: str, visualize: str, domain_hints: Optional[str] = None, filter_file: Optional[str] = None) -> None:
   """
@@ -308,9 +434,9 @@ def main() -> None:
   parser.add_argument("--filter", default=None, help="Filter file (optional). If provided, it will be passed to PCPT.")
   parser.add_argument("--skip-initial-sequence", action="store_true", help="Skip the initial sequence generation step.")
   parser.add_argument(
-      "--include-all-rules",
+      "--include-all-logics",
       action="store_true",
-      help="Include all rules in markup by disabling business relevance filtering in export_rules_for_markup.py."
+      help="Include all logics in markup by disabling business relevance filtering in export_logic_for_markup.py."
   )
   args = parser.parse_args()
 
@@ -361,7 +487,7 @@ def main() -> None:
       or pair.get("output-path")
     )
 
-    # Remember the source path from the spec pair for export_rules_for_markup
+    # Remember the source path from the spec pair for export_logic_for_markup
     pair_source = pair.get("source-path") or pair.get("source_path") or None
 
     resolved_code = _resolve_candidate_path(code_candidate, bases) if code_candidate else None
@@ -424,19 +550,19 @@ def main() -> None:
     _log(f"root_path was not set earlier; defaulting to CWD: {root_path}")
 
   # Derive rules file path from model_dir (if provided via spec)
-  rules_file_arg: Optional[str] = None
+  logics_file_arg: Optional[str] = None
   if model_dir:
-    rules_file_arg = os.path.join(model_dir, "business_rules.json")
-    _log(f"Using rules file from model_dir: {rules_file_arg}")
+    logics_file_arg = os.path.join(model_dir, "business_rules.json")
+    _log(f"Using rules file from model_dir: {logics_file_arg}")
   else:
-    _log("No model_dir from spec; export_rules_for_markup will rely on its own default for rules file.")
+    _log("No model_dir from spec; export_logic_for_markup will rely on its own default for rules file.")
 
-  # Decide source_path for export_rules_for_markup: prefer spec pair source-path, else fall back to code_dir
+  # Decide source_path for export_logic_for_markup: prefer spec pair source-path, else fall back to code_dir
   source_path_arg = pair_source if pair_source else code_dir
-  _log(f"Using source_path for export_rules_for_markup: {source_path_arg}")
+  _log(f"Using source_path for export_logic_for_markup: {source_path_arg}")
 
   # Build absolute path to the sibling exporter script so this works from any CWD
-  export_script = os.path.join(SCRIPT_DIR, "helpers", "export_rules_for_markup.py")
+  export_script = os.path.join(SCRIPT_DIR, "helpers", "export_logic_for_markup.py")
   _log(f"Using export script: {export_script}")
 
   export_cmd = [
@@ -449,26 +575,24 @@ def main() -> None:
       "--trace-limit",
       "500",
   ]
-  if rules_file_arg:
-    export_cmd.extend(["--rules-file", rules_file_arg])
-  if args.include_all_rules:
-    export_cmd.append("--include-all-rules")
+  if logics_file_arg:
+    export_cmd.extend(["--logics-file", logics_file_arg])
+  if args.include_all_logics:
+    export_cmd.append("--include-all-logics")
 
   _run(export_cmd)
 
   # Sanity check for the exported rules file (some environments might write elsewhere)
-  if not os.path.exists(TMP_EXPORTED_RULES):
+  if not os.path.exists(TMP_EXPORTED_LOGICS):
     raise FileNotFoundError(
-      f"Expected exported rules at {TMP_EXPORTED_RULES} not found. "
-      f"Ensure tools/export_rules_for_markup.py writes to that path."
+      f"Expected exported rules at {TMP_EXPORTED_LOGICS} not found. "
+      f"Ensure tools/export_logic_for_markup.py writes to that path."
     )
-
-  _log("Step 4: Markup sequence description", header=True)
 
   _log("Step 4: Markup sequence description", header=True)
   pcpt_run_custom_prompt(
     input_file=TMP_SEQUENCE_TXT,
-    input_file2=TMP_EXPORTED_RULES,
+    input_file2=TMP_EXPORTED_LOGICS,
     output_dir=output_dir,
     code_dir=code_dir,
     prompt_name=prompt_name,
@@ -482,6 +606,10 @@ def main() -> None:
       f"Expected markup file not found: {markup_md}. "
       f"Verify the custom prompt produced it under {os.path.join(output_dir, MARKUP_OUT_DIRNAME)}"
     )
+
+  _log("Injecting short codes into markup-sequence.md using exported logics...")
+  _inject_short_codes_into_markup_md(markup_md, TMP_EXPORTED_LOGICS)
+
   # Only pass domain_hints if it was provided
   if domain_hints:
     pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints)
@@ -491,7 +619,7 @@ def main() -> None:
   _log("✅ Done. Sequence regenerated using markup.")
   _log(f"Markup file: {markup_md}")
   _log(f"Sequence report used: {TMP_SEQUENCE_TXT}")
-  _log(f"Exported rules: {TMP_EXPORTED_RULES}")
+  _log(f"Exported rules: {TMP_EXPORTED_LOGICS}")
 
 if __name__ == "__main__":
   main()

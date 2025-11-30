@@ -80,32 +80,6 @@ from .hierarchy_common import (
     write_json,
 )
 
-
-def _extract_param_names(rule: Dict[str, Any], key_candidates: List[str]) -> Set[str]:
-    """
-    Extract parameter names from a rule given possible keys such as
-    ['dmn_inputs', 'inputs'] or ['dmn_outputs', 'outputs'].
-
-    Supports shapes:
-      - [{ "name": "X", ... }, ...]
-      - ["X", "Y"]
-    """
-    for key in key_candidates:
-        if key in rule and rule[key]:
-            raw = rule[key]
-            names: Set[str] = set()
-            if isinstance(raw, list):
-                for item in raw:
-                    if isinstance(item, dict):
-                        name = item.get("name")
-                        if isinstance(name, str) and name.strip():
-                            names.add(name.strip())
-                    elif isinstance(item, str) and item.strip():
-                        names.add(item.strip())
-            return names
-    return set()
-
-
 def _is_businessy_name(name: str) -> bool:
     """
     Very simple heuristic for “business outcome-like” decision names.
@@ -175,16 +149,6 @@ def _run_cypher(query: str, parameters: Optional[Dict[str, Any]] = None) -> Dict
         raise RuntimeError(f"Graph run returned success=false: {data}")
 
     return data
-
-
-def _neo4j_int(val: Any) -> int:
-    """Normalise Neo4j integers from HTTP JSON (e.g. {"low": 3, "high": 0})."""
-    if isinstance(val, int):
-        return val
-    if isinstance(val, dict) and "low" in val:
-        return int(val["low"])
-    return int(val) if val is not None else 0
-
 
 def _neo4j_fetch_dataflow(rule_id: str) -> Dict[str, Any]:
     """Fetch immediate and transitive dataflow neighbours for a LogicStep by id.
@@ -287,86 +251,10 @@ def _neo4j_fetch_sequence_neighbours(rule_id: str) -> Dict[str, Any]:
     }
 
 
-def _build_rule_graph(
-    rules: List[Dict[str, Any]]
-) -> Tuple[
-    Dict[str, Dict[str, Any]],
-    Dict[str, Set[str]],
-    Dict[str, Set[str]],
-]:
-    """
-    Build:
-      - rule_by_id:  id -> rule dict
-      - adjacency:   rule_id -> set of rule_ids it feeds (A -> B)
-      - reverse_adj: rule_id -> set of rule_ids that feed into it (B <- A)
-    Using simple matching on DMN-style input/output parameter names.
-    """
-    rule_by_id: Dict[str, Dict[str, Any]] = {}
-    inputs_by_rule: Dict[str, Set[str]] = {}
-    outputs_by_rule: Dict[str, Set[str]] = {}
-    param_producers: Dict[str, Set[str]] = {}
-    param_consumers: Dict[str, Set[str]] = {}
-
-    # Index rules and their inputs/outputs
-    for r in rules:
-        if not isinstance(r, dict):
-            continue
-        rid = r.get("id")
-        if not rid:
-            continue
-        rule_by_id[rid] = r
-        ins = _extract_param_names(r, ["dmn_inputs", "inputs"])
-        outs = _extract_param_names(r, ["dmn_outputs", "outputs"])
-        inputs_by_rule[rid] = ins
-        outputs_by_rule[rid] = outs
-
-        for p in outs:
-            param_producers.setdefault(p, set()).add(rid)
-        for p in ins:
-            param_consumers.setdefault(p, set()).add(rid)
-
-    # Build adjacency
-    adjacency: Dict[str, Set[str]] = {rid: set() for rid in rule_by_id.keys()}
-    reverse_adj: Dict[str, Set[str]] = {rid: set() for rid in rule_by_id.keys()}
-
-    for rid, outs in outputs_by_rule.items():
-        for p in outs:
-            consumers = param_consumers.get(p, set())
-            for consumer_id in consumers:
-                if consumer_id == rid:
-                    continue
-                adjacency[rid].add(consumer_id)
-                reverse_adj[consumer_id].add(rid)
-
-    return rule_by_id, adjacency, reverse_adj
-
-
-
-def _collect_reachable(start_id: str, graph: Dict[str, Set[str]]) -> List[str]:
-    """Return all nodes reachable from start_id following the given adjacency graph.
-
-    Used to derive all rules that happen "before" (via reverse_adj) and
-    "after" (via adjacency) a given rule in the inferred decision chain.
-    """
-    visited: Set[str] = set()
-    stack: List[str] = list(graph.get(start_id, set()))
-
-    while stack:
-        current = stack.pop()
-        if current in visited:
-            continue
-        visited.add(current)
-        for nxt in graph.get(current, set()):
-            if nxt not in visited:
-                stack.append(nxt)
-
-    return sorted(visited)
-
-
 # New per-rule analysis function (Neo4j-backed)
-def _analyse_rule(
+def _analyse_logic(
     rid: str,
-    rule_by_id: Dict[str, Dict[str, Any]],
+    logic_by_id: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Return per-rule analysis using Neo4j graph data.
 
@@ -378,8 +266,8 @@ def _analyse_rule(
     We keep a numbered 'checks' list so the rest of the pipeline and UI
     can remain stable.
     """
-    rule = rule_by_id.get(rid, {})
-    name = rule.get("rule_name") or rule.get("name") or ""
+    logic = logic_by_id.get(rid, {})
+    name = logic.get("name") or logic.get("name") or ""
 
     # Defaults in case graph calls fail
     upstream: List[str] = []
@@ -443,29 +331,29 @@ def _analyse_rule(
     }
 
 
-def _print_human_report(rule_analyses: List[Dict[str, Any]]) -> str:
+def _print_human_report(logics_analyses: List[Dict[str, Any]]) -> str:
     """Print a human-readable summary of the per-rule analysis.
 
     This is intended for humans looking at the console, not for machines.
     Returns the report string.
     """
-    if not rule_analyses:
+    if not logics_analyses:
         text = "No rules to report on.\n"
         print(text)
         return text
 
     lines = []
     # Build an id -> name map to resolve predecessors/successors nicely
-    id_to_name: Dict[str, str] = {r.get("id", ""): (r.get("name") or "") for r in rule_analyses}
+    id_to_name: Dict[str, str] = {r.get("id", ""): (r.get("name") or "") for r in logics_analyses}
 
     def _short_id(rid: str) -> str:
         rid = rid or ""
         return rid[-6:] if len(rid) > 6 else rid
 
     lines.append("===== Decision Chain Analysis Report =====\n")
-    lines.append(f"Total rules analysed: {len(rule_analyses)}\n")
+    lines.append(f"Total rules analysed: {len(logics_analyses)}\n")
 
-    for idx, r in enumerate(rule_analyses, start=1):
+    for idx, r in enumerate(logics_analyses, start=1):
         rid = r.get("id", "")
         name = r.get("name") or "<unnamed>"
         preds = r.get("predecessors", []) or []
@@ -498,24 +386,24 @@ def _print_human_report(rule_analyses: List[Dict[str, Any]]) -> str:
             lines.append("   • Outputs to: (none)")
 
         if upstream_labels:
-            lines.append(f"   • All rules before (upstream): {', '.join(upstream_labels)}")
+            lines.append(f"   • All logics before (upstream): {', '.join(upstream_labels)}")
         else:
-            lines.append("   • All rules before (upstream): (none)")
+            lines.append("   • All logics before (upstream): (none)")
 
         if downstream_labels:
-            lines.append(f"   • All rules after (downstream): {', '.join(downstream_labels)}")
+            lines.append(f"   • All logics after (downstream): {', '.join(downstream_labels)}")
         else:
-            lines.append("   • All rules after (downstream): (none)")
+            lines.append("   • All logics after (downstream): (none)")
 
         if seq_before_labels:
-            lines.append(f"   • All rules before (sequence): {', '.join(seq_before_labels)}")
+            lines.append(f"   • All logics before (sequence): {', '.join(seq_before_labels)}")
         else:
-            lines.append("   • All rules before (sequence): (none)")
+            lines.append("   • All logics before (sequence): (none)")
 
         if seq_after_labels:
-            lines.append(f"   • All rules after (sequence): {', '.join(seq_after_labels)}")
+            lines.append(f"   • All logics after (sequence): {', '.join(seq_after_labels)}")
         else:
-            lines.append("   • All rules after (sequence): (none)")
+            lines.append("   • All logics after (sequence): (none)")
 
         # Print the numbered checks with a tick/cross
         for check in r.get("checks", []):
@@ -541,12 +429,12 @@ def run_chain_compose(
     keep_going: bool = False,
 ) -> Dict[str, Any]:
     """
-    'chain' compose mode – PER-RULE ANALYSIS STUB.
+    'chain' compose mode – PER-LOGIC ANALYSIS STUB.
 
     This helper:
-      • Loads the rules for the selected model only (no DB / Neo4j writes).
+      • Loads the logics for the selected model only (no DB / Neo4j writes).
       • Builds a simple dataflow graph based on DMN inputs/outputs.
-      • For each rule, reports a checklist of discrete properties relevant to chaining/DRD decisions, without clustering.
+      • For each logic, reports a checklist of discrete properties relevant to chaining/DRD decisions, without clustering.
       • Writes results to a JSON file under `chain_output_dummy/chain_analysis.json` as a list of rules and their discrete checks.
       • Does NOT change business_rules.json or models.json.
     """
@@ -556,12 +444,12 @@ def run_chain_compose(
     selected_model = model_info.get("selected_model", {})
     selected_model_name = selected_model.get("name")
     selected_model_id = selected_model.get("id")
-    rules_path_str = model_info.get("rules_out_path")
+    logics_path_str = model_info.get("logics_out_path")
 
     print("\n=== Incoming Arguments (CHAIN STUB) ===")
     print(f"Model name: {selected_model_name}")
     print(f"Model id:   {selected_model_id}")
-    print(f"rules_out_path: {rules_path_str}")
+    print(f"logics_out_path: {logics_path_str}")
     print(f"spec_info: {spec_info}")
     print(f"model_home_prompted: {model_home_prompted}")
     print(f"compose_mode: {compose_mode}")
@@ -569,51 +457,51 @@ def run_chain_compose(
     print(f"keep_going: {keep_going}")
     print("======================================\n")
 
-    if not rules_path_str:
-        step_header("CHAIN-2", "No rules_out_path provided; nothing to analyse", {})
+    if not logics_path_str:
+        step_header("CHAIN-2", "No logics_out_path provided; nothing to analyse", {})
         return {
             "result": "no_rules",
-            "reason": "rules_out_path missing in model_info",
+            "reason": "logics_out_path missing in model_info",
         }
 
-    rules_path = Path(rules_path_str)
-    if not rules_path.exists():
-        step_header("CHAIN-2", "rules_for_model.json not found; nothing to analyse", {"path": str(rules_path)})
+    logics_path = Path(logics_path_str)
+    if not logics_path.exists():
+        step_header("CHAIN-2", "logics_for_model.json not found; nothing to analyse", {"path": str(logics_path)})
         return {
             "result": "no_rules",
-            "reason": f"rules file not found at {rules_path}",
+            "reason": f"rules file not found at {logics_path}",
         }
 
-    step_header("CHAIN-2", "Load rules_for_model.json", {"path": str(rules_path)})
-    rules = load_json(rules_path)
+    step_header("CHAIN-2", "Load logics_for_model.json", {"path": str(logics_path)})
+    rules = load_json(logics_path)
     if not isinstance(rules, list):
-        step_header("CHAIN-2", "rules_for_model.json is not a list", {})
+        step_header("CHAIN-2", "logics_for_model.json is not a list", {})
         return {
             "result": "invalid_rules_shape",
-            "reason": "rules_for_model.json must be a list",
+            "reason": "logics_for_model.json must be a list",
         }
 
     # Prepare a simple id -> rule map for Neo4j-backed analysis
-    step_header("CHAIN-3", "Prepare rules for Neo4j-backed chain analysis", {})
-    rule_by_id: Dict[str, Dict[str, Any]] = {}
+    step_header("CHAIN-3", "Prepare logics for Neo4j-backed chain analysis", {})
+    logic_by_id: Dict[str, Dict[str, Any]] = {}
     for r in rules:
         if isinstance(r, dict) and r.get("id"):
-            rule_by_id[r["id"]] = r
+            logic_by_id[r["id"]] = r
 
-    all_ids = sorted(rule_by_id.keys())
+    all_ids = sorted(logic_by_id.keys())
 
-    rule_analyses: List[Dict[str, Any]] = []
+    logics_analyses: List[Dict[str, Any]] = []
     for idx, rid in enumerate(all_ids, start=1):
-        analysis = _analyse_rule(rid, rule_by_id)
-        rule_analyses.append(analysis)
+        analysis = _analyse_logic(rid, logic_by_id)
+        logics_analyses.append(analysis)
         # Print summary for this rule
-        step_header(f"CHAIN-RULE-{idx}", f"Rule analysis: {analysis['name']} ({analysis['id']})", {})
+        step_header(f"CHAIN-RULE-{idx}", f"Logics analysis: {analysis['name']} ({analysis['id']})", {})
         for check in analysis["checks"]:
             print(f"  {check['num']}) {check['label']}: {check['value']}")
         print()
 
     # Print a consolidated human-readable report to the console and capture as markdown
-    human_report = _print_human_report(rule_analyses)
+    human_report = _print_human_report(logics_analyses)
 
     # Write everything out
     output_dir = Path("chain_output_dummy").expanduser().resolve()
@@ -625,8 +513,8 @@ def run_chain_compose(
             "id": selected_model_id,
             "name": selected_model_name,
         },
-        "rule_count": len(rule_analyses),
-        "rules": rule_analyses,
+        "logic_count": len(logics_analyses),
+        "logics": logics_analyses,
     }
     write_json(analysis_path, payload)
 
@@ -642,5 +530,5 @@ def run_chain_compose(
         "result": "ok",
         "analysis_path": str(analysis_path),
         "compose_mode": compose_mode,
-        "rule_count": len(rule_analyses),
+        "logic_count": len(logics_analyses),
     }

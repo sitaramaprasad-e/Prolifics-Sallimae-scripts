@@ -32,9 +32,9 @@ SPEC_DIR = os.path.join(SCRIPT_DIR, "spec")
 
 DEFAULT_PROMPT_NAME = "markup-domain.templ"
 
-TMP_ROOT = ".tmp/rules-for-markup"
+TMP_ROOT = ".tmp/logics-for-markup"
 TMP_DOMAIN_TXT = os.path.join(TMP_ROOT, "domain_model_report.txt")
-TMP_EXPORTED_RULES = os.path.join(TMP_ROOT, "exported-rules.json")
+TMP_EXPORTED_LOGICS = os.path.join(TMP_ROOT, "exported-logics.json")
 MARKUP_OUT_DIRNAME = "markup-domain"
 MARKUP_OUT_FILENAME = "markup-domain.md"
 
@@ -45,47 +45,6 @@ LOG_DIR = os.path.expanduser("~/.pcpt/log/markup_domain")
 # Utilities
 # ----------------------------
 
-def _derive_short_code_from_uuid(uuid_str: str) -> str:
-    """
-    Derive the 3-hex short rule code from a UUID string by stripping dashes
-    and taking the last 3 characters, uppercased.
-    Example:
-      'e8972032-1c87-4670-a9e0-2329a15cd7c0' -> '7C0'
-    """
-    cleaned = uuid_str.replace("-", "")
-    if len(cleaned) < 3:
-        return cleaned.upper()
-    return cleaned[-3:].upper()
-
-
-def _find_logicstep_id_for_rule(
-    steps: List[Dict[str, Any]],
-    short_code: str,
-    rule_name: str,
-) -> Optional[str]:
-    """
-    Given a 3-hex short rule code from the domain model and a rule name,
-    find the corresponding LogicStep id by matching BOTH:
-      - last 3 hex chars of the UUID-derived id, and
-      - the rule name (case-insensitive exact match).
-    Returns the LogicStep id (UUID) if found, else None.
-    """
-    target_code = (short_code or "").strip().upper()
-    target_name = (rule_name or "").strip().lower()
-    if not target_code or not target_name:
-        return None
-
-    for step in steps:
-        step_id = str(step.get("id") or "").strip()
-        name = str(step.get("name") or "").strip()
-        if not step_id or not name:
-            continue
-
-        code = _derive_short_code_from_uuid(step_id)
-        if code == target_code and name.lower() == target_name:
-            return step_id
-
-    return None
 
 def _log(msg: str, header: bool = False) -> None:
   """Print timestamped log messages, with optional header formatting."""
@@ -130,49 +89,54 @@ def _write_json(path: str, data: Any) -> None:
 
 
 # ----------------------------
-# PlantUML Rules Format Normalization
+# PlantUML Logics Format Normalization
 # ----------------------------
-def _normalize_rules_format(path: str) -> None:
+def _normalize_logics_format(path: str) -> None:
   """
-  Normalize PlantUML rules/decisions style in note blocks to bullet format.
+  Normalize PlantUML logics style in note blocks to bullet format.
   """
   with open(path, "r", encoding="utf-8") as f:
     lines = f.readlines()
 
   out_lines = []
   in_note = False
-  in_rules = False
+  in_logics = False
   for idx, line in enumerate(lines):
     stripped = line.strip()
     # Entering note block?
     if not in_note and stripped.startswith("note"):
       in_note = True
-      in_rules = False
+      in_logics = False
       out_lines.append(line)
       continue
     # Exiting note block?
     if in_note and stripped == "end note":
       in_note = False
-      in_rules = False
+      in_logics = False
       out_lines.append(line)
       continue
-    # Are we at the start of a Rules section?
-    if in_note and not in_rules and stripped.startswith("Rules"):
-      in_rules = True
-      out_lines.append(line)
-      continue
-    # If in a Rules section, process lines until end note or blank or non-rule
-    if in_note and in_rules:
-      # End rules section if we see a blank line or something that looks like a new section
-      if not stripped or (not re.match(r'^([A-Za-z0-9]+\s*·)', stripped) and not stripped.startswith("Rules")):
-        in_rules = False
+    # Are we at the start of a Logics section? (case-insensitive, with optional colon)
+    if in_note and not in_logics:
+      lower = stripped.lower()
+      if lower == "logics" or lower.startswith("logics:"):
+        in_logics = True
+        out_lines.append(line)
+        continue
+    # If in a Logics section, process lines until end note or blank or non-logic
+    if in_note and in_logics:
+      # End logics section if we see a blank line or something that looks like a new section
+      if not stripped or (
+        not re.match(r'^([A-Za-z0-9]+\s*·)', stripped)
+        and not stripped.lower().startswith("logics")
+      ):
+        in_logics = False
         out_lines.append(line)
         continue
       # Try to match rule lines
       m = re.match(r'^(\s*)([A-Za-z0-9]+)\s*·\s*(.*?)(,)?\s*$', line)
       if m:
-        indent, rule_id, rule_name, _ = m.groups()
-        out_lines.append(f"{indent}- {rule_id}: {rule_name}\n")
+        indent, logic_id, name, _ = m.groups()
+        out_lines.append(f"{indent}- {logic_id}: {name}\n")
         continue
       else:
         out_lines.append(line)
@@ -181,6 +145,345 @@ def _normalize_rules_format(path: str) -> None:
     out_lines.append(line)
 
   with open(path, "w", encoding="utf-8") as f:
+    f.writelines(out_lines)
+
+
+# ----------------------------
+# Remove legacy Rules: notes helper
+# ----------------------------
+def _remove_legacy_rules_notes(path: str) -> None:
+  """Remove legacy note blocks that are labeled with 'Rules:' so we only keep Logics notes.
+
+  A legacy block looks like:
+    (note:
+    "Rules:
+    ...
+    ")
+
+  We detect any note block where one of the inner lines (stripped, case-insensitive)
+  is exactly 'rules:' or 'rules' and drop the entire note block.
+  """
+  with open(path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+  out_lines: list[str] = []
+  in_note = False
+  note_buffer: list[str] = []
+
+  def _is_legacy_rules_note(note_lines: list[str]) -> bool:
+    # Skip the first line (the 'note' line) and the last line ('end note')
+    inner = note_lines[1:-1] if len(note_lines) >= 2 else []
+    for ln in inner:
+      stripped = ln.strip().strip('"')
+      lower = stripped.lower()
+      if lower == "rules" or lower == "rules:":
+        return True
+    return False
+
+  for line in lines:
+    stripped = line.strip()
+
+    if not in_note:
+      if stripped.startswith("note"):
+        # Start buffering a note block
+        in_note = True
+        note_buffer = [line]
+      else:
+        out_lines.append(line)
+    else:
+      note_buffer.append(line)
+      if stripped == "end note":
+        # Decide whether to keep or drop this note block
+        if not _is_legacy_rules_note(note_buffer):
+          out_lines.extend(note_buffer)
+        # Reset state either way
+        in_note = False
+        note_buffer = []
+
+  # If file ended while still in a note, flush it conservatively
+  if in_note and note_buffer:
+    out_lines.extend(note_buffer)
+
+  with open(path, "w", encoding="utf-8") as f:
+    f.writelines(out_lines)
+
+
+# ----------------------------
+# Inject short codes into Logics notes using exported logics
+# ----------------------------
+def _inject_short_codes_from_exported_logics(domain_txt_path: str, exported_logics_path: str) -> None:
+  """
+  Inject short codes into Logics note sections in a domain report, using exported logics.
+
+  The exported logics file may be shaped as:
+    - { "logics": [ {...}, {...} ] }
+    - [ {...}, {...} ]
+    - { "some/file.txt": [ {...}, {...} ], "other/file.txt": [ ... ] }
+
+  Each logic entry is expected to contain:
+    - "name" or "name_base": the human-readable logic name
+    - "code": a precomputed short code (preferred)
+    - "id": the logic id (optional fallback if code is missing)
+  """
+  _log(f"Injecting short codes into Logics notes using {exported_logics_path} ...")
+  # Load logics from exported_logics_path
+  try:
+    data = _load_json(exported_logics_path)
+  except Exception as e:
+    _log(f"WARNING: Failed to load exported logics from {exported_logics_path}: {e}")
+    return
+
+  # Normalize to a flat list of logic dicts
+  logics_list: list[dict[str, Any]] = []
+
+  if isinstance(data, dict):
+    # Case 1: explicit {"logics": [...]} shape
+    maybe_list = data.get("logics")
+    if isinstance(maybe_list, list):
+      logics_list.extend([x for x in maybe_list if isinstance(x, dict)])
+    else:
+      # Case 2: grouped by file path: { "path": [ {...}, {...} ], ... }
+      for v in data.values():
+        if isinstance(v, list):
+          logics_list.extend([x for x in v if isinstance(x, dict)])
+  elif isinstance(data, list):
+    logics_list.extend([x for x in data if isinstance(x, dict)])
+  else:
+    _log(f"WARNING: Exported logics at {exported_logics_path} is not a recognized list or dict with logic entries")
+    return
+
+  if not logics_list:
+    _log(f"WARNING: No logic entries found in exported logics at {exported_logics_path}")
+    return
+
+  # Build mapping: logic name (stripped; case-sensitive and lower-case variants) → short code
+  name_to_code: dict[str, str] = {}
+  for item in logics_list:
+    # Prefer a base name field if present, otherwise fall back to name.
+    logic_name = str(item.get("name_base") or item.get("name") or "").strip()
+    if not logic_name:
+      continue
+
+    # Prefer precomputed 'code' from export; fall back to deriving from 'id' if needed.
+    code = str(item.get("code") or "").strip()
+    if not code:
+      logic_id = str(item.get("id") or "").strip()
+      if logic_id:
+        # Short code: last 3 hex chars of id (after stripping non-hex chars), uppercased
+        hex_chars = "".join([c for c in logic_id if c in "0123456789abcdefABCDEF"])
+        if len(hex_chars) >= 3:
+          code = hex_chars[-3:].upper()
+        else:
+          code = logic_id[:3].upper()
+      else:
+        # No usable code and no id; skip this logic for injection purposes
+        continue
+
+    # Register multiple key variants for robust matching
+    name_to_code[logic_name] = code
+    name_to_code[logic_name.lower()] = code
+    # Also add without trailing period
+    if logic_name.endswith("."):
+      base = logic_name[:-1]
+      name_to_code[base] = code
+      name_to_code[base.lower()] = code
+
+  # Read domain_txt_path lines
+  with open(domain_txt_path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+  out_lines: list[str] = []
+  in_note = False
+  in_logics = False
+
+  for idx, line in enumerate(lines):
+    stripped = line.strip()
+    # Entering note block? (PlantUML-style: `note ...`)
+    if not in_note and stripped.startswith("note"):
+      in_note = True
+      in_logics = False
+      out_lines.append(line)
+      continue
+    # Exiting note block?
+    if in_note and stripped == "end note":
+      in_note = False
+      in_logics = False
+      out_lines.append(line)
+      continue
+    # Are we at the start of a Logics section? (case-insensitive, with optional colon, possibly quoted)
+    if in_note and not in_logics:
+      cleaned = stripped.strip('"').strip("'")
+      lower = cleaned.lower()
+      if lower == "logics" or lower.startswith("logics:"):
+        in_logics = True
+        out_lines.append(line)
+        continue
+    # If in a Logics section, process lines until end note or blank or new section
+    if in_note and in_logics:
+      # End logics section if we see a blank line or something that looks like a new section (ends with ':' and not 'Logics:'), ignoring surrounding quotes
+      cleaned = stripped.strip('"').strip("'")
+      if not cleaned or (cleaned.endswith(":") and not cleaned.lower().startswith("logics:")):
+        in_logics = False
+        out_lines.append(line)
+        continue
+      # If already a bullet (starts with '-'), leave unchanged
+      m_dash = re.match(r'^(\s*)-\s+', line)
+      if m_dash:
+        out_lines.append(line)
+        continue
+      # Otherwise, treat as bare logic name
+      indent_match = re.match(r'^(\s*)', line)
+      indent = indent_match.group(1) if indent_match else ""
+      raw_name = stripped.strip('"').strip("'").rstrip(",")
+      # Try matching: exact, without trailing period, case-insensitive
+      code = name_to_code.get(raw_name)
+      if code is None and raw_name.endswith("."):
+        code = name_to_code.get(raw_name[:-1])
+      if code is None:
+        code = name_to_code.get(raw_name.lower())
+      if code is not None:
+        out_lines.append(f"{indent}- {code}: {raw_name}\n")
+      else:
+        out_lines.append(line)
+      continue
+
+    # Default: just copy line
+    out_lines.append(line)
+
+  # Write back only after processing all lines
+  with open(domain_txt_path, "w", encoding="utf-8") as f:
+    f.writelines(out_lines)
+
+
+# ----------------------------
+# Inject short codes into markup-domain.md Logics notes (markdown format)
+# ----------------------------
+def _inject_short_codes_into_markup_md(markup_md_path: str, exported_logics_path: str) -> None:
+  """
+  Rewrite (note: "Logics: ...) blocks in markup-domain.md so that each logic line inside the note
+  is prefixed with its short code, e.g. 298· Find First Claim Date, etc.
+  """
+  # Load logics from exported_logics_path using same normalization logic as above
+  try:
+    data = _load_json(exported_logics_path)
+  except Exception as e:
+    _log(f"WARNING: Failed to load exported logics from {exported_logics_path}: {e}")
+    return
+
+  # Normalize to a flat list of logic dicts
+  logics_list: list[dict[str, Any]] = []
+  if isinstance(data, dict):
+    maybe_list = data.get("logics")
+    if isinstance(maybe_list, list):
+      logics_list.extend([x for x in maybe_list if isinstance(x, dict)])
+    else:
+      for v in data.values():
+        if isinstance(v, list):
+          logics_list.extend([x for x in v if isinstance(x, dict)])
+  elif isinstance(data, list):
+    logics_list.extend([x for x in data if isinstance(x, dict)])
+  else:
+    _log(f"WARNING: Exported logics at {exported_logics_path} is not a recognized list or dict with logic entries")
+    return
+
+  if not logics_list:
+    _log(f"WARNING: No logic entries found in exported logics at {exported_logics_path}")
+    return
+
+  # Build mapping: logic name (stripped; case-sensitive and lower-case variants) → short code
+  name_to_code: dict[str, str] = {}
+  for item in logics_list:
+    logic_name = str(item.get("name_base") or item.get("name") or "").strip()
+    if not logic_name:
+      continue
+    code = str(item.get("code") or "").strip()
+    if not code:
+      logic_id = str(item.get("id") or "").strip()
+      if logic_id:
+        hex_chars = "".join([c for c in logic_id if c in "0123456789abcdefABCDEF"])
+        if len(hex_chars) >= 3:
+          code = hex_chars[-3:].upper()
+        else:
+          code = logic_id[:3].upper()
+      else:
+        continue
+    name_to_code[logic_name] = code
+    name_to_code[logic_name.lower()] = code
+    if logic_name.endswith("."):
+      base = logic_name[:-1]
+      name_to_code[base] = code
+      name_to_code[base.lower()] = code
+
+  # Read markup_md_path lines
+  with open(markup_md_path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+  out_lines: list[str] = []
+  in_note = False
+  in_logics = False
+  for idx, line in enumerate(lines):
+    stripped = line.strip()
+    # Entering note block? (markdown: (note: ... or (note ...)
+    if not in_note and stripped.startswith("(note"):
+      in_note = True
+      in_logics = False
+      out_lines.append(line)
+      continue
+    # If in note and not in logics, look for Logics: header (possibly quoted)
+    if in_note and not in_logics:
+      cleaned = stripped.strip('"').strip("'")
+      if cleaned.lower().startswith("logics:"):
+        in_logics = True
+        out_lines.append(line)
+        continue
+      # Not Logics: header, still in note
+      out_lines.append(line)
+      continue
+    # If in logics section, treat each subsequent line as a logic name until closing ")
+    if in_note and in_logics:
+      # Check for closing line (ends with ) or )" or ), possibly with comma.
+      # For now we assume that the closing marker is on its own line, as in:
+      #   "Some Logic",
+      #   "Another Logic"
+      #   ")
+      if stripped in ('")', ')', '),'):
+        # Just a closing line for the note/logics block.
+        out_lines.append(line)
+        in_logics = False
+        in_note = False
+        continue
+      # Otherwise, treat as logic line
+      # Preserve leading indentation
+      indent_match = re.match(r'^(\s*)', line)
+      indent = indent_match.group(1) if indent_match else ""
+      # Determine if line has a trailing comma
+      has_comma = line.rstrip().endswith(",")
+      # Remove quotes, trailing comma, possible closing
+      logic_raw = stripped.strip('"').strip("'").rstrip(",").rstrip()
+      # Remove possible trailing closing marker
+      if logic_raw.endswith(")") or logic_raw.endswith('")'):
+        logic_raw = logic_raw.rstrip(')"').rstrip(')')
+      name = logic_raw
+      code = name_to_code.get(name)
+      if code is None and name.endswith("."):
+        code = name_to_code.get(name[:-1])
+      if code is None:
+        code = name_to_code.get(name.lower())
+      if code is not None and name:
+        out_lines.append(f'{indent}"{code}· {name}' + (",\n" if has_comma else "\n"))
+      else:
+        out_lines.append(line)
+      continue
+    # Exiting note block (for markdown, closing is ) or )")
+    if in_note and (stripped.endswith('")') or stripped.endswith(')')):
+      in_note = False
+      in_logics = False
+      out_lines.append(line)
+      continue
+    # Default: just copy line
+    out_lines.append(line)
+
+  with open(markup_md_path, "w", encoding="utf-8") as f:
     f.writelines(out_lines)
 
 
@@ -324,7 +627,7 @@ def _select_spec_pair() -> Dict[str, Any]:
 
 
 # ----------------------------
-# PCPT helpers (inspired by categorize_rules.py)
+# PCPT helpers (inspired by categorize_logics.py)
 # ----------------------------
 def pcpt_sequence(output_dir: str, visualize: str, domain_hints: Optional[str] = None, filter_file: Optional[str] = None) -> None:
   """
@@ -387,9 +690,9 @@ def main() -> None:
   parser.add_argument("--domain-hints", default=None, help="Domain hints file (optional). If provided, it will be passed to PCPT.")
   parser.add_argument("--generate-initial-domain", action="store_true", help="Generate the initial domain diagram (default is to skip).")
   parser.add_argument(
-      "--include-all-rules",
+      "--include-all-logics",
       action="store_true",
-      help="Include all rules in markup by disabling business relevance filtering in export_rules_for_markup.py."
+      help="Include all logics in markup by disabling business relevance filtering in export_logic_for_markup.py."
   )
   args = parser.parse_args()
 
@@ -440,7 +743,7 @@ def main() -> None:
       or pair.get("output-path")
     )
 
-    # Remember the source path from the spec pair for export_rules_for_markup
+    # Remember the source path from the spec pair for export_logic_for_markup
     pair_source = pair.get("source-path") or pair.get("source_path") or None
 
     resolved_code = _resolve_candidate_path(code_candidate, bases) if code_candidate else None
@@ -489,39 +792,41 @@ def main() -> None:
   else:
       _log("Skipped initial domain generation (default). Use --generate-initial-domain to enable.")
 
-  _log("Step 2: Copy existing sequence report to temp folder", header=True)
+  _log("Step 2: Copy existing domain report to temp folder", header=True)
   _ensure_dir(TMP_ROOT)
   _copy(domain_report_src, TMP_DOMAIN_TXT)
-  _log("Normalizing rules format in temporary domain report (if needed)...")
-  _normalize_rules_format(TMP_DOMAIN_TXT)
+  _log("Normalizing logics format in temporary domain report (if needed)...")
+  _normalize_logics_format(TMP_DOMAIN_TXT)
+  _log("Removing legacy 'Rules:' notes so only 'Logics:' remain...")
+  _remove_legacy_rules_notes(TMP_DOMAIN_TXT)
 
-  _log("Step 3: Export list of current business rules for code", header=True)
+  _log("Step 3: Export list of current logics for code", header=True)
   if not root_path:
     # Safety fallback; this should not normally happen.
     root_path = os.path.realpath(os.path.abspath(os.getcwd()))
     _log(f"root_path was not set earlier; defaulting to CWD: {root_path}")
 
-  # Derive rules file path from model_dir (if provided via spec)
-  rules_file_arg: Optional[str] = None
+  # Derive logics file path from model_dir (if provided via spec)
+  logics_file_arg: Optional[str] = None
   if model_dir:
-    rules_file_arg = os.path.join(model_dir, "business_rules.json")
-    _log(f"Using rules file from model_dir: {rules_file_arg}")
+    logics_file_arg = os.path.join(model_dir, "business_rules.json")
+    _log(f"Using logics file from model_dir: {logics_file_arg}")
   else:
-    _log("No model_dir from spec; export_rules_for_markup will rely on its own default for rules file.")
+    _log("No model_dir from spec; export_logic_for_markup will rely on its own default for logics file.")
 
-  # Decide source_path for export_rules_for_markup: prefer spec pair source-path, else fall back to code_dir
+  # Decide source_path for export_logic_for_markup: prefer spec pair source-path, else fall back to code_dir
   source_path_arg = pair_source if pair_source else code_dir
-  _log(f"Using source_path for export_rules_for_markup: {source_path_arg}")
+  _log(f"Using source_path for export_logic_for_markup: {source_path_arg}")
 
   # Build absolute path to the exporter script so this works from any CWD.
   # Prefer a helpers/ subfolder if present, but fall back to the legacy location
-  helpers_export = os.path.join(SCRIPT_DIR, "helpers", "export_rules_for_markup.py")
+  helpers_export = os.path.join(SCRIPT_DIR, "helpers", "export_logic_for_markup.py")
 
   if os.path.exists(helpers_export):
     export_script = helpers_export
   else:
     raise FileNotFoundError(
-      f"Could not locate export_rules_for_markup.py in {helpers_export}"
+      f"Could not locate export_logic_for_markup.py in {helpers_export}"
     )
 
   _log(f"Using export script: {export_script}")
@@ -536,26 +841,26 @@ def main() -> None:
       "--trace-limit",
       "500",
   ]
-  if rules_file_arg:
-    export_cmd.extend(["--rules-file", rules_file_arg])
-  if args.include_all_rules:
-    export_cmd.append("--include-all-rules")
+  if logics_file_arg:
+    export_cmd.extend(["--logics-file", logics_file_arg])
+  if args.include_all_logics:
+    export_cmd.append("--include-all-logics")
 
   _run(export_cmd)
 
-  # Sanity check for the exported rules file (some environments might write elsewhere)
-  if not os.path.exists(TMP_EXPORTED_RULES):
+  # Sanity check for the exported logics file (some environments might write elsewhere)
+  if not os.path.exists(TMP_EXPORTED_LOGICS):
     raise FileNotFoundError(
-      f"Expected exported rules at {TMP_EXPORTED_RULES} not found. "
-      f"Ensure tools/export_rules_for_markup.py writes to that path."
+      f"Expected exported rules at {TMP_EXPORTED_LOGICS} not found. "
+      f"Ensure tools/export_logic_for_markup.py writes to that path."
     )
-
-  _log("Step 4: Markup domain description", header=True)
+  _log("Injecting short codes into temporary domain report using exported logics...")
+  _inject_short_codes_from_exported_logics(TMP_DOMAIN_TXT, TMP_EXPORTED_LOGICS)
 
   _log("Step 4: Markup domain description", header=True)
   pcpt_run_custom_prompt(
     input_file=TMP_DOMAIN_TXT,
-    input_file2=TMP_EXPORTED_RULES,
+    input_file2=TMP_EXPORTED_LOGICS,
     output_dir=output_dir,
     code_dir=code_dir,
     prompt_name=prompt_name,
@@ -570,12 +875,14 @@ def main() -> None:
       f"Verify the custom prompt produced it under {os.path.join(output_dir, MARKUP_OUT_DIRNAME)}"
     )
 
+  _log("Injecting short codes into markup-domain.md using exported logics...")
+  _inject_short_codes_into_markup_md(markup_md, TMP_EXPORTED_LOGICS)
   pcpt_sequence(output_dir=output_dir, visualize=markup_md, domain_hints=domain_hints)
 
   _log("✅ Done. Domain regenerated using markup.")
   _log(f"Markup file: {markup_md}")
   _log(f"Domain report used: {TMP_DOMAIN_TXT}")
-  _log(f"Exported rules: {TMP_EXPORTED_RULES}")
+  _log(f"Exported logics: {TMP_EXPORTED_LOGICS}")
 
 if __name__ == "__main__":
   main()
