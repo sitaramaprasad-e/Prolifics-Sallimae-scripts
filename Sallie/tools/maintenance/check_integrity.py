@@ -165,6 +165,9 @@ class KGSummary:
     steps_with_missing_logic_list: List[str]
     supports_cycle_edges: List[Tuple[str, str]]
     mutual_support_pairs: List[Tuple[str, str]]
+    # OK-to-miss structural logics (Decision (Top-Level) / Decision (Composite)) not present in KG
+    ok_missing_logic_count: int
+    ok_missing_logic_ids: List[str]
 
 # Default base URL for the graph API (matches RULES_PORTAL_BASE_URL with /api/graph)
 DEFAULT_GRAPH_BASE_URL = "http://localhost:443/api/graph"
@@ -409,14 +412,34 @@ def _load_kg_summary(
 
     logic_ids = set(logics_by_id.keys())
 
+    # Base vs top-level/composite distinction:
+    # - Base logics (Decision, BKM, etc.) are REQUIRED to have a LogicStep in the KG.
+    # - Decision (Top-Level) and Decision (Composite) are allowed to be absent from the KG.
+    base_logic_ids: set[str] = set()
+    for lid, logic in logics_by_id.items():
+        if not isinstance(logic, dict):
+            continue
+        kind = (logic.get("kind") or "").strip()
+        if kind in ("Decision (Top-Level)", "Decision (Composite)"):
+            # These are "structural" decisions; it's OK if they have no LogicStep.
+            continue
+        base_logic_ids.add(lid)
+
     logic_ids_with_step = len(logic_ids & step_ids)
-    missing_logic_ids = sorted(list(logic_ids - step_ids))
+    missing_logic_ids = sorted(list(base_logic_ids - step_ids))
+
+    # Structural (top-level / composite) logics are allowed to be absent from KG.
+    # We still count them for reporting, but they are not treated as integrity issues.
+    structural_logic_ids = logic_ids - base_logic_ids
+    ok_missing_logic_ids = sorted(list(structural_logic_ids - step_ids))
+
     extra_step_ids = sorted(list(step_ids - logic_ids))
     logic_ids_without_step = len(missing_logic_ids)
     steps_with_missing_logic = len(extra_step_ids)
 
     logic_ids_without_step_list = missing_logic_ids
     steps_with_missing_logic_list = extra_step_ids
+    ok_missing_logic_count = len(ok_missing_logic_ids)
 
     # Count SUPPORTS relationships between LogicStep nodes and track which logic ids participate
     total_supports_rels = 0
@@ -563,6 +586,8 @@ def _load_kg_summary(
         steps_with_missing_logic_list=steps_with_missing_logic_list,
         supports_cycle_edges=sorted(list(supports_cycle_edges)),
         mutual_support_pairs=sorted(list(mutual_support_pairs)),
+        ok_missing_logic_count=ok_missing_logic_count,
+        ok_missing_logic_ids=ok_missing_logic_ids,
     )
 # === Issue collection and drill-down helpers ===
 
@@ -669,7 +694,7 @@ def _collect_issues(
             issues.append(
                 (
                     "kg_logic_ids_without_step",
-                    "some logics in business_rules.json do not have a corresponding LogicStep node in the Knowledge Graph",
+                    "some base logics (non-top-level / non-composite) in business_rules.json do not have a corresponding LogicStep node in the Knowledge Graph",
                 )
             )
         if kg_summary.steps_with_missing_logic:
@@ -967,7 +992,7 @@ def _print_issue_details(
 
     # KG-related issues
     if issue_key == "kg_logic_ids_without_step":
-        print("Logics present in business_rules.json but missing a LogicStep node in the KG:")
+        print("Base logics present in business_rules.json but missing a LogicStep node in the KG:")
         if kg_summary is None:
             print("  (Knowledge Graph summary not available.)")
             return
@@ -988,8 +1013,78 @@ def _print_issue_details(
         if not kg_summary.steps_with_missing_logic_list:
             print("  (None)")
             return
+
+        # Try to look up LogicStep names and kinds for better reporting.
+        name_by_id: Dict[str, Optional[tuple[Optional[str], Optional[str]]]] = {}
+        if requests is not None and kg_summary.graph_url:
+            base = kg_summary.graph_url.rstrip("/")
+            run_url = f"{base}/run"
+            ids_param = kg_summary.steps_with_missing_logic_list
+            # Updated query to also return n.kind AS kind
+            query = (
+                "MATCH (n:LogicStep) "
+                "WHERE n.id IN $ids "
+                "RETURN n.id AS id, n.name AS name, n.kind AS kind"
+            )
+            try:
+                resp = requests.post(
+                    run_url,
+                    json={"query": query, "parameters": {"ids": ids_param}},
+                    timeout=15,
+                    verify=GRAPH_VERIFY,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                records = payload.get("records", [])
+                if isinstance(records, list):
+                    for rec in records:
+                        if not isinstance(rec, dict):
+                            continue
+                        rid = rec.get("id")
+                        rname = rec.get("name")
+                        rkind = rec.get("kind")
+                        # Normalise potential Neo4j integer/map representations
+                        if isinstance(rid, dict) and "low" in rid:
+                            rid = rid.get("low")
+                        if isinstance(rid, (int, float)):
+                            rid = str(rid)
+                        # name normalization
+                        if isinstance(rname, dict) and "low" in rname:
+                            rname = rname.get("low")
+                        if isinstance(rname, (int, float)):
+                            rname = str(rname)
+                        if isinstance(rname, str):
+                            rname = rname.strip() or None
+                        else:
+                            rname = None
+                        # kind normalization
+                        if isinstance(rkind, dict) and "low" in rkind:
+                            rkind = rkind.get("low")
+                        if isinstance(rkind, (int, float)):
+                            rkind = str(rkind)
+                        if isinstance(rkind, str):
+                            rkind = rkind.strip() or None
+                        else:
+                            rkind = None
+                        if isinstance(rid, str):
+                            name_by_id[rid] = (rname, rkind)
+            except Exception as exc:  # noqa: BLE001
+                _eprint(f"WARNING: Failed to look up LogicStep names/kinds via KG: {exc}")
+
         for sid in kg_summary.steps_with_missing_logic_list:
-            print(f"  - {sid}")
+            name_kind = name_by_id.get(sid)
+            if name_kind:
+                name, kind = name_kind
+                if name and kind:
+                    print(f"  - {sid} ({name}, {kind})")
+                elif name:
+                    print(f"  - {sid} ({name})")
+                elif kind:
+                    print(f"  - {sid} ({kind})")
+                else:
+                    print(f"  - {sid}")
+            else:
+                print(f"  - {sid}")
         return
 
     if issue_key == "kg_supports_cycles":
@@ -1447,17 +1542,19 @@ def _print_summary(
         print("Knowledge Graph (LogicStep)")
         print("---------------------------")
         if kg_summary.graph_url:
-            print(f"Graph base URL:                 {kg_summary.graph_url}")
-        print(f"Total LogicStep nodes:          {kg_summary.total_logic_steps}")
-        print(f"LogicStep nodes with id:        {kg_summary.logic_steps_with_id}")
-        print(f"LogicStep nodes without id:     {kg_summary.logic_steps_without_id}")
-        print(f"Logics with a LogicStep:        {kg_summary.logic_ids_with_step}")
-        print(f"Logics without a LogicStep:     {kg_summary.logic_ids_without_step}")
-        print(f"LogicSteps with no JSON logic:      {kg_summary.steps_with_missing_logic}")
-        print(f"SUPPORTS relationships (LS→LS):     {kg_summary.total_supports_rels}")
-        print(f"Logics with SUPPORTS links in KG:   {kg_summary.logic_ids_with_supports}")
-        print(f"SUPPORTS cycles detected:           {kg_summary.supports_cycles_count}")
-        print(f"Mutual SUPPORTS pairs:              {kg_summary.mutual_support_pairs_count}")
+            print(f"Graph base URL:                     {kg_summary.graph_url}")
+        print(f"Total LogicStep nodes:                  {kg_summary.total_logic_steps}")
+        print(f"LogicStep nodes with id:                {kg_summary.logic_steps_with_id}")
+        print(f"LogicStep nodes without id:             {kg_summary.logic_steps_without_id}")
+        print(f"Logics with a LogicStep:                {kg_summary.logic_ids_with_step}")
+        print(f"Base logics missing in KG (NOT OK):     {kg_summary.logic_ids_without_step}")
+        print(f"Top/Composite missing in KG (OK):       {kg_summary.ok_missing_logic_count}")
+        print(f"Total logics missing in KG:             {kg_summary.logic_ids_without_step + kg_summary.ok_missing_logic_count}")
+        print(f"LogicSteps with no JSON logic:          {kg_summary.steps_with_missing_logic}")
+        print(f"SUPPORTS relationships (LS→LS):         {kg_summary.total_supports_rels}")
+        print(f"Logics with SUPPORTS links in KG:       {kg_summary.logic_ids_with_supports}")
+        print(f"SUPPORTS cycles detected:               {kg_summary.supports_cycles_count}")
+        print(f"Mutual SUPPORTS pairs:                  {kg_summary.mutual_support_pairs_count}")
         print()
 
     issues = _collect_issues(logic_summary, model_summary, kg_summary)

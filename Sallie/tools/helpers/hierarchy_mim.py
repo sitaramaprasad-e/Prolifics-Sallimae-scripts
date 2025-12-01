@@ -102,6 +102,70 @@ def _scrub_links_to_hierarchy_scope(logics: List[dict], allowed_ids: Set[str], a
 # ---------------------------
 from typing import Tuple, Set
 
+
+# ---------------------------
+# Helper: Deduplicate Decision Names
+# ---------------------------
+def _dedupe_decision_names(model_home: Path) -> None:
+    """
+    Ensure that rule names are unique across all logics.
+    If a duplicate name is found, append a suffix like ' (2)', ' (3)', etc. based on
+    how many times the base name has already appeared. Operates on business_rules.json.
+    """
+    try:
+        rules_path = (model_home / "business_rules.json").resolve()
+        if not rules_path.exists():
+            return
+
+        payload = load_json(rules_path)
+        logics = None
+        root = payload
+
+        if isinstance(payload, dict) and isinstance(payload.get("logics"), list):
+            logics = payload["logics"]
+        elif isinstance(payload, list):
+            logics = payload
+        else:
+            eprint("[WARN] business_rules.json has unexpected shape for dedupe; skipping name deduplication.")
+            return
+
+        if not isinstance(logics, list):
+            eprint("[WARN] business_rules.json 'logics' is not a list; skipping name deduplication.")
+            return
+
+        seen: Dict[str, int] = {}
+        changed = 0
+
+        for r in logics:
+            if not isinstance(r, dict):
+                continue
+            name = (r.get("name") or r.get("name") or "").strip()
+            if not name:
+                continue
+
+            base = name
+            if base not in seen:
+                seen[base] = 1
+                continue
+
+            seen[base] += 1
+            new_name = f"{base} ({seen[base]})"
+            if new_name == name:
+                continue
+            r["name"] = new_name
+            changed += 1
+
+        if changed:
+            _safe_backup_json(rules_path)
+            if isinstance(root, dict):
+                root["logics"] = logics
+                write_json(rules_path, root)
+            else:
+                write_json(rules_path, logics)
+            print(f"[INFO] Deduplicated {changed} decision name(s) in business_rules.json")
+    except Exception as ex:
+        eprint(f"[WARN] Failed to deduplicate decision names in business_rules.json: {ex}")
+
 def _extract_top_suggestions_from_report(report_path: Path) -> Tuple[Set[str], Set[str]]:
     """Parse a suggestion report for MIM pre-step and extract Top-Level decision ids/names.
 
@@ -562,27 +626,19 @@ def run_mim_compose(
                         print("\nMerge back to model home (per-hierarchy)")
                         print(f"→ Model home: {model_home_prompted}")
                         print(f"→ Output path: {output_path}")
-                        # Build hierarchy_meta for this top decision
+                        # Build hierarchy_meta for this top decision.
+                        # Note: In MIM mode, the top-level decision is always treated as NEW.
+                        # We therefore do NOT attempt to resolve a missing id by matching
+                        # against existing logics by name – the id for the top-level will
+                        # be assigned based on the newly generated logic during merge.
+                        # We *do* always propagate the original hierarchy top.name so that
+                        # even if PCPT renames the decision in its suggestions, the
+                        # hierarchy metadata keeps the original top-level label.
                         td = (hier.get("top") or {}) if isinstance(hier, dict) else {}
                         td_id = (td.get("id") or "").strip()
                         td_name = (td.get("name") or td.get("name") or "").strip()
                         h_name = (hier.get("name") or "").strip()
                         h_desc = (hier.get("flow_description") or "").strip()
-                        # Minimal fix: if topId is missing but we have a name, resolve id from logics_for_model.json
-                        if not td_id and td_name:
-                            try:
-                                all_logics_resolve = load_json(Path(logics_file))
-                            except Exception:
-                                all_logics_resolve = []
-                            td_name_cf = td_name.casefold()
-                            for rr in all_logics_resolve:
-                                if not isinstance(rr, dict):
-                                    continue
-                                rn = (rr.get("name") or rr.get("name") or "").strip()
-                                rid = (rr.get("id") or "").strip()
-                                if rn and rid and rn.casefold() == td_name_cf:
-                                    td_id = rid
-                                    break
                         hier_meta = {"by_id": {}, "by_name": {}}
                         payload = {"hierarchy_name": h_name, "hierarchy_description": h_desc}
                         if td_id:
@@ -607,6 +663,7 @@ def run_mim_compose(
                     print(f"\n{ANSI_YELLOW}--- Waiting before next hierarchy ({i+1}/{total}) ---{ANSI_RESET}")
                     input("Press Enter to continue when ready, or Ctrl+C to stop...\n")
 
+            _dedupe_decision_names(model_home_prompted)
             print("\nDone ✔")
             print("Composed decision report generated and merged (per‑hierarchy).")
             return

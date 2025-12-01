@@ -37,6 +37,7 @@ if env_verify is not None:
 
 _GRAPH_STATUS_CHECKED = False
 _GRAPH_AVAILABLE = False
+_GRAPH_CLEANUP_ERRORS = 0
 
 
 def graph_is_enabled() -> bool:
@@ -81,6 +82,7 @@ def graph_run_cypher(query: str, parameters: Optional[Dict] = None) -> Optional[
 
     Any failures are logged to stdout but do not stop this script.
     """
+    global _GRAPH_CLEANUP_ERRORS
     if not graph_is_enabled():
         return None
 
@@ -93,10 +95,12 @@ def graph_run_cypher(query: str, parameters: Optional[Dict] = None) -> Optional[
             print(
                 f"[WARN] Graph run failed HTTP {resp.status_code}: {resp.text[:200]}"
             )
+            _GRAPH_CLEANUP_ERRORS += 1
             return None
         return resp.json()
     except Exception as e:  # pragma: no cover - defensive
         print(f"[WARN] Graph run error: {e}")
+        _GRAPH_CLEANUP_ERRORS += 1
         return None
 
 
@@ -151,6 +155,8 @@ def _load_spec(path: str) -> Dict[str, Any]:
 
 def main():
     global GRAPH_BASE_URL
+
+    graph_cleanup_performed = False
 
     # Optional spec selection for KG URL (mirrors other tools). If the user
     # chooses a spec with a "graph-url" value, we prefer that over the default
@@ -353,114 +359,141 @@ def main():
     # --- Neo4j graph cleanup for deleted logics ---
     # We use DETACH DELETE so that relationships are removed automatically
     # when their endpoint nodes are deleted.
-    if graph_is_enabled() and archived_logics:
-        deleted_logic_ids = {rid for rid in archived_ids}
+    if archived_logics:
+        if graph_is_enabled():
+            deleted_logic_ids = {rid for rid in archived_ids}
 
-        # Collect candidate code functions and files from the rules being deleted
-        code_functions = set()
-        code_files = set()
-        for r in archived_logics:
-            cf = r.get("code_function")
-            if isinstance(cf, str) and cf.strip():
-                code_functions.add(cf.strip())
-            cfile = r.get("code_file")
-            if isinstance(cfile, str) and cfile.strip():
-                code_files.add(cfile.strip())
+            # Collect candidate code functions and files from the rules being deleted
+            code_functions = set()
+            code_files = set()
+            for r in archived_logics:
+                cf = r.get("code_function")
+                if isinstance(cf, str) and cf.strip():
+                    code_functions.add(cf.strip())
+                cfile = r.get("code_file")
+                if isinstance(cfile, str) and cfile.strip():
+                    code_files.add(cfile.strip())
 
-        print(
-            f"[INFO] Cleaning Neo4j graph for {len(deleted_logic_ids)} archived logic(s) "
-            f"(base={GRAPH_BASE_URL})..."
-        )
+            print(
+                f"[INFO] Cleaning Neo4j graph for {len(deleted_logic_ids)} archived logic(s) "
+                f"(base={GRAPH_BASE_URL})..."
+            )
 
-        # 1) Delete LogicStep nodes for each archived logic id (and all their relationships)
-        for rid in sorted(deleted_logic_ids):
-            # Delete any Message nodes sequenced by this LogicStep, then delete the LogicStep
+            # 1) Delete LogicStep nodes for each archived logic id (and all their relationships)
+            for rid in sorted(deleted_logic_ids):
+                # Delete any Message nodes sequenced by this LogicStep, then delete the LogicStep
+                graph_run_cypher(
+                    """
+                    MATCH (l:LogicStep {id: $logicId})
+                    OPTIONAL MATCH (l)-[:SEQUENCED_BY]->(m:Message)
+                    DETACH DELETE m, l
+                    """,
+                    {"logicId": rid},
+                )
+
+                # Delete any Parameter nodes belonging to this logic
+                graph_run_cypher(
+                    "MATCH (p:Parameter {logicId: $logicId}) DETACH DELETE p",
+                    {"logicId": rid},
+                )
+
+            # 2) Delete CodeFunction nodes that are no longer referenced by any LogicStep
+            for func_name in sorted(code_functions):
+                graph_run_cypher(
+                    """
+                    MATCH (f:CodeFunction {name: $name})
+                    OPTIONAL MATCH (l:LogicStep)-[:IMPLEMENTED_BY]->(f)
+                    WITH f, count(l) AS c
+                    WHERE c = 0
+                    DETACH DELETE f
+                    """,
+                    {"name": func_name},
+                )
+
+            # 3) Delete CodeFile nodes that are no longer referenced by any CodeFunction
+            for path in sorted(code_files):
+                graph_run_cypher(
+                    """
+                    MATCH (cf:CodeFile {path: $path})
+                    OPTIONAL MATCH (f:CodeFunction)-[:PART_OF]->(cf)
+                    WITH cf, count(f) AS c
+                    WHERE c = 0
+                    DETACH DELETE cf
+                    """,
+                    {"path": path},
+                )
+
+            # 4) Delete Message nodes that are no longer linked to any LogicStep
             graph_run_cypher(
                 """
-                MATCH (l:LogicStep {id: $logicId})
-                OPTIONAL MATCH (l)-[:SEQUENCED_BY]->(m:Message)
-                DETACH DELETE m, l
+                MATCH (m:Message)
+                WHERE NOT EXISTS { MATCH (m)<-[:SEQUENCED_BY]-(:LogicStep) }
+                DETACH DELETE m
                 """,
-                {"logicId": rid},
+                {},
             )
 
-            # Delete any Parameter nodes belonging to this logic
-            graph_run_cypher(
-                "MATCH (p:Parameter {logicId: $logicId}) DETACH DELETE p",
-                {"logicId": rid},
-            )
-
-        # 2) Delete CodeFunction nodes that are no longer referenced by any LogicStep
-        for func_name in sorted(code_functions):
+            # 5) Delete Sequence nodes that no longer have any Message nodes at all
             graph_run_cypher(
                 """
-                MATCH (f:CodeFunction {name: $name})
-                OPTIONAL MATCH (l:LogicStep)-[:IMPLEMENTED_BY]->(f)
-                WITH f, count(l) AS c
-                WHERE c = 0
-                DETACH DELETE f
+                MATCH (s:Sequence)
+                WHERE NOT EXISTS { MATCH (s)<-[:PART_OF]-(:Message) }
+                DETACH DELETE s
                 """,
-                {"name": func_name},
+                {},
             )
 
-        # 3) Delete CodeFile nodes that are no longer referenced by any CodeFunction
-        for path in sorted(code_files):
+            # 6) Delete Domain and DomainType nodes that are no longer linked to any LogicStep.
+            #    For any Domain node where none of its DomainType children are the target
+            #    of an OPERATES_ON relationship from a LogicStep, delete that Domain and
+            #    all of its DomainType nodes.
             graph_run_cypher(
                 """
-                MATCH (cf:CodeFile {path: $path})
-                OPTIONAL MATCH (f:CodeFunction)-[:PART_OF]->(cf)
-                WITH cf, count(f) AS c
-                WHERE c = 0
-                DETACH DELETE cf
+                MATCH (d:Domain)
+                WHERE NOT EXISTS {
+                  MATCH (d)--(dt:DomainType)<-[:OPERATES_ON]-(:LogicStep)
+                }
+                WITH collect(d) AS doms
+                UNWIND doms AS d
+                MATCH (d)--(dt:DomainType)
+                DETACH DELETE dt, d
                 """,
-                {"path": path},
+                {},
+            )
+            graph_cleanup_performed = True
+        else:
+            print(
+                "[WARN] Graph is disabled or unreachable; archived logics will not be removed from the KG."
             )
 
-        # 4) Delete Message nodes that are no longer linked to any LogicStep
-        graph_run_cypher(
-            """
-            MATCH (m:Message)
-            WHERE NOT EXISTS { MATCH (m)<-[:SEQUENCED_BY]-(:LogicStep) }
-            DETACH DELETE m
-            """,
-            {},
-        )
+    # Decide whether we need to ask for confirmation based on graph cleanup status.
+    need_confirm = False
+    if archived_logics:
+        if not graph_cleanup_performed:
+            # Either graph is disabled/unreachable, or we skipped cleanup.
+            need_confirm = True
+            print(
+                "[WARN] Graph cleanup was not performed; archived logics will remain in the KG if any exist there."
+            )
+        elif _GRAPH_CLEANUP_ERRORS > 0:
+            # Cleanup was attempted but some Cypher calls failed.
+            need_confirm = True
+            print(
+                f"[WARN] Graph cleanup encountered {_GRAPH_CLEANUP_ERRORS} error(s); some KG nodes/relationships may remain."
+            )
+        else:
+            # Cleanup ran and no HTTP/transport errors were observed.
+            print(
+                "[INFO] Graph cleanup completed without HTTP errors; proceeding to update JSON."
+            )
 
-        # 5) Delete Sequence nodes that no longer have any Message nodes at all
-        graph_run_cypher(
-            """
-            MATCH (s:Sequence)
-            WHERE NOT EXISTS { MATCH (s)<-[:PART_OF]-(:Message) }
-            DETACH DELETE s
-            """,
-            {},
-        )
-
-        # 6) Delete Domain and DomainType nodes that are no longer linked to any LogicStep.
-        #    For any Domain node where none of its DomainType children are the target
-        #    of an OPERATES_ON relationship from a LogicStep, delete that Domain and
-        #    all of its DomainType nodes.
-        graph_run_cypher(
-            """
-            MATCH (d:Domain)
-            WHERE NOT EXISTS {
-              MATCH (d)--(dt:DomainType)<-[:OPERATES_ON]-(:LogicStep)
-            }
-            WITH collect(d) AS doms
-            UNWIND doms AS d
-            MATCH (d)--(dt:DomainType)
-            DETACH DELETE dt, d
-            """,
-            {},
-        )
-
-    # Ask user to confirm applying JSON changes after graph cleanup
-    confirm = input(
-        "\nGraph cleanup attempted. Proceed with deleting archived logics from JSON and updating models? [y/N]: "
-    ).strip().lower()
-    if confirm not in ("y", "yes"):
-        print("[INFO] Cancelled by user. JSON files were not modified.")
-        return
+    if need_confirm:
+        confirm = input(
+            "\nProceed with deleting archived logics from JSON and updating models anyway? [y/N]: "
+        ).strip().lower()
+        if confirm not in ("y", "yes"):
+            print("[INFO] Cancelled by user. JSON files were not modified.")
+            return
 
     # If we modified any models, write them back out now (after confirmation).
     if models and dangling_model_refs_total > 0:

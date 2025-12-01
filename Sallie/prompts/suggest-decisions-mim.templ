@@ -30,7 +30,7 @@ You must return a json that includes:
 1.9 Ensure that the DMN table and inputs/outputs are consistent with the purpose/spec/example of the new composite decision, and cover all of the behaviour implied by the base decisions that feed into it and the top-level decisions that it feeds into.
 1.10 The DMN table must include every dmn_input and dmn_output, and the table must describe the decision logic.
 
-2. Top-level decisions, with new links added to their links property that show the new links coming from the composite decisions. 
+2. Top-level decisions, with new links added to their links property that show the new links coming from the composite decisions. Do NOT change the name of the top-level decision that is set in the suggested hierarchy in input 3.
 2.1 Where you see a top-level decision with an empty rule_id (i.e. "") it will need to be created. To indicate that you need to include it in the output with an empty rule_id i.e. "", setting its kind to Decision (Top-Level) and giving it a suitable purpose, spec, example, and inputs and outputs, and incoming links.
 
 3. Any other existing decisions for which you need to add missing links to properly reflect the suggested hierarchy in input 3 (with new links added to their links property).
