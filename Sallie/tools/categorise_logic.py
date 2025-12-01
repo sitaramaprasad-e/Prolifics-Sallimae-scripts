@@ -278,15 +278,47 @@ def ensure_paths() -> None:
     except Exception as e:
         raise RuntimeError(f"Failed to stage categories into {TMP_DIR}: {e}")
 
+
 # ----------------------------
 # Category filtering helpers
 # ----------------------------
 def _norm_team(val: Optional[str]) -> str:
     return (val or "").strip().lower()
 
+def _is_leaf_category(cat: Dict[str, Any]) -> bool:
+    """Return True if this category entry looks like a leaf (not a group).
+
+    Heuristics:
+    - If it has an explicit group indicator (type/isGroup/kind), treat as group.
+    - If it has nested children, treat as group.
+    Otherwise, assume it is a leaf category.
+    """
+    if not isinstance(cat, dict):
+        return False
+
+    type_val = str(cat.get("type", "")).strip().lower()
+    kind_val = str(cat.get("kind", "")).strip().lower()
+
+    if type_val in {"group", "category_group", "grouping"}:
+        return False
+    if kind_val in {"group", "category_group", "grouping"}:
+        return False
+    if bool(cat.get("isGroup")) or bool(cat.get("is_group")):
+        return False
+
+    # If this category has nested children/categories, treat it as a group
+    if isinstance(cat.get("children"), list) and cat["children"]:
+        return False
+    if isinstance(cat.get("categories"), list) and cat["categories"]:
+        return False
+
+    # Otherwise, we treat it as a leaf
+    return True
+
 def filter_categories_for_logic(rule: Dict[str, Any]) -> str:
     """Create a filtered copy of rule_categories.json that includes only
-    categories with no team OR a team matching the rule's owner (team).
+    categories with no team OR a team matching the rule's owner (team),
+    and only leaf categories (not groups).
     Returns the path to the filtered categories file under TMP_DIR.
     """
     categories_src = CATEGORIES_JSON
@@ -306,6 +338,11 @@ def filter_categories_for_logic(rule: Dict[str, Any]) -> str:
         for cat in data["categories"]:
             if not isinstance(cat, dict):
                 continue
+
+            # Only keep leaf categories, never groups
+            if not _is_leaf_category(cat):
+                continue
+
             team_val = _norm_team(cat.get("team"))
             # keep when no team is specified or it's a match (case-insensitive)
             if team_val == "" or team_val == owner_team:

@@ -13,7 +13,7 @@ from datetime import datetime
 import zipfile
 import argparse
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--report-only", action="store_true")
@@ -24,6 +24,16 @@ report_only = args.report_only
 GRAPH_BASE_URL = os.getenv("RULES_PORTAL_BASE_URL", "http://localhost:443").rstrip("/")
 GRAPH_ENABLED_ENV = os.getenv("RULES_PORTAL_GRAPH_ENABLED", "true").strip().lower()
 GRAPH_ENABLED = GRAPH_ENABLED_ENV in {"1", "true", "yes", "on"}
+
+# Toggle TLS certificate verification for KG HTTP calls. In many dev and some
+# internal environments we use self-signed or private CAs, so by default we
+# disable verification here. You can override this by setting the
+# RULES_PORTAL_VERIFY environment variable to "true"/"1"/"yes" to enable
+# verification.
+GRAPH_VERIFY = False
+env_verify = os.getenv("RULES_PORTAL_VERIFY")
+if env_verify is not None:
+    GRAPH_VERIFY = env_verify.strip().lower() in {"1", "true", "yes", "on"}
 
 _GRAPH_STATUS_CHECKED = False
 _GRAPH_AVAILABLE = False
@@ -46,7 +56,7 @@ def graph_is_enabled() -> bool:
     _GRAPH_STATUS_CHECKED = True
     status_url = f"{GRAPH_BASE_URL}/api/graph/status"
     try:
-        resp = requests.get(status_url, timeout=2)
+        resp = requests.get(status_url, timeout=2, verify=GRAPH_VERIFY)
         if resp.ok:
             data = resp.json()
             _GRAPH_AVAILABLE = bool(data.get("up"))
@@ -78,7 +88,7 @@ def graph_run_cypher(query: str, parameters: Optional[Dict] = None) -> Optional[
     payload = {"query": query, "parameters": parameters or {}}
 
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json=payload, timeout=10, verify=GRAPH_VERIFY)
         if not resp.ok:
             print(
                 f"[WARN] Graph run failed HTTP {resp.status_code}: {resp.text[:200]}"
@@ -89,7 +99,75 @@ def graph_run_cypher(query: str, parameters: Optional[Dict] = None) -> Optional[
         print(f"[WARN] Graph run error: {e}")
         return None
 
+
+# --- Spec helper functions for selecting a spec and extracting graph-url ---
+def _spec_dir() -> str:
+    """
+    Locate the default spec directory for this repo.
+
+    This script lives in <repo>/tools/maintenance; specs are under <repo>/tools/spec,
+    the same convention used by other tools.
+    """
+    tools_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(tools_dir, "spec")
+
+
+def _find_spec_files() -> List[str]:
+    d = _spec_dir()
+    if not os.path.isdir(d):
+        return []
+    return [
+        os.path.join(d, f)
+        for f in sorted(os.listdir(d))
+        if f.endswith(".json")
+        and (f.startswith("source_") or f.startswith("sources_"))
+        and os.path.isfile(os.path.join(d, f))
+    ]
+
+
+def _choose_spec(specs: List[str]) -> Optional[str]:
+    if not specs:
+        return None
+    print("\n=== Select a spec file for KG cleanup (optional) ===")
+    for i, path in enumerate(specs, 1):
+        print(f"  {i}. {os.path.basename(path)}")
+    print("Choose a spec by number, or press ENTER to skip.")
+    while True:
+        choice = input("Enter number (or ENTER to skip): ").strip()
+        if not choice:
+            return None
+        if not choice.isdigit():
+            print("Please enter a valid number or press ENTER to skip.")
+            continue
+        idx = int(choice)
+        if 1 <= idx <= len(specs):
+            return specs[idx - 1]
+        print("Out of range. Try again.")
+
+
+def _load_spec(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 def main():
+    global GRAPH_BASE_URL
+
+    # Optional spec selection for KG URL (mirrors other tools). If the user
+    # chooses a spec with a "graph-url" value, we prefer that over the default
+    # RULES_PORTAL_BASE_URL.
+    spec_files = _find_spec_files()
+    if spec_files:
+        spec_path = _choose_spec(spec_files)
+        if spec_path:
+            try:
+                spec = _load_spec(spec_path)
+                spec_graph_url = spec.get("graph-url")
+                if isinstance(spec_graph_url, str) and spec_graph_url.strip():
+                    GRAPH_BASE_URL = spec_graph_url.strip().rstrip("/")
+                    print(f"[INFO] Using graph-url from spec: {GRAPH_BASE_URL}")
+            except Exception as e:
+                print(f"[WARN] Failed to load spec from {spec_path}: {e}")
+
     default_home = Path(os.path.expanduser("~/.model"))
     user_input = input(f"Enter model home directory [{default_home}]: ").strip()
     model_home = Path(user_input) if user_input else default_home
@@ -262,50 +340,6 @@ def main():
                     # Apply the cleanup only when not in report-only mode.
                     m["logicIds"] = cleaned_ids
 
-        # If not report-only and we modified any models, write them back out.
-        if not report_only and dangling_model_refs_total > 0:
-            try:
-                # Best-effort optimistic concurrency using models_version
-                if models_path.exists() and models_version is not None:
-                    try:
-                        with open(models_path, "r", encoding="utf-8") as mf:
-                            cur_raw_models = json.load(mf)
-                        if isinstance(cur_raw_models, dict) and isinstance(cur_raw_models.get("models"), list):
-                            cur_version = cur_raw_models.get("version")
-                            if isinstance(cur_version, int) and cur_version != models_version:
-                                print(
-                                    f"[ERROR] models.json version changed on disk (expected {models_version}, found {cur_version}); "
-                                    f"aborting write to avoid overwriting concurrent changes."
-                                )
-                                return
-                    except Exception as ex:
-                        print(
-                            f"[WARN] Could not re-read models.json for concurrency check; proceeding anyway: {ex}"
-                        )
-
-                # Persist using rooted {"version", "models"} where possible
-                if isinstance(models_root, dict):
-                    current_version = models_root.get("version")
-                    if not isinstance(current_version, int):
-                        current_version = models_version or 0
-                    new_version = current_version + 1
-                    models_root["models"] = models
-                    models_root["version"] = new_version
-                    to_write = models_root
-                else:
-                    # Legacy list-only models.json; upgrade to rooted structure on write
-                    new_version = (models_version or 0) + 1
-                    to_write = {"version": new_version, "models": models}
-
-                with open(models_path, "w", encoding="utf-8") as mf:
-                    json.dump(to_write, mf, indent=2, ensure_ascii=False)
-                print(
-                    f"[INFO] Removed {dangling_model_refs_total} dangling logicId(s) "
-                    f"from {models_with_dangling} model(s) in {models_path}"
-                )
-            except Exception as e:
-                print(f"[WARN] Failed to write cleaned models.json to {models_path}: {e}")
-
     if report_only:
         print("[INFO] --report-only mode: no changes written.")
         print(f"[INFO] {len(archived_logics)} logic(s) would be deleted:")
@@ -419,6 +453,58 @@ def main():
             """,
             {},
         )
+
+    # Ask user to confirm applying JSON changes after graph cleanup
+    confirm = input(
+        "\nGraph cleanup attempted. Proceed with deleting archived logics from JSON and updating models? [y/N]: "
+    ).strip().lower()
+    if confirm not in ("y", "yes"):
+        print("[INFO] Cancelled by user. JSON files were not modified.")
+        return
+
+    # If we modified any models, write them back out now (after confirmation).
+    if models and dangling_model_refs_total > 0:
+        try:
+            # Best-effort optimistic concurrency using models_version
+            if models_path.exists() and models_version is not None:
+                try:
+                    with open(models_path, "r", encoding="utf-8") as mf:
+                        cur_raw_models = json.load(mf)
+                    if isinstance(cur_raw_models, dict) and isinstance(cur_raw_models.get("models"), list):
+                        cur_version = cur_raw_models.get("version")
+                        if isinstance(cur_version, int) and cur_version != models_version:
+                            print(
+                                f"[ERROR] models.json version changed on disk (expected {models_version}, found {cur_version}); "
+                                f"aborting write to avoid overwriting concurrent changes."
+                            )
+                            return
+                except Exception as ex:
+                    print(
+                        f"[WARN] Could not re-read models.json for concurrency check; proceeding anyway: {ex}"
+                    )
+
+            # Persist using rooted {"version", "models"} where possible
+            if isinstance(models_root, dict):
+                current_version = models_root.get("version")
+                if not isinstance(current_version, int):
+                    current_version = models_version or 0
+                new_version = current_version + 1
+                models_root["models"] = models
+                models_root["version"] = new_version
+                to_write = models_root
+            else:
+                # Legacy list-only models.json; upgrade to rooted structure on write
+                new_version = (models_version or 0) + 1
+                to_write = {"version": new_version, "models": models}
+
+            with open(models_path, "w", encoding="utf-8") as mf:
+                json.dump(to_write, mf, indent=2, ensure_ascii=False)
+            print(
+                f"[INFO] Removed {dangling_model_refs_total} dangling logicId(s) "
+                f"from {models_with_dangling} model(s) in {models_path}"
+            )
+        except Exception as e:
+            print(f"[WARN] Failed to write cleaned models.json to {models_path}: {e}")
 
     # Write updated logics including cleaned links, using rooted {"version", "logics"} and a best-effort optimistic check
     try:
