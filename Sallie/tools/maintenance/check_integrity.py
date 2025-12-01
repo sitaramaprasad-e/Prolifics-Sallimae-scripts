@@ -72,6 +72,9 @@ class LogicSummary:
     extra_link_fields: Dict[str, int]
     duplicate_logic_ids: Dict[str, int]
     short_code_name_collisions: Dict[str, int]
+    # New link-shape integrity
+    links_missing_required_fields: int
+    links_with_blank_required_fields: int
 def _load_category_names(model_home: str) -> set[str]:
     """
     Load category names from rule_categories.json.
@@ -500,6 +503,20 @@ def _collect_issues(
                 "some links have 'from' references that do not resolve to logics",
             )
         )
+    if logic_summary.links_missing_required_fields:
+        issues.append(
+            (
+                "links_missing_required_fields",
+                "some links are missing one or more of the required fields from_output, to_input, kind, from_logic_id",
+            )
+        )
+    if logic_summary.links_with_blank_required_fields:
+        issues.append(
+            (
+                "links_with_blank_required_fields",
+                "some links have required fields (from_output, to_input, kind, from_logic_id) present but blank or non-string",
+            )
+        )
     if model_summary.missing_model_logic_refs:
         issues.append(
             (
@@ -655,6 +672,68 @@ def _print_issue_details(
                 )
         if not found:
             print("  (No detailed offending links found.)")
+        return
+
+    # Links missing required fields
+    if issue_key == "links_missing_required_fields":
+        print("Links missing one or more required fields (from_output, to_input, kind, from_logic_id):")
+        found = False
+        required_keys = ("from_output", "to_input", "kind", "from_logic_id")
+        for logic in logics:
+            if not isinstance(logic, dict):
+                continue
+            lid = logic.get("id")
+            name = logic.get("name") or ""
+            links = logic.get("links")
+            if not isinstance(links, list):
+                continue
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                missing = [k for k in required_keys if k not in link]
+                if not missing:
+                    continue
+                found = True
+                print(
+                    f"  - Logic {lid} ({name}): missing {', '.join(missing)} "
+                    f"(link kind={link.get('kind')!r}, from_output={link.get('from_output')!r}, "
+                    f"to_input={link.get('to_input')!r}, from_logic_id={link.get('from_logic_id')!r})"
+                )
+        if not found:
+            print("  (No links with missing required fields found on re-scan.)")
+        return
+
+    # Links with blank required fields
+    if issue_key == "links_with_blank_required_fields":
+        print("Links with blank/non-string required fields (from_output, to_input, kind, from_logic_id):")
+        found = False
+        required_keys = ("from_output", "to_input", "kind", "from_logic_id")
+        for logic in logics:
+            if not isinstance(logic, dict):
+                continue
+            lid = logic.get("id")
+            name = logic.get("name") or ""
+            links = logic.get("links")
+            if not isinstance(links, list):
+                continue
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                blanks = []
+                for k in required_keys:
+                    val = link.get(k)
+                    if not isinstance(val, str) or not val.strip():
+                        blanks.append(k)
+                if not blanks:
+                    continue
+                found = True
+                print(
+                    f"  - Logic {lid} ({name}): blank/non-string {', '.join(blanks)} "
+                    f"(link kind={link.get('kind')!r}, from_output={link.get('from_output')!r}, "
+                    f"to_input={link.get('to_input')!r}, from_logic_id={link.get('from_logic_id')!r})"
+                )
+        if not found:
+            print("  (No links with blank required fields found on re-scan.)")
         return
 
     # Missing model logic references
@@ -929,6 +1008,16 @@ def _summarize_logics(
     id_counts: Dict[str, int] = {}
     short_code_name_counts: Dict[str, int] = {}
 
+    links_missing_required_fields = 0
+    links_with_blank_required_fields = 0
+
+    required_link_keys = {
+        "from_output",
+        "to_input",
+        "kind",
+        "from_logic_id",
+    }
+
     for logic in logics:
         if not isinstance(logic, dict):
             continue
@@ -990,6 +1079,22 @@ def _summarize_logics(
             for key in unexpected_link_keys:
                 extra_link_fields[key] = extra_link_fields.get(key, 0) + 1
 
+            # Required fields: each link should have these 4 fields, none empty
+            missing_any_required = False
+            blank_any_required = False
+            for req_key in required_link_keys:
+                if req_key not in link:
+                    missing_any_required = True
+                    continue
+                val = link.get(req_key)
+                if not isinstance(val, str) or not val.strip():
+                    blank_any_required = True
+
+            if missing_any_required:
+                links_missing_required_fields += 1
+            if blank_any_required:
+                links_with_blank_required_fields += 1
+
             # From-logic reference (for post-migration data this is from_logic_id;
             # older data may still have from_step_id – we treat missing resolution
             # to a logic as "missing from logic" for summary purposes).
@@ -1038,6 +1143,8 @@ def _summarize_logics(
         extra_link_fields=extra_link_fields,
         duplicate_logic_ids=duplicate_logic_ids,
         short_code_name_collisions=short_code_name_collisions,
+        links_missing_required_fields=links_missing_required_fields,
+        links_with_blank_required_fields=links_with_blank_required_fields,
     )
 
 
@@ -1197,6 +1304,8 @@ def _print_summary(
     print(f"Links with missing 'from' logic:    {logic_summary.links_missing_from_logic}")
     print(f"Logics with links in JSON:          {logic_summary.logics_with_links_json}")
     print(f"Logics with no links in JSON:       {logic_summary.logics_without_links_json}")
+    print(f"Links missing required fields:      {logic_summary.links_missing_required_fields}")
+    print(f"Links with blank required fields:   {logic_summary.links_with_blank_required_fields}")
     print(f"Logics with category:               {logic_summary.logics_with_category}")
     print(f"Logics with no category:            {logic_summary.logics_without_category}")
     print(f"Logics with unknown category:       {logic_summary.logics_with_unknown_category}")
@@ -1281,8 +1390,46 @@ def _print_summary(
     if not issues:
         print("No obvious integrity issues detected.")
     else:
-        for i, (_key, description) in enumerate(issues, start=1):
-            print(f"  {i}. {description}")
+        for i, (key, description) in enumerate(issues, start=1):
+            # determine count for this issue type
+            if key == "links_missing_from_logic":
+                count = logic_summary.links_missing_from_logic
+            elif key == "links_missing_required_fields":
+                count = logic_summary.links_missing_required_fields
+            elif key == "links_with_blank_required_fields":
+                count = logic_summary.links_with_blank_required_fields
+            elif key == "missing_model_logic_refs":
+                count = model_summary.missing_model_logic_refs
+            elif key == "hierarchy_tops_missing_logic":
+                count = model_summary.hierarchy_tops_missing_logic
+            elif key == "hierarchies_missing_top":
+                count = model_summary.hierarchies_missing_top
+            elif key == "extra_logic_fields":
+                count = sum(logic_summary.extra_logic_fields.values())
+            elif key == "extra_link_fields":
+                count = sum(logic_summary.extra_link_fields.values())
+            elif key == "extra_model_fields":
+                count = sum(model_summary.extra_model_fields.values())
+            elif key == "extra_hierarchy_fields":
+                count = sum(model_summary.extra_hierarchy_fields.values())
+            elif key == "duplicate_logic_ids":
+                count = sum(logic_summary.duplicate_logic_ids.values())
+            elif key == "short_code_name_collisions":
+                count = sum(logic_summary.short_code_name_collisions.values())
+            elif key == "logics_with_unknown_category":
+                count = logic_summary.logics_with_unknown_category
+            elif key == "kg_logic_ids_without_step" and kg_summary:
+                count = kg_summary.logic_ids_without_step
+            elif key == "kg_steps_with_missing_logic" and kg_summary:
+                count = kg_summary.steps_with_missing_logic
+            elif key == "kg_supports_cycles" and kg_summary:
+                count = kg_summary.supports_cycles_count
+            elif key == "kg_mutual_support_pairs" and kg_summary:
+                count = kg_summary.mutual_support_pairs_count
+            else:
+                count = 0
+
+            print(f"  {i}. {description} (count={count})")
     print()
 
     return issues

@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Set
 from helpers.hierarchy_common import (
     step_header, ANSI_YELLOW, ANSI_RESET, load_json, build_temp_source_from_model, ensure_dir, resolve_optional_path,
     pcpt_run_custom_prompt, prepare_logics_file_for_pcpt, merge_generated_logics_into_model_home, eprint, REPO_ROOT, _resolve_template_path,
-    SUGGEST_HIERARCHY_TEMPLATE_DIR, SUGGEST_HIERARCHY_MINIMAL_TEMPLATE_DIR, TMP_DIR, _load_logics_from_report, write_json, _safe_backup_json
+    SUGGEST_HIERARCHY_TEMPLATE_DIR, SUGGEST_HIERARCHY_MINIMAL_TEMPLATE_DIR, TMP_DIR, _load_logics_from_report, write_json, _safe_backup_json,
+    attach_from_logic_ids_on_links,
 )
 
 def _scrub_links_to_hierarchy_scope(logics: List[dict], allowed_ids: Set[str], allowed_names_cf: Set[str]) -> List[dict]:

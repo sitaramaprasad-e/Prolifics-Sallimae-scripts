@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+from typing import Optional
+
 
 def print_help() -> None:
     print("=== compareLinksToCurrent.py help ===")
@@ -115,7 +117,7 @@ def diff_links_for_backup(
     current_rules: list,
     backup_rules: list,
     show_new: bool,
-    target_logic_id: str | None = None,
+    target_logic_id: Optional[str] = None,
     max_rules_to_show: int = 50,
     max_links_per_section: int = 5,
 ) -> None:
@@ -248,6 +250,220 @@ def diff_links_for_backup(
                 print(f"      ... and {len(removed_links) - max_links_per_section} more removed link(s)")
 
 
+# === Restore helper for removed links ===
+def restore_link_from_backup_interactive(
+    current_rules: list,
+    backup_rules: list,
+    logic_filter_id: Optional[str],
+    logics_path: Path,
+    original_mtime: float,
+    current_root,
+) -> float:
+    """
+    Allow the user to restore a single removed link from this backup into
+    the current business_rules.json, subject to:
+      1) Both ends existing in current (owning rule and from_logic_id rule).
+      2) Translating old semantics (from_step_id -> from_logic_id).
+      3) Respecting optimistic concurrency on business_rules.json.
+    Returns the (possibly updated) mtime to use for subsequent operations.
+    """
+    current_map = build_rule_map(current_rules)
+    backup_map = build_rule_map(backup_rules)
+
+    current_ids = set(current_map.keys())
+    backup_ids = set(backup_map.keys())
+    all_ids = sorted(current_ids | backup_ids)
+
+    # Helper: reconstruct links for a rule from a set of canonical tuples
+    def links_from_tuples(rule_obj, tuples):
+        if not rule_obj:
+            return []
+        links = rule_obj.get("links") or []
+        tuple_set = set(tuples)
+        result = []
+        for l in links:
+            if canonical_link(l) in tuple_set:
+                result.append(l)
+        return result
+
+    # First, find all rules that have removed links
+    candidates = []
+    for rid in all_ids:
+        if logic_filter_id and rid != logic_filter_id:
+            continue
+
+        current_rule = current_map.get(rid)
+        backup_rule = backup_map.get(rid)
+
+        # We can only restore into a rule that still exists in current and has backup info
+        if not current_rule or not backup_rule:
+            continue
+
+        current_links = current_rule.get("links") or []
+        backup_links = backup_rule.get("links") or []
+
+        current_link_tuples = {canonical_link(l) for l in current_links}
+        backup_link_tuples = {canonical_link(l) for l in backup_links}
+
+        removed_link_tuples = backup_link_tuples - current_link_tuples
+        if not removed_link_tuples:
+            continue
+
+        removed_links = links_from_tuples(backup_rule, removed_link_tuples)
+        if not removed_links:
+            continue
+
+        candidates.append((rid, current_rule, removed_links))
+
+    if not candidates:
+        print("No removed links in this backup that can be considered for restore (given current filter).")
+        return original_mtime
+
+    print("\nRemoved links that can potentially be restored from this backup:")
+    for idx, (rid, rule, removed_links) in enumerate(candidates, start=1):
+        name = rule.get("name") or "<unnamed>"
+        print(f"  [{idx}] {name} (id={rid}) – {len(removed_links)} removed link(s)")
+
+    selection = prompt_with_default(
+        "Select logic number to inspect/restore from (or 0 to cancel)",
+        "0",
+    ).strip()
+
+    try:
+        sel_idx = int(selection)
+    except ValueError:
+        sel_idx = 0
+
+    if sel_idx <= 0 or sel_idx > len(candidates):
+        print("Restore cancelled.")
+        return original_mtime
+
+    selected_rid, selected_rule, removed_links = candidates[sel_idx - 1]
+    selected_name = selected_rule.get("name") or "<unnamed>"
+
+    # Build map again to ensure we have up-to-date ends
+    current_map = build_rule_map(current_rules)
+
+    print(f"\nRemoved links for logic: {selected_name} (id={selected_rid})")
+    restorable_indices = []
+    for idx, link in enumerate(removed_links, start=1):
+        from_id = link.get("from_logic_id") or link.get("from_step_id")
+        from_rule = current_map.get(from_id) if from_id else None
+        has_source = from_rule is not None
+        has_target = selected_rid in current_map
+        can_restore = has_source and has_target
+
+        status = "OK " if can_restore else "SKIP"
+        from_name = from_rule.get("name") if from_rule else None
+        print(f"  [{idx}] {status} {summarize_link(link, from_name)}")
+
+        if can_restore:
+            restorable_indices.append(idx)
+
+    if not restorable_indices:
+        print("None of the removed links have both ends present in current; nothing to restore.")
+        return original_mtime
+
+    link_sel = prompt_with_default(
+        "Select link number to restore (or 0 to cancel)",
+        "0",
+    ).strip()
+
+    try:
+        link_idx = int(link_sel)
+    except ValueError:
+        link_idx = 0
+
+    if link_idx <= 0 or link_idx not in restorable_indices:
+        print("Restore cancelled.")
+        return original_mtime
+
+    link_to_restore = removed_links[link_idx - 1]
+    from_id = link_to_restore.get("from_logic_id") or link_to_restore.get("from_step_id")
+    from_rule = current_map.get(from_id) if from_id else None
+
+    if not from_rule or selected_rid not in current_map:
+        print("Ends no longer valid in current; cannot restore this link.")
+        return original_mtime
+
+    # Optimistic concurrency: ensure file has not changed since we loaded it
+    try:
+        current_mtime = logics_path.stat().st_mtime
+    except Exception as e:
+        print(f"ERROR: Could not verify business_rules.json mtime ({e}); refusing to restore.")
+        return original_mtime
+
+    if original_mtime and current_mtime != original_mtime:
+        print(
+            "ERROR: business_rules.json has changed on disk since this tool was started.\n"
+            "Refusing to write changes. Please re-run the tool on the latest file."
+        )
+        return original_mtime
+
+    # Build the new link, translating any legacy from_step_id -> from_logic_id
+    # and ensuring we never lose the source id in the process.
+    src = link_to_restore.get("from_logic_id") or link_to_restore.get("from_step_id")
+    if not isinstance(src, str) or not src.strip():
+        print(
+            "ERROR: Cannot restore link because it lacks a valid from_logic_id/from_step_id; "
+            "leaving business_rules.json unchanged."
+        )
+        return original_mtime
+
+    new_link = dict(link_to_restore)
+    # Always set from_logic_id to the resolved source id
+    new_link["from_logic_id"] = src
+    # Only now do we drop any legacy from_step_id field
+    new_link.pop("from_step_id", None)
+
+    # Sanity check: the restored link must have all required fields, none blank.
+    required_keys = ("from_output", "to_input", "kind", "from_logic_id")
+    missing = [k for k in required_keys if k not in new_link]
+    blanks = []
+    for k in required_keys:
+        if k not in new_link:
+            continue
+        val = new_link.get(k)
+        if not isinstance(val, str) or not val.strip():
+            blanks.append(k)
+
+    if missing or blanks:
+        print(
+            "ERROR: Refusing to restore link because it would be malformed.\n"
+            f"  Missing required fields: {', '.join(missing) if missing else 'none'}\n"
+            f"  Blank/non-string required fields: {', '.join(blanks) if blanks else 'none'}"
+        )
+        return original_mtime
+
+    # Avoid adding duplicate if somehow present
+    existing_links = selected_rule.get("links") or []
+    if any(canonical_link(l) == canonical_link(new_link) for l in existing_links):
+        print("Link already exists in current; nothing to restore.")
+        return original_mtime
+
+    selected_rule.setdefault("links", []).append(new_link)
+
+    # Persist the updated root to disk
+    try:
+        with logics_path.open("w", encoding="utf-8") as f:
+            json.dump(current_root, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    except Exception as e:
+        print(f"ERROR: Failed to write updated business_rules.json: {e}")
+        return original_mtime
+
+    try:
+        new_mtime = logics_path.stat().st_mtime
+    except Exception:
+        new_mtime = original_mtime
+
+    print(
+        f"Restored link for logic '{selected_name}' (id={selected_rid}) "
+        f"from backup into current business_rules.json."
+    )
+    return new_mtime
+
+
 def main():
     if any(arg in ("-h", "--h", "--help") for arg in sys.argv[1:]):
         print_help()
@@ -263,14 +479,30 @@ def main():
     logics_path = rules_dir / "business_rules.json"
 
     try:
-        current_rules = load_business_rules(logics_path)
+        with logics_path.open("r", encoding="utf-8") as f:
+            current_root = json.load(f)
     except Exception as e:
         print(f"Error loading business_rules.json: {e}")
         return
 
+    # Normalize current payload to a list of logic objects and keep root for writing back
+    if isinstance(current_root, dict) and isinstance(current_root.get("logics"), list):
+        current_rules = current_root["logics"]
+    elif isinstance(current_root, list):
+        current_rules = current_root
+    else:
+        print("business_rules.json is not in a supported format (expected a list or an object with a 'logics' array).")
+        return
+
+    try:
+        original_mtime = logics_path.stat().st_mtime
+    except Exception as e:
+        print(f"Warning: could not read mtime for optimistic concurrency ({e}). Continuing without it.")
+        original_mtime = 0.0
+
     # Optional filter: focus on a single logic by name prefix
     current_map = build_rule_map(current_rules)
-    logic_filter_id: str | None = None
+    logic_filter_id: Optional[str] = None
 
     prefix = prompt_with_default(
         "Filter to a single logic by name prefix (press Enter for all)",
@@ -382,7 +614,7 @@ def main():
         diff_links_for_backup(current_rules, backup_rules, show_new, target_logic_id=logic_filter_id)
 
         cmd = input(
-            "\nCommand: [n]ext (older), [p]revious (newer), [q]uit: "
+            "\nCommand: [n]ext (older), [p]revious (newer), [r]estore link, [q]uit: "
         ).strip().lower() or "n"
 
         if cmd == "n":
@@ -392,6 +624,17 @@ def main():
                 print("Already at newest backup; no newer backups. Press [n] to see older backups.")
                 continue
             current_backup_pos -= 1
+        elif cmd == "r":
+            original_mtime = restore_link_from_backup_interactive(
+                current_rules,
+                backup_rules,
+                logic_filter_id,
+                logics_path,
+                original_mtime,
+                current_root,
+            )
+            # Stay on the same backup after attempting restore
+            continue
         elif cmd == "q":
             print("Exiting.")
             return

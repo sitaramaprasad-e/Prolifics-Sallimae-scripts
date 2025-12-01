@@ -785,6 +785,24 @@ def merge_generated_logics_into_model_home(
                     rr.pop("__source_id_blank", None)
                     rr.pop("__source_orig_id", None)
 
+            # Before persisting, best-effort restore from_logic_id on links using the
+            # model-scoped logics_for_model.json created by generate_hierarchy.
+            try:
+                logics_for_model_path = TMP_DIR / "logics_for_model.json"
+                ref_logics_raw: Any = []
+                if logics_for_model_path.exists():
+                    ref_logics_raw = load_json(logics_for_model_path)
+                if isinstance(ref_logics_raw, dict) and isinstance(ref_logics_raw.get("logics"), list):
+                    ref_logics_list = ref_logics_raw["logics"]
+                elif isinstance(ref_logics_raw, list):
+                    ref_logics_list = ref_logics_raw
+                else:
+                    ref_logics_list = []
+                if isinstance(logics, list) and ref_logics_list:
+                    attach_from_logic_ids_on_links(logics, ref_logics_list)
+            except Exception as ex:
+                eprint(f"[WARN] Failed while restoring from_logic_id using logics_for_model.json (MIM): {ex}")
+
             # Optimistic concurrency check for business_rules.json
             if br_path.exists() and br_version is not None:
                 try:
@@ -1202,6 +1220,24 @@ def merge_generated_logics_into_model_home(
                 rr.pop("__source_id_blank", None)
                 rr.pop("__source_orig_id", None)
 
+        # Before persisting, best-effort restore from_logic_id on links using the
+        # model-scoped logics_for_model.json created by generate_hierarchy.
+        try:
+            logics_for_model_path = TMP_DIR / "logics_for_model.json"
+            ref_logics_raw: Any = []
+            if logics_for_model_path.exists():
+                ref_logics_raw = load_json(logics_for_model_path)
+            if isinstance(ref_logics_raw, dict) and isinstance(ref_logics_raw.get("logics"), list):
+                ref_logics_list = ref_logics_raw["logics"]
+            elif isinstance(ref_logics_raw, list):
+                ref_logics_list = ref_logics_raw
+            else:
+                ref_logics_list = []
+            if isinstance(logics, list) and ref_logics_list:
+                attach_from_logic_ids_on_links(logics, ref_logics_list)
+        except Exception as ex:
+            eprint(f"[WARN] Failed while restoring from_logic_id using logics_for_model.json (top/comp): {ex}")
+
         # Optimistic concurrency check for business_rules.json
         if br_path.exists() and br_version is not None:
             try:
@@ -1379,6 +1415,106 @@ def _normalize_logic_for_compare(rule: dict) -> dict:
     # Exclude volatile keys for duplicate detection
     exclude = {"id", "timestamp", "archived"}
     return {k: v for k, v in rule.items() if k not in exclude}
+
+
+# ---------------------------
+# Logic name index and link helpers
+# ---------------------------
+
+def build_logic_name_index(logics: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """
+    Build an index from logic name → list of logic IDs based ONLY on a
+    provided list of logics (typically logics_for_model.json).
+
+    We deliberately avoid reading business_rules.json here to prevent
+    ambiguous cross-model matches.
+    """
+    index: Dict[str, List[str]] = {}
+    for logic in logics:
+        if not isinstance(logic, dict):
+            continue
+        logic_id = logic.get("id")
+        name = logic.get("name")
+        if not logic_id or not isinstance(name, str) or not name.strip():
+            continue
+        key = name.strip()
+        index.setdefault(key, []).append(str(logic_id))
+    return index
+
+
+def attach_from_logic_ids_on_links(
+    target_logics: List[Dict[str, Any]],
+    reference_logics: List[Dict[str, Any]],
+) -> None:
+    """
+    Mutate `target_logics` in place, restoring `from_logic_id` on links where it
+    can be resolved *unambiguously* from `reference_logics`.
+
+    IMPORTANT:
+    - This function ONLY uses the provided `reference_logics` list to resolve IDs.
+      It MUST NOT read business_rules.json or any other global file.
+    - If there is more than one possible ID for a name, the link is left without
+      a from_logic_id and a warning is logged.
+    """
+    if not isinstance(target_logics, list) or not isinstance(reference_logics, list):
+        return
+
+    name_index = build_logic_name_index(reference_logics)
+
+    for logic in target_logics:
+        if not isinstance(logic, dict):
+            continue
+
+        logic_id = logic.get("id")
+        links = logic.get("links")
+        if not isinstance(links, list):
+            continue
+
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+
+            # If already set, do not change it
+            if link.get("from_logic_id"):
+                continue
+
+            candidates: List[str] = []
+            from_logic = link.get("from_logic")
+            from_output = link.get("from_output")
+
+            if isinstance(from_logic, str) and from_logic.strip():
+                candidates.append(from_logic.strip())
+            if isinstance(from_output, str) and from_output.strip():
+                val = from_output.strip()
+                if val not in candidates:
+                    candidates.append(val)
+
+            if not candidates:
+                eprint(
+                    f"WARNING: Could not infer from_logic_id for link to "
+                    f"{link.get('to_input')} in logic {logic_id}; "
+                    "no from_logic/from_output provided."
+                )
+                continue
+
+            resolved_id: Optional[str] = None
+
+            for name in candidates:
+                ids = name_index.get(name) or []
+                if len(ids) == 1:
+                    resolved_id = ids[0]
+                    break
+                elif len(ids) > 1:
+                    eprint(
+                        "WARNING: Ambiguous from_logic_id for link "
+                        f"{name} → {link.get('to_input')} in logic {logic_id}; "
+                        f"candidates={ids}. Leaving unresolved."
+                    )
+                    # Try the next candidate name if there is one
+
+            if resolved_id:
+                link["from_logic_id"] = resolved_id
+            # If still unresolved, we leave it unset – better missing than wrong.
 
 # ---------------------------
 # Merge helpers for composed decision
