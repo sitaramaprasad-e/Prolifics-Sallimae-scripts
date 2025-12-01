@@ -230,15 +230,16 @@ def _prompt_start_steps_for_pairs(spec: Dict[str, Any], selected_indexes: List[i
         print(f"  [{idx}] {src} -> {outp} • default: {pretty}")
     print("Options: [d]omain, [b]usiness, [i]ngest, [c]ategorise (or 1/2/3/4)")
 
-    # 1) Offer to use defaults for ALL pairs first
-    use_all_defaults = input("Use defaults for ALL selected pairs? [Y/n]: ").strip().lower()
-    use_all_defaults = (use_all_defaults == "" or use_all_defaults.startswith("y"))
+    # 1) Offer to use defaults for ALL pairs only when more than one pair is selected
+    if len(selected_indexes) > 1:
+        use_all_defaults = input("Use defaults for ALL selected pairs? [Y/n]: ").strip().lower()
+        use_all_defaults = (use_all_defaults == "" or use_all_defaults.startswith("y"))
 
-    if use_all_defaults:
-        for idx in selected_indexes:
-            ds = str(defaults_map[idx][0]).strip()
-            result[idx] = _step_num_from_token(ds)
-        return result
+        if use_all_defaults:
+            for idx in selected_indexes:
+                ds = str(defaults_map[idx][0]).strip()
+                result[idx] = _step_num_from_token(ds)
+            return result
 
     # 2) Per-pair selection: Enter = default for that pair; otherwise pick d/b/i/c or 1/2/3/4
     for idx in selected_indexes:

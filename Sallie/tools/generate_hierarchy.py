@@ -104,7 +104,15 @@ def step_select_model(model_home: Path, keep_ids: bool = True, compose_mode: Opt
         eprint("ERROR: models.json should be a non-empty list of models.")
         sys.exit(1)
 
-    menu = [f"{m.get('name','(unnamed)')}  –  {m.get('id','')}" for m in models]
+    menu = []
+    for m in models:
+        name = m.get("name", "(unnamed)")
+        mid = m.get("id", "")
+        logic_ids = m.get("logicIds") or []
+        logic_count = len(logic_ids) if isinstance(logic_ids, list) else 0
+        hierarchies = m.get("hierarchies") or []
+        hierarchy_count = len(hierarchies) if isinstance(hierarchies, list) else 0
+        menu.append(f"{name} (logic: {logic_count}, hier: {hierarchy_count})  –  {mid}")
     sel_idx = choose_from_list("Select a model:", menu, default_index=1)
     selected_model = models[sel_idx - 1]
 
