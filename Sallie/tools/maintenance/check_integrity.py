@@ -81,6 +81,7 @@ class LogicSummary:
     extra_link_fields: Dict[str, int]
     duplicate_logic_ids: Dict[str, int]
     short_code_name_collisions: Dict[str, int]
+    duplicate_logic_names: Dict[str, int]
     # New link-shape integrity
     links_missing_required_fields: int
     links_with_blank_required_fields: int
@@ -682,6 +683,13 @@ def _collect_issues(
                 "some logics share the same short code (last 3 hex chars of id) and name, which may cause UI ambiguity",
             )
         )
+    if logic_summary.duplicate_logic_names:
+        issues.append(
+            (
+                "duplicate_logic_names",
+                "some logics share the same name, which may indicate duplicated or ambiguous rules",
+            )
+        )
     if logic_summary.logics_with_unknown_category:
         issues.append(
             (
@@ -959,6 +967,15 @@ def _print_issue_details(
             print(f"  {key}: {count}")
         return
 
+    if issue_key == "duplicate_logic_names":
+        print("Duplicate logic names (name: count of occurrences):")
+        if not logic_summary.duplicate_logic_names:
+            print("  (None)")
+            return
+        for name, count in sorted(logic_summary.duplicate_logic_names.items()):
+            print(f"  {name}: {count}")
+        return
+
     # Unknown categories
     if issue_key == "logics_with_unknown_category":
         print("Logics referencing categories not found in rule_categories.json:")
@@ -1179,6 +1196,7 @@ def _summarize_logics(
 
     id_counts: Dict[str, int] = {}
     short_code_name_counts: Dict[str, int] = {}
+    name_counts: Dict[str, int] = {}
 
     links_missing_required_fields = 0
     links_with_blank_required_fields = 0
@@ -1219,6 +1237,11 @@ def _summarize_logics(
             if isinstance(name, str) and name:
                 key = f"{short} | {name}"
                 short_code_name_counts[key] = short_code_name_counts.get(key, 0) + 1
+
+        # Track duplicate names
+        name = logic.get("name")
+        if isinstance(name, str) and name.strip():
+            name_counts[name] = name_counts.get(name, 0) + 1
 
         # Category presence and reference integrity
         cat_val = logic.get("category")
@@ -1293,6 +1316,9 @@ def _summarize_logics(
     short_code_name_collisions: Dict[str, int] = {
         key: count for key, count in short_code_name_counts.items() if count > 1
     }
+    duplicate_logic_names: Dict[str, int] = {
+        name: count for name, count in name_counts.items() if count > 1
+    }
 
     active = total - archived
 
@@ -1315,6 +1341,7 @@ def _summarize_logics(
         extra_link_fields=extra_link_fields,
         duplicate_logic_ids=duplicate_logic_ids,
         short_code_name_collisions=short_code_name_collisions,
+        duplicate_logic_names=duplicate_logic_names,
         links_missing_required_fields=links_missing_required_fields,
         links_with_blank_required_fields=links_with_blank_required_fields,
     )
@@ -1513,6 +1540,12 @@ def _print_summary(
             print(f"  {key}: {count}")
         print()
 
+    if logic_summary.duplicate_logic_names:
+        print("Duplicate logic names (name: count of logics):")
+        for name, count in sorted(logic_summary.duplicate_logic_names.items()):
+            print(f"  {name}: {count}")
+        print()
+
     print("Models & Hierarchies")
     print("--------------------")
     print(f"Total models:                        {model_summary.total_models}")
@@ -1590,6 +1623,8 @@ def _print_summary(
                 count = sum(logic_summary.duplicate_logic_ids.values())
             elif key == "short_code_name_collisions":
                 count = sum(logic_summary.short_code_name_collisions.values())
+            elif key == "duplicate_logic_names":
+                count = sum(logic_summary.duplicate_logic_names.values())
             elif key == "logics_with_unknown_category":
                 count = logic_summary.logics_with_unknown_category
             elif key == "kg_logic_ids_without_step" and kg_summary:
