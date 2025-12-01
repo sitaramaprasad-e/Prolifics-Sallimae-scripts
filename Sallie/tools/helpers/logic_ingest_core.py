@@ -653,6 +653,14 @@ def add_logics_from_text(
     name_counts: Dict[str, int] = {}
     # Track duplicates within this document by (base rule name, code file)
     seen_name_codefile: Set[Tuple[str, str]] = set()
+    # Track skip reasons for summary logging
+    skip_counts = {
+        "duplicate_same_codefile": 0,
+        "name_not_allowed": 0,
+        "dedupe_key_seen": 0,
+        "existing_duplicate_or_older_nochange": 0,
+        "parse_error": 0,
+    }
 
     for idx, section in enumerate(sections, start=1):
         considered_count += 1
@@ -732,6 +740,7 @@ def add_logics_from_text(
                 cf_key = code_file or ""
                 dup_key = (base_name, cf_key)
                 if dup_key in seen_name_codefile:
+                    skip_counts["duplicate_same_codefile"] += 1
                     logger.info(
                         "[info] Skipping duplicate logic '%s' in same code file '%s' within document",
                         base_name,
@@ -763,6 +772,7 @@ def add_logics_from_text(
 
             # If we are restricting to an allowed set of names, apply it after suffixing
             if allowed_names is not None and name not in allowed_names:
+                skip_counts["name_not_allowed"] += 1
                 logger.trace(
                     "[trace] section %d: name '%s' not in allowed_names (size=%s); skipping",
                     idx,
@@ -875,6 +885,7 @@ def add_logics_from_text(
 
             # Dedup by (name, timestamp)
             if k in seen and not force_load:
+                skip_counts["dedupe_key_seen"] += 1
                 logger.trace(
                     "[trace] section %d: dedupe key %s already seen and force_load=False; skipping",
                     idx,
@@ -921,6 +932,7 @@ def add_logics_from_text(
                     and old_ts >= section_timestamp
                     and not is_material_change
                 ):
+                    skip_counts["existing_duplicate_or_older_nochange"] += 1
                     audit_add(
                         "logic",
                         path="section",
@@ -1103,10 +1115,26 @@ def add_logics_from_text(
                 kind,
             )
         except Exception as e:
+            skip_counts["parse_error"] += 1
             logger.error(
                 "[error] Failed to parse a logic section: %s", e
             )
 
+    # Log skipped summary per reason before the main summary
+    skipped_total = considered_count - (updated_count + new_count)
+    counted_skips = sum(skip_counts.values())
+    if skipped_total < 0:
+        skipped_total = 0
+    logger.info(
+        "[summary] add_logics_from_text: skipped=%d (duplicate_same_codefile=%d, name_not_allowed=%d, dedupe_key_seen=%d, existing_duplicate_or_older_nochange=%d, parse_error=%d; counted_skips=%d)",
+        skipped_total,
+        skip_counts["duplicate_same_codefile"],
+        skip_counts["name_not_allowed"],
+        skip_counts["dedupe_key_seen"],
+        skip_counts["existing_duplicate_or_older_nochange"],
+        skip_counts["parse_error"],
+        counted_skips,
+    )
     logger.info(
         "[summary] add_logics_from_text: considered=%d updated=%d new=%d emitted=%d",
         considered_count,
