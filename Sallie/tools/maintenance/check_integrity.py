@@ -42,6 +42,7 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -50,6 +51,14 @@ try:
     import requests  # type: ignore
 except ImportError:
     requests = None  # type: ignore
+
+# Suppress noisy OpenSSL/LibreSSL compatibility warnings from urllib3 in some
+# environments; they do not affect functionality of these simple HTTP calls.
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+",
+    module="urllib3",
+)
 
 
 @dataclass
@@ -160,10 +169,69 @@ class KGSummary:
 # Default base URL for the graph API (matches RULES_PORTAL_BASE_URL with /api/graph)
 DEFAULT_GRAPH_BASE_URL = "http://localhost:443/api/graph"
 
+# Toggle TLS certificate verification for KG HTTP calls. In many dev and some
+# internal environments we use self-signed or private CAs, so by default we
+# disable verification here. You can override this by setting the
+# RULES_PORTAL_VERIFY environment variable to "true"/"1"/"yes" to enable
+# verification.
+GRAPH_VERIFY = False
+env_verify = os.getenv("RULES_PORTAL_VERIFY")
+if env_verify is not None:
+    GRAPH_VERIFY = env_verify.strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _eprint(msg: str) -> None:
     print(msg, file=sys.stderr)
 
+
+# --- Spec selection helpers ---
+def _spec_dir() -> str:
+    """
+    Locate the default spec directory for this repo.
+
+    This script lives in <repo>/tools/maintenance; specs are under <repo>/tools/spec,
+    the same convention used by ingest_domain.py and other tools.
+    """
+    tools_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(tools_dir, "spec")
+
+
+def _find_spec_files() -> List[str]:
+    d = _spec_dir()
+    if not os.path.isdir(d):
+        return []
+    return [
+        os.path.join(d, f)
+        for f in sorted(os.listdir(d))
+        if f.endswith(".json")
+        and (f.startswith("source_") or f.startswith("sources_"))
+        and os.path.isfile(os.path.join(d, f))
+    ]
+
+
+def _choose_spec(specs: List[str]) -> Optional[str]:
+    if not specs:
+        return None
+    print("\n=== Select a spec file for KG checks (optional) ===")
+    for i, path in enumerate(specs, 1):
+        print(f"  {i}. {os.path.basename(path)}")
+    print("Choose a spec by number, or press ENTER to skip.")
+    while True:
+        choice = input("Enter number (or ENTER to skip): ").strip()
+        if not choice:
+            return None
+        if not choice.isdigit():
+            print("Please enter a valid number or press ENTER to skip.")
+            continue
+        idx = int(choice)
+        if 1 <= idx <= len(specs):
+            return specs[idx - 1]
+        print("Out of range. Try again.")
+
+
+def _load_spec(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def _prompt_model_home() -> str:
     """
@@ -273,12 +341,18 @@ def _load_kg_summary(
         _eprint("requests library not available; skipping KG checks.")
         return None
 
+    # Normalize graph_base_url: it may be a bare host (http://localhost:443)
+    # or already include /api/graph.
     base = graph_base_url.rstrip("/")
+    if not base.endswith("/api/graph"):
+        # If the caller passed just the host, append the correct KG path.
+        base = base + "/api/graph"
+
     status_url = f"{base}/status"
     run_url = f"{base}/run"
 
     try:
-        resp = requests.get(status_url, timeout=5)
+        resp = requests.get(status_url, timeout=5, verify=GRAPH_VERIFY)
         resp.raise_for_status()
         status_payload = resp.json()
     except Exception as exc:
@@ -296,6 +370,7 @@ def _load_kg_summary(
             run_url,
             json={"query": query, "parameters": {}},
             timeout=15,
+            verify=GRAPH_VERIFY,
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -357,6 +432,7 @@ def _load_kg_summary(
             run_url,
             json={"query": supports_query, "parameters": {}},
             timeout=15,
+            verify=GRAPH_VERIFY,
         )
         resp2.raise_for_status()
         payload2 = resp2.json()
@@ -402,6 +478,7 @@ def _load_kg_summary(
             run_url,
             json={"query": edges_query, "parameters": {}},
             timeout=30,
+            verify=GRAPH_VERIFY,
         )
         resp3.raise_for_status()
         payload3 = resp3.json()
@@ -1465,6 +1542,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not os.path.isdir(model_home):
         _eprint(f"Model-home is not a directory: {model_home}")
         return 1
+
+    # --- Optional spec selection for KG URL (mirrors ingest_domain.py) ---
+    # If the user has not explicitly provided --graph-base-url, allow them
+    # to pick a spec file from tools/spec and honour its "graph-url" value.
+    if args.graph_base_url is None:
+        spec_files = _find_spec_files()
+        if spec_files:
+            spec_path = _choose_spec(spec_files)
+            if spec_path:
+                try:
+                    spec = _load_spec(spec_path)
+                    spec_graph_url = spec.get("graph-url")
+                    if isinstance(spec_graph_url, str) and spec_graph_url.strip():
+                        args.graph_base_url = spec_graph_url.strip()
+                        _eprint(f"Using graph-url from spec: {args.graph_base_url}")
+                except Exception as exc:  # noqa: BLE001
+                    _eprint(f"WARNING: Failed to load spec from {spec_path}: {exc}")
 
     try:
         logics, logics_by_id = _load_logics(model_home)
