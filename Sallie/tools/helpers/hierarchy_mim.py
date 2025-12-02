@@ -107,10 +107,17 @@ from typing import Tuple, Set
 # Helper: Deduplicate Decision Names
 # ---------------------------
 def _dedupe_decision_names(model_home: Path) -> None:
-    """
-    Ensure that rule names are unique across all logics.
-    If a duplicate name is found, append a suffix like ' (2)', ' (3)', etc. based on
-    how many times the base name has already appeared. Operates on business_rules.json.
+    """Ensure that rule names are unique across all logics.
+
+    Behaviour:
+      * Treat names that only differ by trailing numeric suffixes like
+        " (2)", " (3)", etc. as part of the same decision family.
+      * For each base name, the first occurrence becomes the plain
+        base (no suffix), subsequent ones get " (2)", " (3)", ...
+        picking the lowest unused number each time.
+      * Avoid ever generating names like "Logic (2) (2)" – we always
+        normalise back to the base name and a single numeric suffix.
+    Operates on business_rules.json.
     """
     try:
         rules_path = (model_home / "business_rules.json").resolve()
@@ -133,27 +140,73 @@ def _dedupe_decision_names(model_home: Path) -> None:
             eprint("[WARN] business_rules.json 'logics' is not a list; skipping name deduplication.")
             return
 
-        seen: Dict[str, int] = {}
-        changed = 0
+        # Helper: split name into (base, suffix_num) where suffix_num == 0 means
+        # "no numeric suffix". We treat things like "Foo (2)" as base "Foo" with
+        # suffix_num == 2.
+        import re
 
+        name_re = re.compile(r"^(.*?)(?:\s*\((\d+)\))?$")
+
+        def _split_name(n: str) -> tuple[str, int]:
+            n = (n or "").strip()
+            if not n:
+                return "", 0
+            m = name_re.match(n)
+            if not m:
+                return n, 0
+            base = (m.group(1) or "").strip()
+            num_str = m.group(2)
+            if not num_str:
+                return base, 0
+            try:
+                return base, int(num_str)
+            except ValueError:
+                return base, 0
+
+        # First pass: capture original parsed names so we don't have to
+        # re-parse during renaming.
+        parsed: List[tuple[str, int]] = []
         for r in logics:
             if not isinstance(r, dict):
+                parsed.append(("", 0))
                 continue
             name = (r.get("name") or r.get("name") or "").strip()
-            if not name:
+            base, num = _split_name(name)
+            parsed.append((base, num))
+
+        # Second pass: assign unique names per base.
+        used_numbers_by_base: Dict[str, Set[int]] = {}
+        changed = 0
+
+        for r, (base, _orig_num) in zip(logics, parsed):
+            if not isinstance(r, dict):
+                continue
+            if not base:
+                # Skip nameless rules
                 continue
 
-            base = name
-            if base not in seen:
-                seen[base] = 1
-                continue
+            current_name = (r.get("name") or r.get("name") or "").strip()
+            used = used_numbers_by_base.setdefault(base, set())
 
-            seen[base] += 1
-            new_name = f"{base} ({seen[base]})"
-            if new_name == name:
-                continue
-            r["name"] = new_name
-            changed += 1
+            # Decide which suffix to use. 0 means the plain base name.
+            if 0 not in used:
+                suffix_num = 0
+            else:
+                # Find the smallest k >= 2 that is not yet used.
+                suffix_num = 2
+                while suffix_num in used:
+                    suffix_num += 1
+
+            used.add(suffix_num)
+
+            if suffix_num == 0:
+                new_name = base
+            else:
+                new_name = f"{base} ({suffix_num})"
+
+            if new_name != current_name:
+                r["name"] = new_name
+                changed += 1
 
         if changed:
             _safe_backup_json(rules_path)

@@ -693,6 +693,39 @@ def merge_generated_logics_into_model_home(
                 existing_by_name[key] = {"idx": idx, "logic": r}
             if rid0:
                 existing_by_id[rid0] = {"idx": idx, "logic": r}
+        # Track used decision names across existing rules to enforce uniqueness for newly
+        # created decisions in this MIM run. We will append " (n)" for the smallest n
+        # that avoids a name collision.
+        used_names_cf: Set[str] = set()
+        for r in logics:
+            if not isinstance(r, dict):
+                continue
+            rn0 = (r.get("name") or r.get("name") or "").strip()
+            if rn0:
+                used_names_cf.add(rn0.casefold())
+
+        def _allocate_unique_name(base_name: str) -> str:
+            """
+            Ensure the given decision name is unique (case-insensitive) among all
+            existing rules plus any created earlier in this MIM run by appending
+            a suffix " (n)" for the smallest n that is not a duplicate.
+            """
+            name = (base_name or "").strip()
+            if not name:
+                return name
+            cf = name.casefold()
+            if cf not in used_names_cf:
+                used_names_cf.add(cf)
+                return name
+            # Find the smallest n >= 2 that yields an unused name
+            n = 2
+            while True:
+                candidate = f"{name} ({n})"
+                ccf = candidate.casefold()
+                if ccf not in used_names_cf:
+                    used_names_cf.add(ccf)
+                    return candidate
+                n += 1
         # Filtered id→entry map for only rules in selected model
         existing_by_id_model = {rid: entry for rid, entry in (existing_by_id or {}).items() if rid in allowed_ids_in_model}
         # Broader map for link resolution during this merge: include all logics, not only those already in the model
@@ -723,6 +756,17 @@ def merge_generated_logics_into_model_home(
 
             if is_new:
                 # --- CREATE path ---
+                # Enforce unique decision names by appending " (n)" for the smallest n
+                # that avoids a collision with existing or earlier-created rules.
+                if incoming_name:
+                    unique_name = _allocate_unique_name(incoming_name)
+                    if unique_name != incoming_name:
+                        print(
+                            f"[INFO] MIM/Create: Renamed duplicate logic name "
+                            f"'{incoming_name}' → '{unique_name}' to avoid name collision."
+                        )
+                        incoming_name = unique_name
+                        incoming["name"] = unique_name
                 # Ensure we only create once; avoid duplicates by content+name
                 norm_incoming = _normalize_logic_for_compare(incoming)
                 duplicate = any(_normalize_logic_for_compare(r) == norm_incoming for r in logics if isinstance(r, dict))
@@ -843,20 +887,103 @@ def merge_generated_logics_into_model_home(
             if rid:
                 ensure_model_ids.add(rid)
 
-        # Upgrade hierarchy_meta names → ids using just-created rules (ensures topId gets written)
-        if hierarchy_meta and isinstance(hierarchy_meta, dict) and created_name_to_id:
-            by_name = hierarchy_meta.get("by_name") or {}
-            if isinstance(by_name, dict) and by_name:
-                for tname, payload in list(by_name.items()):
-                    if not isinstance(payload, dict):
+        # Decide the hierarchy topId based on what PCPT actually returned.
+        # This is NOT a fallback: in MIM mode, the PCPT-returned Top‑Level decision
+        # is treated as the authoritative top for the hierarchy.
+        if hierarchy_meta and isinstance(hierarchy_meta, dict):
+            # Find the payload we already have (hierarchy_name / hierarchy_description)
+            # from either by_id or by_name. We reuse that description, but bind it
+            # to the PCPT-selected top decision.
+            by_id_meta = hierarchy_meta.get("by_id") or {}
+            by_name_meta = hierarchy_meta.get("by_name") or {}
+            if not isinstance(by_id_meta, dict):
+                by_id_meta = {}
+            if not isinstance(by_name_meta, dict):
+                by_name_meta = {}
+
+            # Capture any originally suggested top name for logging purposes only
+            suggested_top_name = None
+            if by_name_meta:
+                suggested_top_name = next(iter(by_name_meta.keys()), None)
+
+            # Extract a single payload (hierarchy_name / hierarchy_description)
+            meta_payload = None
+            if by_id_meta:
+                # Take the first payload from by_id if present
+                for _tid, _payload in by_id_meta.items():
+                    if isinstance(_payload, dict):
+                        meta_payload = _payload
+                        break
+            if meta_payload is None and by_name_meta:
+                for _tname, _payload in by_name_meta.items():
+                    if isinstance(_payload, dict):
+                        meta_payload = _payload
+                        break
+
+            # If we have no payload at all, there's nothing meaningful to attach
+            if meta_payload is not None and created_ids:
+                # Build a lookup of created id -> rule so we can examine their kinds
+                created_lookup = {}
+                for r in logics:
+                    if not isinstance(r, dict):
                         continue
-                    key = (str(tname) or "").strip().casefold()
-                    tid = created_name_to_id.get(key)
-                    if tid:
-                        hierarchy_meta.setdefault("by_id", {})
-                        hierarchy_meta["by_id"][tid] = payload
-                        del by_name[tname]
-                hierarchy_meta["by_name"] = by_name
+                    rid0 = (r.get("id") or "").strip()
+                    if rid0 and rid0 in created_ids:
+                        created_lookup[rid0] = r
+
+                # Prefer a single Decision (Top-Level) among created rules
+                top_candidates = []
+                for rid, rule in created_lookup.items():
+                    kind_val = _norm_kind(rule.get("Kind") or rule.get("kind"))
+                    if kind_val == "decision (top-level)":
+                        top_candidates.append((rid, rule))
+
+                pcpt_top_id = None
+                pcpt_top_name = None
+
+                if len(top_candidates) == 1:
+                    pcpt_top_id, rule = top_candidates[0]
+                    pcpt_top_name = (rule.get("name") or rule.get("name") or "").strip()
+                elif len(top_candidates) > 1:
+                    # Multiple Top-Level decisions; pick the first but log the ambiguity
+                    pcpt_top_id, rule = top_candidates[0]
+                    pcpt_top_name = (rule.get("name") or rule.get("name") or "").strip()
+                    eprint(
+                        f"[WARN] MIM: Multiple PCPT Top-Level decisions detected for hierarchy "
+                        f"'{meta_payload.get('hierarchy_name', '')}'; using '{pcpt_top_name}' (id={pcpt_top_id})."
+                    )
+                else:
+                    # No explicit Top-Level kind; fall back to the first created rule, if any.
+                    # This is still treating PCPT output as authoritative, but without kind hints.
+                    first_id = created_ids[0]
+                    rule = created_lookup.get(first_id)
+                    if isinstance(rule, dict):
+                        pcpt_top_id = first_id
+                        pcpt_top_name = (rule.get("name") or rule.get("name") or "").strip()
+
+                if pcpt_top_id:
+                    # Rebuild hierarchy_meta to bind this hierarchy description to the PCPT-picked topId
+                    hierarchy_meta["by_id"] = {
+                        pcpt_top_id: {
+                            "hierarchy_name": meta_payload.get("hierarchy_name", ""),
+                            "hierarchy_description": meta_payload.get("hierarchy_description", ""),
+                        }
+                    }
+                    # Clear by_name; it is no longer the primary key once we have a concrete id
+                    hierarchy_meta["by_name"] = {}
+
+                    # Emit an INFO log so it's obvious in the console what happened
+                    if pcpt_top_name:
+                        if suggested_top_name and suggested_top_name != pcpt_top_name:
+                            print(
+                                f"[INFO] MIM: Using PCPT-returned top-level decision "
+                                f"'{pcpt_top_name}' (id={pcpt_top_id}) instead of suggested '{suggested_top_name}'."
+                            )
+                        else:
+                            print(
+                                f"[INFO] MIM: Using PCPT-returned top-level decision "
+                                f"'{pcpt_top_name}' (id={pcpt_top_id}) as hierarchy top."
+                            )
 
         # --- models.json merge with Hierarchies only (ditch overlay) ---
         models_path = (model_home / "models.json").resolve()
