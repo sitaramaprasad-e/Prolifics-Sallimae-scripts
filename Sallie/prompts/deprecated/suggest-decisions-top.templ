@@ -1,0 +1,128 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+Can you create a top-level decision that takes in the outputs of these base decisions and synthesizes into a composite decision? Make sure the top-level decision doesn't implement the logic in the base decisions, but rather takes their outputs as inputs.
+
+1. Generate a top level decision.
+2. Keep all decisions grounded in the code provided in input 1.
+3. The DMN table must include every dmn_input and dmn_output, and the table must describe the decision logic.
+4. Include links to the relevant existing base decisions and BKMs. 
+
+Reponse must be in this json structure:
+
+[[
+  {
+    "name": "Persist Operation Result",
+    "purpose": "Map a database save outcome into a normalized operation result and optional error message",
+    "spec": "If Database.SaveResult.isSuccess is true set OperationResult to success and ErrorMessage to dash. Otherwise set OperationResult to error and copy Database.SaveResult.errors into ErrorMessage",
+    "code_block": "",
+    "code_file": "",
+    "code_lines": [],
+    "code_function": "",
+    "example": "Save fails with validation error results in OperationResult error and ErrorMessage containing the validation text",
+    "dmn_hit_policy": "UNIQUE",
+    "dmn_inputs": [
+      { "name": "Database.SaveResult.isSuccess", "type": "boolean" },
+      { "name": "Database.SaveResult.errors", "type": "string" }
+    ],
+    "dmn_outputs": [
+      { "name": "OperationResult", "type": "string", "allowedValues": ["success", "error"] },
+      { "name": "ErrorMessage", "type": "string" }
+    ],
+    "dmn_table": "| Database.SaveResult.isSuccess condition | OperationResult | ErrorMessage |\n|-----------------------------------------|---------------|--------------|\n| true                                    | success       | -            |\n| false                                   | error         | Database.SaveResult.errors |",
+    "timestamp": "2025-11-07T00:10:00.000Z",
+    "id": "25d5749b-613d-47b3-b8e2-6a84a5114561",
+    "owner": "SF Team",
+    "component": "SF Code",
+    "kind": "Decision",
+    "links": [],
+    "category": "Audit",
+    "business_area": null,
+    "ai_categorized": true,
+    "category_explanation": "Normalizes DB outcomes for audit and downstream decisions",
+    "archived": false
+  },
+  {
+    "name": "Should Error Email Be Sent",
+    "purpose": "Determine whether to send an error notification email based on the presence of errors in the batch",
+    "spec": "If ErrorMap is not empty send email otherwise do not send",
+    "code_block": "",
+    "code_file": "",
+    "code_lines": [],
+    "code_function": "",
+    "example": "Three failed records produce SendEmail true",
+    "dmn_hit_policy": "UNIQUE",
+    "dmn_inputs": [
+      { "name": "ErrorMap.isEmpty", "type": "boolean" }
+    ],
+    "dmn_outputs": [
+      { "name": "SendEmail", "type": "boolean" }
+    ],
+    "dmn_table": "| ErrorMap.isEmpty condition | SendEmail |\n|----------------------------|-----------|\n| false                      | true      |\n| true                       | false     |",
+    "timestamp": "2025-11-07T00:10:00.000Z",
+    "id": "ef0d85de-36ea-474f-85e2-44b837df06ba",
+    "owner": "SF Team",
+    "component": "SF Code",
+    "kind": "Decision",
+    "links": [],
+    "category": "Audit",
+    "business_area": null,
+    "ai_categorized": true,
+    "category_explanation": "Controls error notification behavior",
+    "archived": false
+  },
+  {
+    "name": "Execute Error Notification",
+    "purpose": "Determine whether to send an error notification email and what body to use based directly on operation result and error presence",
+    "spec": "If SendEmail is true and OperationResult equals error then set Email.Sent to true and Email.Body to ErrorMessage. Otherwise set Email.Sent to false and Email.Body to dash.",
+    "code_block": "",
+    "code_file": "",
+    "code_lines": [],
+    "code_function": "",
+    "example": "If SendEmail is true and OperationResult is error then Email.Sent is true and Email.Body is the ErrorMessage; in all other cases Email.Sent is false and Email.Body is dash",
+    "dmn_hit_policy": "UNIQUE",
+    "dmn_inputs": [
+      { "name": "OperationResult", "type": "string", "allowedValues": ["success", "error"] },
+      { "name": "ErrorMessage", "type": "string" },
+      { "name": "SendEmail", "type": "boolean" }
+    ],
+    "dmn_outputs": [
+      { "name": "Email.Sent", "type": "boolean" },
+      { "name": "Email.Body", "type": "string" }
+    ],
+    "dmn_table": "| SendEmail condition | OperationResult condition | Email.Sent | Email.Body   |\n|---------------------|---------------------------|-----------|-------------|\n| true                | \"error\"                  | true      | ErrorMessage |\n| -                   | -                         | false     | -           |",
+    "timestamp": "2025-11-07T00:10:00.000Z",
+    "id": "",
+    "owner": "SF Team",
+    "component": "SF Code",
+    "kind": "Decision (Top-Level)",
+    "links": [
+      { "from_logic": "Persist Operation Result", "from_output": "OperationResult", "to_input": "OperationResult", "kind": "depends_on" },
+      { "from_logic": "Persist Operation Result", "from_output": "ErrorMessage", "to_input": "ErrorMessage", "kind": "depends_on" },
+      { "from_logic": "Should Error Email Be Sent", "from_output": "SendEmail", "to_input": "SendEmail", "kind": "depends_on" }
+    ],
+    "category": "Audit",
+    "business_area": null,
+    "ai_categorized": true,
+    "category_explanation": "Top level trigger based on operation result and error presence",
+    "archived": false
+  }
+]
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_logic_id rather than from_logic, you should use from_logic as per the example and populate it with the name of the step.
+* Do not put any special characters in the output.
+* For any newly generated rules, use blanks for the following json fields: id, category, ai_categorised, component, owner, category_explanation
+* Set kind to Decision (Top-Level)

@@ -42,6 +42,7 @@ Be careful when creating links, they need to adhere to these rules:
 - DO NOT create loops where a decision links to a another decision that then links back to the original.
 - ONLY create the link on the decision that is the target (it is implied on the source).
 - Ensure that there are no decisions at any level that have a top-level decision in its links property (this is because top-level links can't be a source).
+- Populate the link_explanation with your reasoning on why you have linked those inputs/outputs. Explain 1) how good the match is 2) the detailed reason behind your decision to create this link that will stand up in a court of law.
 
 Reponse must be in this json structure:
 
@@ -50,12 +51,6 @@ Reponse must be in this json structure:
     "name": "Persist Operation Result",
     "purpose": "Map a database save outcome into a normalized operation result and optional error message",
     "spec": "If Database.SaveResult.isSuccess is true set OperationResult to success and ErrorMessage to dash. Otherwise set OperationResult to error and copy Database.SaveResult.errors into ErrorMessage",
-    "code_block": "",
-    "code_file": "",
-    "code_lines": [],
-    "code_function": "",
-    "example": "Save fails with validation error results in OperationResult error and ErrorMessage containing the validation text",
-    "dmn_hit_policy": "UNIQUE",
     "dmn_inputs": [
       { "name": "Database.SaveResult.isSuccess", "type": "boolean" },
       { "name": "Database.SaveResult.errors", "type": "string" }
@@ -64,60 +59,24 @@ Reponse must be in this json structure:
       { "name": "OperationResult", "type": "string", "allowedValues": ["success", "error"] },
       { "name": "ErrorMessage", "type": "string" }
     ],
-    "dmn_table": "| Database.SaveResult.isSuccess condition | OperationResult | ErrorMessage |\n|––––––––––––––––––––|—————–|–––––––|\n| true                                   | success         | -            |\n| false                                  | error           | Database.SaveResult.errors |",
-    "timestamp": "2025-11-07T00:10:00.000Z",
-    "id": "d8f2d836-0623-4b45-a2ae-7e677a4af391",
-    "owner": "SF Team",
-    "component": "SF Code",
-    "kind": "Decision",
-    "links": [],
-    "category": "Audit",
-    "business_area": null,
-    "ai_categorized": true,
-    "category_explanation": "Normalizes DB outcomes for audit and downstream decisions",
-    "archived": false
+    "links": []
   },
   {
     "name": "Should Error Email Be Sent",
     "purpose": "Determine whether to send an error notification email based on the presence of errors in the batch",
-    "spec": "If ErrorMap is not empty send email otherwise do not send",
-    "code_block": "",
-    "code_file": "",
-    "code_lines": [],
-    "code_function": "",
-    "example": "Three failed records produce SendEmail true",
-    "dmn_hit_policy": "UNIQUE",
     "dmn_inputs": [
       { "name": "ErrorMap.isEmpty", "type": "boolean" }
     ],
     "dmn_outputs": [
       { "name": "SendEmail", "type": "boolean" }
     ],
-    "dmn_table": "| ErrorMap.isEmpty condition | SendEmail |\n|—————————|———–|\n| false                     | true      |\n| true                      | false     |",
-    "timestamp": "2025-11-07T00:10:00.000Z",
-    "id": "57ae457d-c75d-4ff6-814e-ce1b1bd8bd5d",
-    "owner": "SF Team",
-    "component": "SF Code",
-    "kind": "Decision",
-    "links": [],
-    "category": "Audit",
-    "business_area": null,
-    "ai_categorized": true,
-    "category_explanation": "Controls error notification behavior",
-    "archived": false
+    "links": []
   },
   {
     "name": "Compose Error Notification Outcome",
     "purpose": "Compose whether to notify and the message body by combining operation result and send email decision",
-    "spec": "Send a notification only when SendEmail is true and OperationResult equals error. Set Notification.Body to ErrorMessage when sending otherwise dash",
-    "code_block": "",
-    "code_file": "",
-    "code_lines": [],
-    "code_function": "",
-    "example": "If SendEmail is true and OperationResult is error then Notification.ShouldSend is true and Notification.Body is the ErrorMessage",
-    "dmn_hit_policy": "FIRST",
     "dmn_inputs": [
-      { "name": "OperationResult", "type": "string", "allowedValues": ["success", "error"] },
+      { "name": "OperationResult", "type": "string" },
       { "name": "ErrorMessage", "type": "string" },
       { "name": "SendEmail", "type": "boolean" }
     ],
@@ -125,33 +84,40 @@ Reponse must be in this json structure:
       { "name": "Notification.ShouldSend", "type": "boolean" },
       { "name": "Notification.Body", "type": "string" }
     ],
-    "dmn_table": "| SendEmail condition | OperationResult condition | Notification.ShouldSend | Notification.Body |\n|———————|—————————|———————––|—————––|\n| true                | \"error\"                   | true                    | ErrorMessage      |\n| -                   | -                         | false                   | -                 |",
-    "timestamp": "2025-11-07T00:10:00.000Z",
-    "id": "",
-    "owner": "",
-    "component": "",
-    "kind": "Decision (Composite)",
     "links": [
-      { "from_logic": "Persist Operation Result", "from_output": "OperationResult", "to_input": "OperationResult", "kind": "depends_on" },
-      { "from_logic": "Persist Operation Result", "from_output": "ErrorMessage", "to_input": "ErrorMessage", "kind": "depends_on" },
-      { "from_logic": "Should Error Email Be Sent", "from_output": "SendEmail", "to_input": "SendEmail", "kind": "depends_on" }
-    ],
-    "category": "",
-    "business_area": null,
-    "ai_categorized": "",
-    "category_explanation": "",
-    "archived": false
+      {
+        "from_logic": "Persist Operation Result",
+        "from_output": "OperationResult",
+        "to_input": "OperationResult",
+        "kind": "depends_on",
+        "link_explanation": "The output OperationResult exactly matches the input OperationResult (same name and type), so this link is a direct structural match."
+      },
+      {
+        "from_logic": "Persist Operation Result",
+        "from_output": "ErrorMessage",
+        "to_input": "ErrorMessage",
+        "kind": "depends_on",
+        "link_explanation": "The output ErrorMessage matches the input ErrorMessage exactly, so the AI established this link based on direct alignment."
+      },
+      {
+        "from_logic": "Should Error Email Be Sent",
+        "from_output": "SendEmail",
+        "to_input": "SendEmail",
+        "kind": "depends_on",
+        "link_explanation": "SendEmail is produced and consumed with identical name and type, making this a straightforward field-aligned link."
+      },
+      {
+        "from_logic": "Persist Operation Result",
+        "from_output": "OperationResult",
+        "to_input": "SendEmail",
+        "kind": "depends_on",
+        "link_explanation": "The names and types do not match (string vs boolean), but the AI inferred a semantic relationship because SendEmail is evaluated only when OperationResult is \"error\". The pipeline identified this conditional dependency in the rule specifications."
+      }
+    ]
   },
   {
     "name": "Execute Error Notification",
     "purpose": "Trigger the actual email send based on composed notification outcome",
-    "spec": "If Notification.ShouldSend is true send an email using Notification.Body otherwise take no action",
-    "code_block": "",
-    "code_file": "",
-    "code_lines": [],
-    "code_function": "",
-    "example": "When Notification.ShouldSend is true an email is sent with the composed body",
-    "dmn_hit_policy": "UNIQUE",
     "dmn_inputs": [
       { "name": "Notification.ShouldSend", "type": "boolean" },
       { "name": "Notification.Body", "type": "string" }
@@ -159,21 +125,29 @@ Reponse must be in this json structure:
     "dmn_outputs": [
       { "name": "Email.Sent", "type": "boolean" }
     ],
-    "dmn_table": "| Notification.ShouldSend condition | Email.Sent |\n|–––––––––––––––––|————|\n| true                             | true       |\n| false                            | false      |",
-    "timestamp": "2025-11-07T00:10:00.000Z",
-    "id": "",
-    "owner": "SF Team",
-    "component": "SF Code",
-    "kind": "Decision (Top-Level)",
     "links": [
-      { "from_logic": "Compose Error Notification Outcome", "from_output": "Notification.ShouldSend", "to_input": "Notification.ShouldSend", "kind": "depends_on" },
-      { "from_logic": "Compose Error Notification Outcome", "from_output": "Notification.Body", "to_input": "Notification.Body", "kind": "depends_on" }
-    ],
-    "category": "Audit",
-    "business_area": null,
-    "ai_categorized": true,
-    "category_explanation": "Top level trigger based on composed outcome",
-    "archived": false
+      {
+        "from_logic": "Compose Error Notification Outcome",
+        "from_output": "Notification.ShouldSend",
+        "to_input": "Notification.ShouldSend",
+        "kind": "depends_on",
+        "link_explanation": "The hierarchical name and type Notification.ShouldSend match exactly, so this link is structurally aligned."
+      },
+      {
+        "from_logic": "Compose Error Notification Outcome",
+        "from_output": "Notification.Body",
+        "to_input": "Notification.Body",
+        "kind": "depends_on",
+        "link_explanation": "Output and input fields both use Notification.Body with matching string types, so this link is based on direct alignment."
+      },
+      {
+        "from_logic": "Compose Error Notification Outcome",
+        "from_output": "Notification.ShouldSend",
+        "to_input": "Email.Sent",
+        "kind": "depends_on",
+        "link_explanation": "The names do not match, but the AI linked them because Email.Sent is logically determined by Notification.ShouldSend. The specification describes Email.Sent as a direct action triggered by ShouldSend, indicating a control-flow dependency."
+      }
+    ]
   }
 ]
 
@@ -181,5 +155,5 @@ Hints
 * Respond as if you are responding to a program i.e. leave out any code block formatting
 * Response must be a json that follows the form of the decisions in input 2. However ignore the fact that input 2 decisions may have links with from_logic_id rather than from_logic, you should use from_logic as per the example and populate it with the name of the step.
 * Do not put any special characters in the output.
-* For any newly generated rules, use blanks for the following json fields: id, rule_category, ai_categorised, component, owner, category_explanation
+* For any newly generated rules, use blanks for the following json fields: id, category, ai_categorised, component, owner, category_explanation
 * Do not change anything in the other decisions other than adding new links where needed for the hierarchy. 

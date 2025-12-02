@@ -1,0 +1,100 @@
+INPUT 1: SOURCE CODE
+
+@@INPUT1@@
+
+INPUT 2: BASE BUSINESS LOGIC
+
+@@INPUT_FILE_CONTENT@@
+
+INPUT 3: DECISION MODEL
+
+@@INPUT_FILE2_CONTENT@@  
+
+INSTRUCTIONS
+
+Take a look at these decisions (input 2), and work out what the decision hierarchy is that organizes these decisions from top to botton, and specifically which of the decisions should be at the top-level of that decision hierarchy. There is often only one top-level decision, but could be more.
+
+1. Keep all decisions grounded in the code provided in input 1.
+2. Top-level should have decisions flow into them from lower level decisions.
+3. Top-level decisions should not themselves flow into higher level decisions. They are at the top. Note that if a rule is currently marked as a source link for another rule, then it cannot be top-level, and you should look instead at the rule it feeds into.
+4. You need to think carefully about all of the rules, and how they form mini hierarchies of decisions that feed from bottom to top, lower level decisions feeding into a higher level decision.
+5. For some hierarchies, for them to make sense, we might need to suggest a new top-level decision that doesn't exist yet. For those, create a new decision, and leave its id blank i.e. "".
+6. If there are no top-level decisions, just return an empty json.
+7. The flow description needs to fully explain how the lower level decisions feed into the top-level decision, and any parallel flows that also feed into the top-level decision.
+8. Never suggest a hierarchy that is just a single decision. There must be at least one lower level decision feeding into the top-level decision. 
+9. Here's an example of the output I want, with the top-level decisions as top, quoting the uuid of the decision.
+
+{
+  "hierarchies": [
+    {
+      "name": "Account Processing Strategy",
+      "top": {
+        "id": "520382fe-3e83-45f2-9849-cc8b874aac51",
+        "name": "Decide Account Processing Strategy"
+      },
+      "lower": [
+        {
+          "id": "599121f1-1ccf-48fc-ae7c-99969b9d862f",
+          "name": "Evaluate Record Eligibility"
+        },
+        {
+          "id": "cae02ad7-b2ce-4c8e-ab76-1cd33e6d297f",
+          "name": "Determine Processing Path (Create vs Update)"
+        },
+        {
+          "id": "b4936363-a963-4bee-90cb-9e3a48e24b9e",
+          "name": "Resolve Conflicts (Merge/Duplicate Handling)"
+        }
+      ],
+      "flow_description": "The flow starts with 'Assess Search Results Context', which evaluates the user's current search query, the number of matching accounts, the specificity of results, and whether an account is selected. This decision establishes the contextual baseline the other decisions depend on. Based on this shared context, 'Should Show Create Account Button' decides whether it is appropriate to display the option to create a new account. For example, if no records match or if the search indicates a new customer, this decision may return true. Simultaneously, 'Should Enable Edit/Link Actions' determines whether actions such as editing an account, linking records, or performing follow-up actions should be available, typically depending on whether a specific, valid account is selected in the results. Each of these lower-level decisions produces independent outputs that describe which UI actions are enabled or disabled. The top-level decision 'Decide Visible Account Actions' then composes these outputs: it uses the contextual understanding from the search assessment to validate action availability, aggregates the visibility of the Create button with the permissions for Edit/Link operations, and produces a final set of account actions that should be rendered to the user. This ensures the top-level outcome reflects the combined logic of context evaluation, creation eligibility, and edit/link eligibility."
+ 
+    {
+      "name": "Account Visibility & Actions",
+      "top": {
+        "id": "",
+        "name": "Decide Visible Account Actions"
+      },
+      "lower": [
+        {
+          "id": "18fd29b3-52de-4f46-a3f8-56c5f5815c0a",
+          "name": "Assess Search Results Context"
+        },
+        {
+          "id": "a7dd92f4-0afd-4fef-843c-fd906aa5eef9",
+          "name": "Should Show Create Account Button"
+        },
+        {
+          "id": "f216c11c-8383-4982-baac-7f26863be40e",
+          "name": "Should Enable Edit/Link Actions"
+        }
+      ],
+      "flow_description": "The system first examines the context of the user's account search. Based on that context, one branch decides whether the 'Create Account' button should be shown, while another branch determines if editing or linking options should be available. Both outcomes contribute independently to the top-level decision governing visible account actions."
+    },
+    {
+      "name": "Account Data Readiness",
+      "top": {
+        "id": "e6a06008-7001-4e90-a093-7886e448daf9",
+        "name": "Approve Account for Downstream Use"
+      },
+      "lower": [
+        {
+          "id": "8cbfaa4d-ece9-445e-8bf1-db5a391aba5a",
+          "name": "Validate Required Fields"
+        },
+        {
+          "id": "38ac6486-efb7-498f-a05c-f8c155b07870",
+          "name": "Standardize & Normalize Attributes"
+        },
+        {
+          "id": "610ecbc0-7b31-4c2d-ad77-5a499b9f355a",
+          "name": "Compute Derived Metrics & Flags"
+        }
+      ],
+      "flow_description": "The flow begins with 'Validate Required Fields', which checks whether the account contains all mandatory attributes, verifies basic formatting rules, and produces a pass/fail result along with any validation messages. This outcome is critical because all other steps assume the presence of valid base data. After validation succeeds, the system applies 'Standardize & Normalize Attributes', where names, addresses, phone numbers, classification codes, and other fields are converted into canonical formats. This step ensures consistency and removes ambiguity before the account moves into downstream integration. At the same time, 'Compute Derived Metrics & Flags' calculates supplemental indicators such as completeness scores, data-quality flags, eligibility markers, or segmentation metrics. These derived elements often refine the decision about whether the record is adequate for consumption by downstream systems. The top-level decision 'Approve Account for Downstream Use' then evaluates the combined outputs: it requires the validation result to be successful, confirms that standardized attributes meet formatting expectations, and incorporates the derived quality and readiness indicators. Only when all three lower-level decisions collectively indicate readiness does the top-level decision approve the account for downstream processing. This ensures complete, consistent, and high-quality data flows into external systems."
+  }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Do not put any special characters in the output.

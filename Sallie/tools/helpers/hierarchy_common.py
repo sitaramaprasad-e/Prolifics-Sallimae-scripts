@@ -530,16 +530,34 @@ def merge_generated_logics_into_model_home(
                 (link.get("kind") or "").strip(),
             )
 
-        seen = {_k(l) for l in existing_links if isinstance(l, dict)}
+        # Build a lookup from key -> existing link object so we can update
+        # metadata such as link_explanation when a matching link already exists.
+        existing_by_key = {}
+        for _l in existing_links:
+            if not isinstance(_l, dict):
+                continue
+            existing_by_key[_k(_l)] = _l
+
+        seen = set(existing_by_key.keys())
         added = 0
         for l in incoming_links:
             if not isinstance(l, dict):
                 continue
             key = _k(l)
             if key in seen:
+                # Link already exists; update its explanation (or other
+                # non-key metadata) from the incoming link if provided.
+                existing_link = existing_by_key.get(key)
+                if existing_link is not None:
+                    incoming_expl = (l.get("link_explanation") or "").strip()
+                    if incoming_expl:
+                        # Always prefer the incoming explanation if present.
+                        existing_link["link_explanation"] = incoming_expl
                 continue
+
             existing_links.append(l)
             seen.add(key)
+            existing_by_key[key] = l
             added += 1
 
         existing_rule["links"] = existing_links

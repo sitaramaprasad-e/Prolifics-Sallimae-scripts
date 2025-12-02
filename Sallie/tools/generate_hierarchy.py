@@ -69,9 +69,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from helpers.hierarchy_simple import run_simple_compose
+from helpers.deprecated.hierarchy_simple import run_simple_compose
 from helpers.hierarchy_mim import run_mim_compose
-from helpers.hierarchy_chain import run_chain_compose
+from helpers.deprecated.hierarchy_chain import run_chain_compose
 
 from helpers.hierarchy_common import step_header, load_json, ensure_dir, eprint, write_json, TMP_DIR, choose_from_list, SPEC_DIR, prompt_with_default
 

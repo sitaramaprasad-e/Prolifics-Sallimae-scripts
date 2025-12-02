@@ -1,0 +1,88 @@
+INPUT 1: SOURCE CODE
+
+Here is the source code I want you to consider for creating hierarchies of decisions.
+
+@@INPUT1@@
+
+INPUT 2: DECISIONS
+
+Here is the list of decisions that correspond to this source code that I want you to consider for the hierarchies.
+
+@@INPUT_FILE_CONTENT@@
+
+INSTRUCTIONS
+
+Take a look at the decisions and organize them into sensible decision hierarchies where the upstream decisions support the downstream decisions. Consider the source code when deciding on these hierarchies.
+
+Reponse must be in this json structure:
+
+{
+  "hierarchies": [
+    {
+      "name": "Payment Processing Outcome",
+      "description": "Determines the final payment outcome by validating details, assessing risk, and authorizing the transaction.",
+      "tree": [
+        {
+          "id": "8e7dcdf0-a023-4d9a-8c38-f1fbc03f9b44",
+          "label": "Determine Payment Outcome",
+          "children": [
+            {
+              "id": "d76de8bf-5436-4be8-8d0c-74f0db510caa",
+              "label": "Validate Payment Details",
+              "children": [
+                {
+                  "id": "f955398d-4f71-452a-aaad-c30f181da3de",
+                  "label": "Validate Card Number"
+                },
+                {
+                  "id": "0f34954d-ee98-4b02-95b7-2e44062c989c",
+                  "label": "Validate Expiration Date"
+                },
+                {
+                  "id": "53d4feb7-28d3-4cb4-9fbc-78ff7d2d9b4e",
+                  "label": "Validate CVV"
+                }
+              ]
+            },
+            {
+              "id": "b023ec0d-0d77-4c10-909d-75a3c3bc84fa",
+              "label": "Assess Payment Risk",
+              "children": [
+                {
+                  "id": "c2b52fbc-8dec-4da2-8f00-3ef6ea535df4",
+                  "label": "Check Fraud Score"
+                },
+                {
+                  "id": "2669a4b7-0e6c-4c61-8dd0-2f2946ecf88d",
+                  "label": "Check Geo-Location Risk"
+                }
+              ]
+            },
+            {
+              "id": "2ae7e879-a617-4f75-a56d-72f1a79bdd09",
+              "label": "Authorize Transaction",
+              "children": [
+                {
+                  "id": "bcb60b9e-f0b0-45a3-bf76-4adbeacd5530",
+                  "label": "Check Available Balance"
+                },
+                {
+                  "id": "44cbab73-181d-4222-a9a8-0a5e8b22f4fc",
+                  "label": "Apply Merchant Rules"
+                },
+                {
+                  "id": "b58c5e14-4a2e-4e6e-a0cb-2bddc70c4bb2",
+                  "label": "Generate Authorization Outcome"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+Hints
+* Respond as if you are responding to a program i.e. leave out any code block formatting
+* Do not put any special characters in the output.

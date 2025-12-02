@@ -1189,6 +1189,8 @@ def _summarize_logics(
         "to_input",
         "kind",
         "from_logic_id",
+        "link_explanation",
+        "in_graph",
     }
 
     extra_logic_fields: Dict[str, int] = {}

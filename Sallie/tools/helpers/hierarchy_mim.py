@@ -716,7 +716,11 @@ def run_mim_compose(
                     print(f"\n{ANSI_YELLOW}--- Waiting before next hierarchy ({i+1}/{total}) ---{ANSI_RESET}")
                     input("Press Enter to continue when ready, or Ctrl+C to stop...\n")
 
-            _dedupe_decision_names(model_home_prompted)
+            # NOTE: In MIM mode, name deduplication is handled inside
+            # merge_generated_logics_into_model_home, which only adjusts the
+            # names of newly-created rules while leaving existing rule names
+            # untouched. We therefore no longer run a global name-dedupe pass
+            # here.
             print("\nDone ✔")
             print("Composed decision report generated and merged (per‑hierarchy).")
             return
