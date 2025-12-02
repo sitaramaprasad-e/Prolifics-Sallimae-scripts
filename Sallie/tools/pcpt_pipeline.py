@@ -445,7 +445,7 @@ def run_pipeline(
                             mode=mode,
                         )
                         # For multi-mode runs, provide index/total for progress; for single-mode, omit them
-                        if mode == "single":
+                        if mode == "multi":
                             run_kwargs["total"] = len(pairs)
                             run_kwargs["index"] = idx
                         pcpt_run_custom_prompt(**run_kwargs)

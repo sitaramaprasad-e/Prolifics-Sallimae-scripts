@@ -1484,6 +1484,7 @@ def _print_summary(
     logic_summary: LogicSummary,
     model_summary: ModelSummary,
     kg_summary: Optional[KGSummary],
+    unwritable_paths: List[str],
 ) -> List[Tuple[str, str]]:
     print()
     print("=== Integrity Summary ===")
@@ -1493,6 +1494,13 @@ def _print_summary(
     print("Summary Statistics")
     print("------------------")
     print()
+
+    if unwritable_paths:
+        print("File Permission Issues")
+        print("----------------------")
+        for p in unwritable_paths:
+            print(f"  - JSON file not writable: {p}")
+        print()
 
     print("Logics")
     print("------")
@@ -1677,6 +1685,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         _eprint(f"Model-home is not a directory: {model_home}")
         return 1
 
+    # --- Writable checks for critical JSON files ---
+    rules_path = os.path.join(model_home, "business_rules.json")
+    models_path = os.path.join(model_home, "models.json")
+
+    unwritable = []
+    for p in (rules_path, models_path):
+        try:
+            if not os.access(p, os.W_OK):
+                unwritable.append(p)
+        except Exception:
+            unwritable.append(p)
+
+    if unwritable:
+        print("\nWARNING: The following JSON files are not writable by the current user:")
+        for p in unwritable:
+            print(f"  - {p}")
+        print("This may affect tools that update or migrate these files.\n")
+
     # --- Optional spec selection for KG URL (mirrors ingest_domain.py) ---
     # If the user has not explicitly provided --graph-base-url, allow them
     # to pick a spec file from tools/spec and honour its "graph-url" value.
@@ -1714,7 +1740,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     logic_summary = _summarize_logics(logics, logics_by_id, category_names)
     model_summary = _summarize_models_and_hierarchies(models, logics_by_id)
 
-    issues = _print_summary(model_home, logic_summary, model_summary, kg_summary)
+    issues = _print_summary(model_home, logic_summary, model_summary, kg_summary, unwritable)
 
     # Interactive drill-down into issues, if any were detected.
     if issues:
