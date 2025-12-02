@@ -349,6 +349,10 @@ def filter_categories_for_logic(rule: Dict[str, Any]) -> str:
                 filtered.append(cat)
         # Replace with filtered list (even if empty — that's intentional)
         data["categories"] = filtered
+        # Drop categoryGroups for the filtered view passed to PCPT – it should only see leaf categories
+        if isinstance(data, dict) and "categoryGroups" in data:
+            # We intentionally remove categoryGroups so the model isn't confused by higher-level group definitions
+            data.pop("categoryGroups", None)
     else:
         # If structure is unexpected, do not filter to avoid masking data
         pass

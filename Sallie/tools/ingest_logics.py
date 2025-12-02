@@ -930,8 +930,17 @@ def write_model_sources_and_runs(logic_ids_for_output: Optional[List[str]] = Non
                     try:
                         logics_path = f"{MODEL_HOME}/.model/business_rules.json"
                         with open(logics_path, "r", encoding="utf-8") as rf:
-                            rule_objs = json.load(rf)
+                            raw = json.load(rf)
+                        # Support both legacy list form and new {version, logics} wrapper
+                        if isinstance(raw, dict):
+                            rule_objs = raw.get("logics") or []
+                        elif isinstance(raw, list):
+                            rule_objs = raw
+                        else:
+                            rule_objs = []
                         for rule in rule_objs:
+                            if not isinstance(rule, dict):
+                                continue
                             rid = rule.get("id")
                             nm = rule.get("name")
                             if rid in ids_list and nm:
