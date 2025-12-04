@@ -779,6 +779,46 @@ def _find_logic_step_id(logic_code: Optional[str], name: Optional[str]) -> Optio
     return ls_id
 
 
+# ===== Helper: Find existing DomainType by name (for duplicate/synonym handling) =====
+def _find_existing_domain_type_id_by_name(name: str) -> Optional[int]:
+    """
+    Lookup a DomainType node id by exact name match.
+
+    Returns the internal Neo4j id of the first matching DomainType, or None if not found.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+
+    query = """
+    MATCH (dt:DomainType {name: $name})
+    RETURN id(dt) AS id
+    ORDER BY id(dt)
+    LIMIT 1
+    """
+    params = {"name": name}
+    results = run_cypher(query, params)
+    if not results:
+        return None
+
+    rows = _normalize_cypher_results(results)
+    if not rows:
+        return None
+
+    row = rows[0]
+    dt_id: Optional[int] = None
+
+    if isinstance(row, dict):
+        if "id" in row:
+            dt_id = _to_int_id(row.get("id"))
+        elif isinstance(row.get("row"), (list, tuple)) and row["row"]:
+            dt_id = _to_int_id(row["row"][0])
+    elif isinstance(row, (list, tuple)) and row:
+        dt_id = _to_int_id(row[0])
+
+    return dt_id
+
+
 # ===== Helper to delete existing Domain and DomainTypes for diagramPath =====
 def _delete_existing_domain(diagram_path: str):
     """
@@ -931,11 +971,28 @@ def main() -> None:
     # Create DomainType nodes and PART_OF relationships
     dt_name_to_id: Dict[str, int] = {}
     for dt in domain_types:
-        name = dt.get("name") or ""
-        if not name:
+        original_name = dt.get("name") or ""
+        if not original_name:
             continue
+        name = original_name
         kind = dt.get("kind", "class")
         raw_attributes = dt.get("attributes", []) or []
+
+        # Check for an existing DomainType with the same base name.
+        # If found, we create this DomainType with a numeric suffix "(2)", "(3)", ...
+        # such that the final name does not already exist in the KG, and we create
+        # a SYNONYM relationship from the new DomainType to the existing one.
+        synonym_target_id: Optional[int] = None
+        existing_base_id = _find_existing_domain_type_id_by_name(original_name)
+        if existing_base_id is not None:
+            synonym_target_id = existing_base_id
+            suffix = 2
+            while True:
+                candidate = f"{original_name} ({suffix})"
+                if _find_existing_domain_type_id_by_name(candidate) is None:
+                    name = candidate
+                    break
+                suffix += 1
 
         # Look up description and attribute descriptions from the .txt file (if available)
         norm_name = _normalise_entity_name(name)
@@ -992,7 +1049,10 @@ def main() -> None:
         if dt_id is None:
             LOG.warning("[warn] Failed to create DomainType node for '%s'", name)
             continue
-        dt_name_to_id[name] = dt_id
+
+        # For intra-diagram references (relationships and OPERATES_ON), we still
+        # key by the original unsuffixed name from the PlantUML model.
+        dt_name_to_id[original_name] = dt_id
 
         rel_id = create_relationship(dt_id, domain_id, "PART_OF", {})
         if rel_id is None:
@@ -1001,6 +1061,18 @@ def main() -> None:
                 name,
                 domain_id,
             )
+
+        # If this DomainType is a synonym of an existing one (same base name),
+        # create a SYNONYM relationship from the new node to the existing base.
+        if synonym_target_id is not None:
+            syn_rel_id = create_relationship(dt_id, synonym_target_id, "SYNONYM", {})
+            if syn_rel_id is None:
+                LOG.warning(
+                    "[warn] Failed to create SYNONYM relationship from '%s' (%d) to base DomainType id=%d",
+                    name,
+                    dt_id,
+                    synonym_target_id,
+                )
 
     LOG.info("[info] Created %d DomainType node(s)", len(dt_name_to_id))
 

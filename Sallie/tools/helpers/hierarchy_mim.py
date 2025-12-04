@@ -615,6 +615,16 @@ def run_mim_compose(
                             per_hier_rules.append(rr)
                     if not per_hier_rules:
                         eprint(f"[WARN] MIM: No matching logics found in logics_for_model.json for hierarchy {i+1}; proceeding with empty subset.")
+
+                    # Skip trivial hierarchies that only contain a single logic
+                    if len(per_hier_rules) == 1:
+                        single_logic = per_hier_rules[0]
+                        logic_name = single_logic.get("name") or single_logic.get("rule_name") or "(unnamed)"
+                        eprint(
+                            f"[INFO] MIM: Skipping hierarchy {i+1} because it only contains a single logic: {logic_name}."
+                        )
+                        continue
+
                     logics_file_for_iter = str(TMP_DIR / f"logics_for_model_h{i+1}.json")
 
                     # Scrub links so only in-hierarchy producer links remain

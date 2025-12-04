@@ -236,7 +236,7 @@ def step_select_sources_spec() -> Dict[str, Any]:
         "Use source path from spec",
         "Build from MODEL FILES for selected model"
     ]
-    source_mode_sel = choose_from_list("Select a source for PCPT:", source_mode_menu, default_index=1)
+    source_mode_sel = choose_from_list("Select a source for PCPT:", source_mode_menu, default_index=2)
     source_mode = "spec" if source_mode_sel == 1 else "model_files"
 
     if source_mode == "model_files":

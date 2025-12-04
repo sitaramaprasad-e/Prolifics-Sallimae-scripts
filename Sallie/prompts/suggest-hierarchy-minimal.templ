@@ -2,7 +2,7 @@ INPUT 1: SOURCE CODE
 
 @@INPUT1@@
 
-INPUT 2: BASE LOGIC
+INPUT 2: EXISTING LOGIC
 
 @@INPUT_FILE_CONTENT@@
 
@@ -16,11 +16,11 @@ Take a look at these logics (input 2), and work out what the decision hierarchy 
 
 VERY IMPORTANT: Suggest the smallest number of hierarchies possible. Ideally one, but can be more than one. Only focus on the important top-level decisions that are business meaningful.
 
-1. Keep all decisions grounded in the code provided in input 1.
-2. Top-level should have decisions flow into them from lower level decisions.
-3. Top-level decisions should not themselves flow into higher level decisions. They are at the top.
+1. Normally the logic listed in input 2 will be base logic (base decisions/BKMs) and will correspond to source code from input 1. In this case keep all decisions grounded in the code provided in input 1.
+2. The exception is when the logic in input 2 is purely an existing set of composite and top-level decisions that come from existing hierarchies, that themselves must be organised into a super hierarchy i.e. where you must suggest new top-level(s) that will bind together those decisions into a new super hierarchy. In this case there will be no source code in input 1 and you will have to go just on the logic details.
+3. Top-level should have decisions flow into them from lower level decisions.
 4. You need to think carefully about all of the logics, and how they form mini hierarchies of decisions that feed from bottom to top, lower level decisions driving a higher level decision.
-5. For each hierarchy you will need to suggest a new top-level decision that doesn't exist yet. For those, create a new logic, and leave its id blank i.e. "".
+5. For each hierarchy you will always need to suggest new top-level decision that doesn't exist yet (dont' reuse existing logics). For those, create a new logic, and leave its id blank i.e. "".
 6. The flow description needs to fully explain how the lower level decisions feed into the top-level decision, and any parallel flows that also feed into the top-level decision.
 7. Never suggest a hierarchy that is just a single decision. There must be at least one lower level decision feeding into the top-level decision. 
 8. Here's an example of the output I want, with the top-level decisions as top, quoting the id of the decision.
