@@ -400,12 +400,10 @@ def _populate_graph_for_logic(logic: Dict[str, Any], logger: logging.Logger) -> 
         return
 
     logic_id, existed = _ensure_logicstep_node(logic, logger)
-    # If the LogicStep already existed in the graph, we assume its CodeFile,
-    # CodeFunction and Parameter nodes (and relationships) are already present.
-    # In that case, skip re-creating them to avoid duplicates.
+    # If the LogicStep already existed in the graph, we still (re)create or upsert
+    # CodeFile, CodeFunction and Parameter nodes and relationships. This allows
+    # ingest_logics to refresh the KG structure on subsequent runs.
     if logic_id is None:
-        return
-    if existed:
         return
 
     # Code function and file

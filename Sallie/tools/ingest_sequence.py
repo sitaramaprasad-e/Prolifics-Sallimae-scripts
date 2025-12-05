@@ -459,15 +459,29 @@ def _substring_distance(pattern: str, text: str) -> Optional[int]:
 
     return min_dist
 
+def _symmetric_substring_distance(a: str, b: str) -> Optional[int]:
+    """
+    Wrapper around _substring_distance that always uses the shorter string
+    as the pattern and the longer string as the text. This lets us handle
+    cases where either the CodeFunction label or the message functionName
+    is longer than the other.
+    """
+    a_norm = (a or "").strip()
+    b_norm = (b or "").strip()
+    if not a_norm or not b_norm:
+        return None
+
+    if len(a_norm) <= len(b_norm):
+        return _substring_distance(a_norm, b_norm)
+    else:
+        return _substring_distance(b_norm, a_norm)
+
 def find_code_function_id(function_name: str, candidates: List[Dict[str, Any]]) -> Optional[int]:
     """Choose the CodeFunction whose label most closely matches function_name,
     restricted to the provided candidates.
 
     Matching rule:
-      - Treat the CodeFunction label as a pattern and the function_name from
-        the Message as text.
-      - Find the substring of the function_name whose length matches the label
-        and has the smallest character-wise distance.
+      - Use a symmetric substring distance so the shorter of label/function_name is always the pattern.
       - If the best distance is <= 3, treat it as a valid match.
       - If nothing meets that threshold but there is exactly one candidate,
         fall back to that single candidate.
@@ -493,7 +507,7 @@ def find_code_function_id(function_name: str, candidates: List[Dict[str, Any]]) 
         if not label or cid is None:
             continue
 
-        dist = _substring_distance(label, fn_raw)
+        dist = _symmetric_substring_distance(label, fn_raw)
         if dist is None:
             continue
 
@@ -628,18 +642,8 @@ def main():
         sys.exit(1)
     ingested = 0
     for message in messages:
-        # First, find a matching CodeFunction for this message step.
+        # First, try to find a matching CodeFunction for this message step.
         cf_id = find_code_function_id(message["functionName"], code_function_candidates)
-        if cf_id is None:
-            LOG.info(
-                "[info] Skipping Message node for step %d functionName='%s' (no matching CodeFunction/LogicStep)",
-                message["stepNumber"],
-                message["functionName"],
-            )
-            # We do NOT create a Message node here, but the stepNumber is still
-            # counted in the parsed messages list so numbering on created
-            # Message nodes remains aligned with the original diagram.
-            continue
 
         message_props = {
             "stepNumber": message["stepNumber"],
@@ -651,7 +655,8 @@ def main():
         message_id = create_node(["Message"], message_props)
         if message_id is None:
             LOG.warning(
-                "[warn] Failed to create Message node for step %d", message["stepNumber"]
+                "[warn] Failed to create Message node for step %d",
+                message["stepNumber"],
             )
             continue
 
@@ -669,24 +674,37 @@ def main():
                 sequence_id,
             )
 
-        rel2_id = create_relationship(
-            cf_id,
-            message_id,
-            "SEQUENCED_BY",
-            {
-                "diagramPath": diagram_path,
-                "ingestionTimestamp": ts,
-            },
-        )
-        if rel2_id is None:
-            LOG.info(
-                "[info] Failed to create SEQUENCED_BY relationship from CodeFunction %d to Message %d",
+        # Only create SEQUENCED_BY if we found a matching CodeFunction
+        if cf_id is not None:
+            rel2_id = create_relationship(
                 cf_id,
                 message_id,
+                "SEQUENCED_BY",
+                {
+                    "diagramPath": diagram_path,
+                    "ingestionTimestamp": ts,
+                },
+            )
+            if rel2_id is None:
+                LOG.info(
+                    "[info] Failed to create SEQUENCED_BY relationship from CodeFunction %d to Message %d",
+                    cf_id,
+                    message_id,
+                )
+        else:
+            LOG.trace(
+                "[trace] No matching CodeFunction/LogicStep for step %d functionName='%s'; Message is PART_OF Sequence only",
+                message["stepNumber"],
+                message["functionName"],
             )
 
         ingested += 1
-    LOG.info(f"[info] Ingested {ingested} messages into Sequence node id {sequence_id}.")
+
+    LOG.info(
+        "[info] Ingested %d messages into Sequence node id %s.",
+        ingested,
+        sequence_id,
+    )
 
 if __name__ == "__main__":
     main()
