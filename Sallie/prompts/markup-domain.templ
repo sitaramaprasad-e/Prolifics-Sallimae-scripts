@@ -26,27 +26,27 @@ Here's an example of the format to use for output - example:
 
 # Domain Model Overview
 
-This Lightning Web Component represents a partner portal interface for managing account access and discovery within the AMETEK organization. The system operates on a dual-access model where partners can view accounts specifically shared with their firm while also having the ability to search the global AMETEK account database. The component facilitates account discovery through filtered search capabilities and provides account creation functionality when existing accounts cannot be found. The underlying data model supports organizational hierarchy, geographic segmentation, and partner-based access control for account management.
+This Lightning Web Component represents a partner portal interface for managing account access and discovery within the organization. The system operates on a dual-access model where partners can view accounts specifically shared with their firm while also having the ability to search the global AMETEK account database. The component facilitates account discovery through filtered search capabilities and provides account creation functionality when existing accounts cannot be found. The underlying data model supports organizational hierarchy, geographic segmentation, and partner-based access control for account management.
 
 ## Entities
 
 ### Account
-**Description**: Core business entity representing companies or organizations within the AMETEK system.
+**Description**: Core business entity representing companies or organizations within the system.
 (note: 
-"Logics: 
+Logics: 
 Should Account Shared List Be Displayed, 
 Generate Account URL Link, 
 Should Account Master Update Existing Account,
 Generate Account Key Customer Field,
 Create Note for Account,
-Determine Parent Object Type from Attachment")
+Determine Parent Object Type from Attachment)
 
 **Attributes**:
 - `Id`: Unique system identifier for the account record
 - `Name`: Official company or organization name
 - `Account_Descriptor__c`: Additional descriptive information about the account
 - `Billing_State_Province__c`: Geographic location for billing purposes
-- `Ametek_ID__c`: Internal AMETEK identification number
+- `ID__c`: Internal identification number
 - `Phone`: Primary contact telephone number
 
 **Relationships**:

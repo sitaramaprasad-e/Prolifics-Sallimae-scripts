@@ -1418,6 +1418,7 @@ def _summarize_models_and_hierarchies(
         "name",
         "description",
         "useGraph",
+        "isIgnored",
     }
 
     extra_model_fields: Dict[str, int] = {}
