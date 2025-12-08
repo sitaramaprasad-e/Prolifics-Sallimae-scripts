@@ -378,6 +378,24 @@ class DomainTypeSpec(Dict[str, Any]):
     """Convenience type alias for a parsed DomainType."""
 
 
+# ===== Helper: Clean logic code/name =====
+def _clean_logic_entry(code: Optional[str], name: Optional[str], raw: str) -> Tuple[Optional[str], Optional[str]]:
+    """Normalise parsed logic code and name.
+
+    - Strip surrounding quotes from code/name (to handle artifacts like "738 or 738").
+    - Strip surrounding whitespace.
+    """
+    if code is not None:
+        code = code.strip().strip('"').strip("'")
+        if code == "":
+            code = None
+    if name is not None:
+        name = name.strip().strip('"').strip("'")
+        if name == "":
+            name = None
+    return code, name
+
+
 def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str, str]]]:
     """Parse the PlantUML domain model file.
 
@@ -484,11 +502,12 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
                         continue
                     m_logic = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
                     if m_logic:
-                        code = m_logic.group(1).strip()
-                        rname = m_logic.group(2).strip()
+                        code = m_logic.group(1)
+                        rname = m_logic.group(2)
                     else:
                         code = None
                         rname = item
+                    code, rname = _clean_logic_entry(code, rname, item)
                     dt["logics"].append({"code": code, "name": rname, "raw": item})
             i += 1
             continue
@@ -525,16 +544,17 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
                     i += 1
                     continue
                 if in_logics:
-                    # Strip any trailing comma
+                    # Strip any trailing comma and outer quotes
                     item = stripped.rstrip(",").strip().strip("\"")
                     if item:
                         m_logic = re.match(r"^([^\s·•]+)\s*[·•]\s*(.+)$", item)
                         if m_logic:
-                            code = m_logic.group(1).strip()
-                            rname = m_logic.group(2).strip()
+                            code = m_logic.group(1)
+                            rname = m_logic.group(2)
                         else:
                             code = None
                             rname = item
+                        code, rname = _clean_logic_entry(code, rname, item)
                         dt["logics"].append({"code": code, "name": rname, "raw": item})
                 i += 1
             # Skip the "end note" line

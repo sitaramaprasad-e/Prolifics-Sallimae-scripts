@@ -25,15 +25,10 @@ GRAPH_BASE_URL = os.getenv("RULES_PORTAL_BASE_URL", "http://localhost:443").rstr
 GRAPH_ENABLED_ENV = os.getenv("RULES_PORTAL_GRAPH_ENABLED", "true").strip().lower()
 GRAPH_ENABLED = GRAPH_ENABLED_ENV in {"1", "true", "yes", "on"}
 
-# Toggle TLS certificate verification for KG HTTP calls. In many dev and some
-# internal environments we use self-signed or private CAs, so by default we
-# disable verification here. You can override this by setting the
-# RULES_PORTAL_VERIFY environment variable to "true"/"1"/"yes" to enable
-# verification.
+# Always disable TLS certificate verification for KG HTTP calls.
+# This allows connecting to endpoints with self-signed or private CA certs
+# in all environments (dev, QA, prod).
 GRAPH_VERIFY = False
-env_verify = os.getenv("RULES_PORTAL_VERIFY")
-if env_verify is not None:
-    GRAPH_VERIFY = env_verify.strip().lower() in {"1", "true", "yes", "on"}
 
 _GRAPH_STATUS_CHECKED = False
 _GRAPH_AVAILABLE = False
