@@ -72,6 +72,7 @@ def graph_is_enabled() -> bool:
     return _GRAPH_AVAILABLE
 
 
+
 def graph_run_cypher(query: str, parameters: Optional[Dict] = None) -> Optional[Dict]:
     """Execute a Cypher statement via POST /api/graph/run (best-effort).
 
@@ -97,6 +98,75 @@ def graph_run_cypher(query: str, parameters: Optional[Dict] = None) -> Optional[
         print(f"[WARN] Graph run error: {e}")
         _GRAPH_CLEANUP_ERRORS += 1
         return None
+
+
+# --- Logic API helpers: load/save via /api/logic, fallback to file if needed ---
+def load_business_rules_via_api() -> Optional[Dict[str, Any]]:
+    """Load business rules via the rules-portal /api/logic endpoint.
+
+    Returns a dict with keys {"version", "logics"} on success, or None on failure.
+    This is best-effort and falls back to direct file reads if unavailable.
+    """
+    url = f"{GRAPH_BASE_URL}/api/logic"
+    try:
+        resp = requests.get(url, timeout=10, verify=GRAPH_VERIFY)
+        if not resp.ok:
+            print(f"[WARN] Failed to load business_rules via API ({url}): HTTP {resp.status_code} {resp.text[:200]}")
+            return None
+        data = resp.json()
+        # Normalize into {version, logics}
+        if isinstance(data, dict) and isinstance(data.get("logics"), list):
+            version = data.get("version")
+            if not isinstance(version, int):
+                version = 0
+            return {"version": version, "logics": data["logics"]}
+        elif isinstance(data, list):
+            # Legacy array format from API (unlikely, but supported)
+            return {"version": 0, "logics": data}
+        else:
+            print("[WARN] Unexpected format from /api/logic; falling back to file-based load.")
+            return None
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[WARN] Error calling /api/logic: {e}")
+        return None
+
+
+def save_business_rules_via_api(filtered_logics: List[Dict[str, Any]], expected_version: Optional[int]) -> bool:
+    """Save business rules via the rules-portal /api/logic endpoint.
+
+    Returns True on success, False on failure. Expects expected_version from
+    the last successful load (for optimistic concurrency).
+    """
+    if expected_version is None:
+        print("[ERROR] Cannot save via API without a version; falling back is required.")
+        return False
+
+    url = f"{GRAPH_BASE_URL}/api/logic"
+    payload = {
+        "_version": expected_version,
+        "logics": filtered_logics,
+    }
+    try:
+        resp = requests.put(url, json=payload, timeout=15, verify=GRAPH_VERIFY)
+        if not resp.ok:
+            print(
+                f"[ERROR] Failed to write business_rules via API ({url}): HTTP {resp.status_code} {resp.text[:500]}"
+            )
+            return False
+        try:
+            data = resp.json()
+            new_version = data.get("version")
+            if isinstance(new_version, int):
+                print(f"[INFO] business_rules updated via /api/logic, new version={new_version}")
+            else:
+                print("[INFO] business_rules updated via /api/logic.")
+        except Exception:
+            # If parsing JSON fails, we still consider the write successful because HTTP was 2xx.
+            print("[INFO] business_rules updated via /api/logic (response not JSON or parse failed).")
+        return True
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[ERROR] Error calling PUT /api/logic: {e}")
+        return False
 
 
 # --- Spec helper functions for selecting a spec and extracting graph-url ---
@@ -188,28 +258,20 @@ def main():
     except Exception as e:
         print(f"[WARN] Could not create ZIP backup: {e}")
 
-    # Load and filter logic (support legacy list and rooted {"version", "logics"})
+    # Load and filter logic (via logic service /api/logic only).
     br_root: Any = None
     br_version: Optional[int] = None
-    try:
-        with open(logics_path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"[ERROR] Failed to parse JSON: {e}")
+    logics: List[Dict[str, Any]] = []
+
+    api_data = load_business_rules_via_api()
+    if api_data is None:
+        print("[ERROR] Failed to load business_rules via /api/logic; aborting.")
         return
 
-    if isinstance(raw, dict) and isinstance(raw.get("logics"), list):
-        br_root = raw
-        if isinstance(raw.get("version"), int):
-            br_version = raw["version"]
-        logics = raw["logics"]
-    elif isinstance(raw, list):
-        logics = raw
-    else:
-        print(
-            "[ERROR] business_rules.json format invalid: expected a list or an object with a 'logics' array."
-        )
-        return
+    br_root = api_data
+    br_version = api_data.get("version") if isinstance(api_data.get("version"), int) else 0
+    logics = api_data.get("logics", [])
+    print(f"[INFO] Loaded {len(logics)} logic(s) via /api/logic (version={br_version}).")
 
     archived_logics = [r for r in logics if r.get("archived", False)]
 
@@ -534,42 +596,16 @@ def main():
         except Exception as e:
             print(f"[WARN] Failed to write cleaned models.json to {models_path}: {e}")
 
-    # Write updated logics including cleaned links, using rooted {"version", "logics"} and a best-effort optimistic check
+    # Write updated logics including cleaned links via the logic API only.
     try:
-        if logics_path.exists() and br_version is not None:
-            try:
-                with open(logics_path, "r", encoding="utf-8") as f:
-                    cur_raw = json.load(f)
-                if isinstance(cur_raw, dict) and isinstance(cur_raw.get("logics"), list):
-                    cur_version = cur_raw.get("version")
-                    if isinstance(cur_version, int) and cur_version != br_version:
-                        print(
-                            f"[ERROR] business_rules.json version changed on disk (expected {br_version}, found {cur_version}); "
-                            f"aborting write to avoid overwriting concurrent changes."
-                        )
-                        return
-            except Exception as ex:
-                print(
-                    f"[WARN] Could not re-read business_rules.json for concurrency check; proceeding anyway: {ex}"
-                )
-
-        if isinstance(br_root, dict):
-            current_version = br_root.get("version")
-            if not isinstance(current_version, int):
-                current_version = br_version or 0
-            new_version = current_version + 1
-            br_root["logics"] = filtered
-            br_root["version"] = new_version
-            to_write = br_root
-        else:
-            # Legacy list-only business_rules.json; upgrade to rooted structure on write
-            new_version = (br_version or 0) + 1
-            to_write = {"version": new_version, "logics": filtered}
-
-        with open(logics_path, "w", encoding="utf-8") as f:
-            json.dump(to_write, f, indent=2, ensure_ascii=False)
+        # Let the rules-portal logic service manage versioning and audit. We
+        # already have br_version from the initial load and we pass it as
+        # _version for optimistic concurrency.
+        if not save_business_rules_via_api(filtered, br_version):
+            print("[ERROR] Failed to persist updated business_rules via /api/logic; aborting.")
+            return
     except Exception as e:
-        print(f"[ERROR] Failed to write updated business_rules.json: {e}")
+        print(f"[ERROR] Failed to write updated business_rules via /api/logic: {e}")
         return
 
     print(f"[INFO] Deleted {removed_count} archived logic(s).")
