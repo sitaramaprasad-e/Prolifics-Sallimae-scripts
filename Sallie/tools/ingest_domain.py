@@ -617,9 +617,19 @@ def _parse_domain_description_file(path: str) -> Dict[str, Dict[str, Any]]:
     entity_desc_parts: List[str] = []
 
     # Regexes for section and attribute detection
-    entity_header_rx = re.compile(r"^###\s+\*\*(.+?)\*\*")
-    attrs_header_rx = re.compile(r"^\s*\*\*Attributes:\*\*")
-    relationships_header_rx = re.compile(r"^\s*\*\*Relationships:\*\*")
+    # Entity headings can be written as either:
+    #   ### **RepaymentProgram**
+    # or:
+    #   ### RepaymentProgram
+    entity_header_rx = re.compile(r"^###\s+(?:\*\*)?(.*?)(?:\*\*)?\s*$")
+
+    # Attribute / Relationships / Logics headings can similarly be bold or plain, e.g.:
+    #   **Attributes:**
+    #   Attributes:
+    attrs_header_rx = re.compile(r"^\s*(?:\*\*)?Attributes:(?:\*\*)?\s*$")
+    relationships_header_rx = re.compile(r"^\s*(?:\*\*)?Relationships:(?:\*\*)?\s*$")
+    logics_header_rx = re.compile(r"^\s*(?:\*\*)?Logics:(?:\*\*)?\s*$")
+
     enum_header_rx = re.compile(r"^##\s+Enumerations\s*$")
 
     try:
@@ -664,7 +674,7 @@ def _parse_domain_description_file(path: str) -> Dict[str, Dict[str, Any]]:
             i += 1
             continue
 
-        # Relationships header or new section – stop collecting attributes
+        # Relationships header or new section – stop collecting attributes/description
         if relationships_header_rx.match(line) or line.startswith("## ") or line.startswith("### "):
             collecting_attrs = False
             collecting_entity_desc = False
@@ -675,11 +685,11 @@ def _parse_domain_description_file(path: str) -> Dict[str, Dict[str, Any]]:
             continue
 
         # Collect entity description text: first paragraph(s) after the entity header until Attributes/Relationships/next header.
-        # If we encounter a "(note" line, we treat that (and anything that follows) as out of scope for the description.
+        # If we encounter a "(note" line, or a Logics header, we treat that (and anything that follows) as out of scope for the description.
         if collecting_entity_desc and current_entity is not None:
             stripped = line.strip()
-            if stripped.lower().startswith("(note"):
-                # Stop collecting description when we hit the logics/note section.
+            # Stop collecting description when we hit either a (note...) line or a Logics header.
+            if stripped.lower().startswith("(note") or logics_header_rx.match(line):
                 collecting_entity_desc = False
                 i += 1
                 continue
@@ -710,7 +720,12 @@ def _parse_domain_description_file(path: str) -> Dict[str, Dict[str, Any]]:
                 i += 1
                 continue
             # Stop collecting attributes when we hit a blank line or another section
-            if not stripped or stripped.startswith("**Relationships:**") or stripped.startswith("### ") or stripped.startswith("## "):
+            if (
+                not stripped
+                or relationships_header_rx.match(line)
+                or entity_header_rx.match(line)
+                or line.startswith("## ")
+            ):
                 collecting_attrs = False
             i += 1
             continue
