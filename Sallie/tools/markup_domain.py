@@ -470,7 +470,7 @@ def _inject_short_codes_into_markup_md(markup_md_path: str, exported_logics_path
       if code is None:
         code = name_to_code.get(name.lower())
       if code is not None and name:
-        out_lines.append(f'{indent}"{code}· {name}' + (",\n" if has_comma else "\n"))
+        out_lines.append(f'{indent}{code}· {name}' + (",\n" if has_comma else "\n"))
       else:
         out_lines.append(line)
       continue
