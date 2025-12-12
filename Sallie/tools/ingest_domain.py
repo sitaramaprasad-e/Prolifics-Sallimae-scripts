@@ -155,6 +155,11 @@ def _normalise_entity_name(name: str) -> str:
     """Normalise a domain/entity name so 'Claim Line' matches 'ClaimLine', etc."""
     return re.sub(r"\s+", "", name or "").strip()
 
+# Helper to strip trailing numeric suffixes like " (2)", " (3)", etc.
+def _strip_numeric_suffix(name: str) -> str:
+    """Strip a trailing numeric de-dup suffix like " (2)" from a DomainType name."""
+    return re.sub(r"\s*\(\d+\)\s*$", "", (name or "").strip())
+
 import requests
 import logging
 
@@ -1033,8 +1038,11 @@ def main() -> None:
                     break
                 suffix += 1
 
-        # Look up description and attribute descriptions from the .txt file (if available)
-        norm_name = _normalise_entity_name(name)
+        # Look up description and attribute descriptions from the .txt file (if available).
+        # IMPORTANT: if we had to suffix the KG node name with " (2)", " (3)", ... to avoid
+        # clashes, that suffix will NOT exist in the .txt description file. Strip it for lookup.
+        lookup_name = _strip_numeric_suffix(name)
+        norm_name = _normalise_entity_name(lookup_name)
         desc_entry = description_map.get(norm_name)
         if desc_entry is None:
             LOG.trace(
