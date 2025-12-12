@@ -178,10 +178,10 @@ def _graph_create_node(labels: List[str], properties: Dict[str, Any], logger: lo
             logger.warning("[warn] Neo4j /api/graph/node returned success=false: %s", data)
             return None
         node = (data.get("node") or {})
-        identity = node.get("identity")
-        if cache is not None and cache_key is not None and identity is not None:
-            cache[cache_key] = identity
-        return identity
+        # Always return stable id, never Neo4j internal identity
+        if cache is not None and cache_key is not None:
+            cache[cache_key] = properties.get("id") or properties.get("path") or cache_key
+        return properties.get("id") or properties.get("path") or cache_key
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[warn] Failed to create graph node %s: %s", properties, exc)
         return None
@@ -221,6 +221,80 @@ def _graph_create_relationship(from_id: Any, to_id: Any, rel_type: str,
             rel_type,
             exc,
         )
+
+
+# --- Helper: Create a relationship by matching nodes via their stable `id` property ---
+def _graph_create_relationship_by_prop(
+    from_label: str,
+    from_id_prop: str,
+    to_label: str,
+    to_id_prop: str,
+    rel_type: str,
+    properties: Optional[Dict[str, Any]],
+    logger: logging.Logger,
+) -> None:
+    """Create a relationship by matching nodes via their stable `id` property."""
+    if not from_label or not to_label or not rel_type:
+        return
+
+    url = f"{GRAPH_BASE_URL}/api/graph/run"
+    query = (
+        f"MATCH (a:{from_label} {{id: $fromId}}), (b:{to_label} {{id: $toId}}) "
+        f"MERGE (a)-[r:{rel_type}]->(b) "
+        f"SET r += $props"
+    )
+    payload = {
+        "query": query,
+        "parameters": {
+            "fromId": from_id_prop,
+            "toId": to_id_prop,
+            "props": properties or {},
+        },
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=5, verify=GRAPH_VERIFY)
+        if not resp.ok:
+            logger.warning(
+                "[warn] Failed to create relationship %s(%s)->%s(%s) type=%s HTTP %s",
+                from_label,
+                from_id_prop,
+                to_label,
+                to_id_prop,
+                rel_type,
+                resp.status_code,
+            )
+    except Exception as exc:  # pragma: no cover
+        logger.warning(
+            "[warn] Exception creating relationship %s(%s)->%s(%s) type=%s: %s",
+            from_label,
+            from_id_prop,
+            to_label,
+            to_id_prop,
+            rel_type,
+            exc,
+        )
+
+
+# --- Helper: Run a Cypher query via /api/graph/run (best-effort) ---
+def _graph_run_cypher(query: str, parameters: Optional[Dict[str, Any]], logger: logging.Logger) -> Optional[dict]:
+    """Run a Cypher query via /api/graph/run (best-effort). Returns parsed JSON on success."""
+    if not query:
+        return None
+    url = f"{GRAPH_BASE_URL}/api/graph/run"
+    payload = {"query": query, "parameters": parameters or {}}
+    try:
+        resp = requests.post(url, json=payload, timeout=10, verify=GRAPH_VERIFY)
+        if not resp.ok:
+            logger.warning("[warn] Cypher run failed: HTTP %s", resp.status_code)
+            return None
+        data = resp.json()
+        if not data.get("success"):
+            logger.warning("[warn] Cypher run returned success=false: %s", data)
+            return None
+        return data
+    except Exception as exc:  # pragma: no cover
+        logger.warning("[warn] Exception running Cypher: %s", exc)
+        return None
 
 
 
@@ -306,13 +380,13 @@ def _ensure_logicstep_node(logic: Dict[str, Any], logger: logging.Logger) -> Tup
     cached = _LOGICSTEP_CACHE.get(logic_id)
     if cached is not None:
         # From our perspective, this "existed" already in this run
-        return cached, True
+        return logic_id, True
 
     # Best-effort lookup in existing graph to avoid duplicate LogicStep nodes
     existing_id = _graph_find_logicstep_node(logic_id, logic.get("name"), logger)
     if existing_id is not None:
-        _LOGICSTEP_CACHE[logic_id] = existing_id
-        return existing_id, True
+        _LOGICSTEP_CACHE[logic_id] = logic_id
+        return logic_id, True
 
     # Fall back to creating a new LogicStep node
     props = {
@@ -324,7 +398,7 @@ def _ensure_logicstep_node(logic: Dict[str, Any], logger: logging.Logger) -> Tup
         "timestamp": logic.get("timestamp") or "",
     }
     identity = _graph_create_node(["LogicStep"], props, logger, _LOGICSTEP_CACHE, logic_id)
-    return identity, False
+    return logic_id, False
 
 
 def _ensure_codefile_node(
@@ -339,7 +413,7 @@ def _ensure_codefile_node(
     cached = _CODEFILE_CACHE.get(norm_path)
     if cached is not None:
         return cached
-    props = {"path": norm_path, "name": os.path.basename(norm_path)}
+    props = {"id": norm_path, "path": norm_path, "name": os.path.basename(norm_path)}
     if source_path:
         props["sourcePath"] = source_path
     if root_dir:
@@ -355,7 +429,8 @@ def _ensure_codefunc_node(name: str, file_path: Optional[str], logger: logging.L
     cached = _CODEFUNC_CACHE.get(key)
     if cached is not None:
         return cached
-    props = {"name": name}
+    func_id = f"{key_path}::{name}" if key_path else name
+    props = {"id": func_id, "name": name}
     if key_path:
         props["filePath"] = key_path
     return _graph_create_node(["CodeFunction"], props, logger, _CODEFUNC_CACHE, key)
@@ -364,12 +439,14 @@ def _ensure_codefunc_node(name: str, file_path: Optional[str], logger: logging.L
 def _ensure_param_node(logic_id: str, name: str, direction: str, typ: str, logger: logging.Logger) -> Optional[Any]:
     if not logic_id or not name:
         return None
-    key = (logic_id, name)
+    dir_norm = (direction or "").lower()
+    # Deterministic Parameter id derived from (logic uuid, direction, name)
+    param_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{logic_id}|{dir_norm}|{name}"))
+    key = (logic_id, dir_norm, name)
     cached = _PARAM_CACHE.get(key)
     if cached is not None:
         return cached
 
-    dir_norm = (direction or "").lower()
     prefix = ""
     if dir_norm == "input":
         prefix = "in: "
@@ -378,12 +455,16 @@ def _ensure_param_node(logic_id: str, name: str, direction: str, typ: str, logge
     display_name = f"{prefix}{name}" if prefix else name
 
     props = {
+        "id": param_id,
         "logicId": logic_id,
         "name": display_name,
         "direction": direction or "",
         "type": typ or "",
     }
-    return _graph_create_node(["Parameter"], props, logger, _PARAM_CACHE, key)
+    created = _graph_create_node(["Parameter"], props, logger)
+    # Cache by (logic_id, direction, name) but store the stable param_id
+    _PARAM_CACHE[key] = param_id
+    return param_id
 
 
 def _populate_graph_for_logic(logic: Dict[str, Any], logger: logging.Logger) -> None:
@@ -395,16 +476,60 @@ def _populate_graph_for_logic(logic: Dict[str, Any], logger: logging.Logger) -> 
     if not _graph_is_enabled(logger):
         return
 
-    logic_id = logic.get("id")
-    if not logic_id:
+    logic_uuid = logic.get("id")
+    if not logic_uuid:
         return
 
-    logic_id, existed = _ensure_logicstep_node(logic, logger)
+    logic_step_id, existed = _ensure_logicstep_node(logic, logger)
     # If the LogicStep already existed in the graph, we still (re)create or upsert
     # CodeFile, CodeFunction and Parameter nodes and relationships. This allows
     # ingest_logics to refresh the KG structure on subsequent runs.
-    if logic_id is None:
+    if logic_step_id is None:
         return
+
+    # If this LogicStep already existed, prune any INPUT/OUTPUT Parameters that are no longer declared
+    # in the currently ingested DMN IO. We only touch Parameters connected via INPUT/OUTPUT from this LogicStep.
+    if existed:
+        # Compute expected Parameter ids for current DMN IO
+        dmn_inputs_now = logic.get("dmn_inputs") or []
+        dmn_outputs_now = logic.get("dmn_outputs") or []
+
+        expected_in_ids: List[str] = []
+        expected_out_ids: List[str] = []
+
+        for p in dmn_inputs_now:
+            pname = str(p.get("name") or "").strip()
+            if not pname:
+                continue
+            expected_in_ids.append(str(uuid.uuid5(uuid.NAMESPACE_URL, f"{logic_uuid}|input|{pname}")))
+
+        for p in dmn_outputs_now:
+            pname = str(p.get("name") or "").strip()
+            if not pname:
+                continue
+            expected_out_ids.append(str(uuid.uuid5(uuid.NAMESPACE_URL, f"{logic_uuid}|output|{pname}")))
+
+        # Delete any stale INPUT Parameters (detach deletes LINKS_TO etc. attached to those Parameter nodes)
+        _graph_run_cypher(
+            """
+            MATCH (ls:LogicStep {id: $logicId})-[:INPUT]->(p:Parameter)
+            WHERE $keepIds IS NULL OR size($keepIds)=0 OR NOT p.id IN $keepIds
+            DETACH DELETE p
+            """,
+            {"logicId": logic_uuid, "keepIds": expected_in_ids},
+            logger,
+        )
+
+        # Delete any stale OUTPUT Parameters
+        _graph_run_cypher(
+            """
+            MATCH (ls:LogicStep {id: $logicId})-[:OUTPUT]->(p:Parameter)
+            WHERE $keepIds IS NULL OR size($keepIds)=0 OR NOT p.id IN $keepIds
+            DETACH DELETE p
+            """,
+            {"logicId": logic_uuid, "keepIds": expected_out_ids},
+            logger,
+        )
 
     # Code function and file
     code_function = logic.get("code_function") or ""
@@ -424,32 +549,127 @@ def _populate_graph_for_logic(logic: Dict[str, Any], logger: logging.Logger) -> 
     )
     func_id = _ensure_codefunc_node(code_function, code_file, logger) if code_function else None
 
-    if logic_id is not None and func_id is not None:
-        _graph_create_relationship(logic_id, func_id, "IMPLEMENTED_BY", {}, logger)
+    # Use only stable identifiers for relationships
+    if logic_step_id is not None and func_id is not None:
+        _graph_create_relationship_by_prop(
+            "LogicStep",
+            logic_uuid,
+            "CodeFunction",
+            func_id,
+            "IMPLEMENTED_BY",
+            {},
+            logger,
+        )
     if func_id is not None and file_id is not None:
-        _graph_create_relationship(func_id, file_id, "PART_OF", {}, logger)
+        _graph_create_relationship_by_prop(
+            "CodeFunction",
+            func_id,
+            "CodeFile",
+            file_id,
+            "PART_OF",
+            {},
+            logger,
+        )
 
     # DMN inputs/outputs become Parameter nodes
     dmn_inputs = logic.get("dmn_inputs") or []
     dmn_outputs = logic.get("dmn_outputs") or []
+    logger.trace(
+        "[trace] KG populate '%s' (%s): dmn_inputs=%d dmn_outputs=%d",
+        logic.get("name"),
+        logic_uuid,
+        len(dmn_inputs),
+        len(dmn_outputs),
+    )
+    if dmn_inputs:
+        logger.trace(
+            "[trace] KG populate '%s': inputs=%s",
+            logic.get("name"),
+            [str(x.get("name")) + ":" + str(x.get("type")) for x in dmn_inputs if isinstance(x, dict)],
+        )
+    if dmn_outputs:
+        logger.trace(
+            "[trace] KG populate '%s': outputs=%s",
+            logic.get("name"),
+            [str(x.get("name")) + ":" + str(x.get("type")) for x in dmn_outputs if isinstance(x, dict)],
+        )
 
     for p in dmn_inputs:
         pname = str(p.get("name") or "").strip()
         if not pname:
             continue
         ptype = str(p.get("type") or "")
-        pid = _ensure_param_node(logic_id, pname, "input", ptype, logger)
-        if logic_id is not None and pid is not None:
-            _graph_create_relationship(logic_id, pid, "INPUT", {}, logger)
+        pid = _ensure_param_node(logic_uuid, pname, "input", ptype, logger)
+        logger.trace(
+            "[trace] KG input param '%s': name='%s' type='%s' pid=%s expected=%s",
+            logic.get("name"),
+            pname,
+            ptype,
+            pid,
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"{logic_uuid}|input|{pname}")),
+        )
+        if logic_step_id is not None and pid is not None:
+            _graph_create_relationship_by_prop(
+                "LogicStep",
+                logic_uuid,
+                "Parameter",
+                pid,
+                "INPUT",
+                {},
+                logger,
+            )
 
     for p in dmn_outputs:
         pname = str(p.get("name") or "").strip()
         if not pname:
             continue
         ptype = str(p.get("type") or "")
-        pid = _ensure_param_node(logic_id, pname, "output", ptype, logger)
-        if logic_id is not None and pid is not None:
-            _graph_create_relationship(logic_id, pid, "OUTPUT", {}, logger)
+        pid = _ensure_param_node(logic_uuid, pname, "output", ptype, logger)
+        logger.trace(
+            "[trace] KG output param '%s': name='%s' type='%s' pid=%s expected=%s",
+            logic.get("name"),
+            pname,
+            ptype,
+            pid,
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"{logic_uuid}|output|{pname}")),
+        )
+        if logic_step_id is not None and pid is not None:
+            _graph_create_relationship_by_prop(
+                "LogicStep",
+                logic_uuid,
+                "Parameter",
+                pid,
+                "OUTPUT",
+                {},
+                logger,
+            )
+    # Post-check: how many Parameter nodes and IO relationships exist for this logic now?
+    try:
+        chk = _graph_run_cypher(
+            """
+            MATCH (ls:LogicStep {id: $id})
+            OPTIONAL MATCH (ls)-[:INPUT]->(i:Parameter)
+            OPTIONAL MATCH (ls)-[:OUTPUT]->(o:Parameter)
+            WITH count(DISTINCT i) AS inCnt, count(DISTINCT o) AS outCnt
+            MATCH (p:Parameter {logicId: $id})
+            RETURN inCnt, outCnt, count(p) AS paramCnt
+            """,
+            {"id": logic_uuid},
+            logger,
+        )
+        recs = (chk or {}).get("records") or []
+        if recs:
+            r0 = recs[0]
+            logger.trace(
+                "[trace] KG post-check '%s' (%s): params=%s inputs=%s outputs=%s",
+                logic.get("name"),
+                logic_uuid,
+                r0.get("paramCnt"),
+                r0.get("inCnt"),
+                r0.get("outCnt"),
+            )
+    except Exception:
+        pass
 
     # Cross‑logic links (Parameter -> Parameter)
     links = logic.get("links") or []
@@ -472,7 +692,7 @@ def _populate_graph_for_logic(logic: Dict[str, Any], logger: logging.Logger) -> 
 
         # Target parameter: input of the current logic
         dst_param_id = _ensure_param_node(
-            logic_id,
+            logic_uuid,
             str(to_input),
             "input",
             "",
@@ -480,8 +700,10 @@ def _populate_graph_for_logic(logic: Dict[str, Any], logger: logging.Logger) -> 
         )
 
         if src_param_id is not None and dst_param_id is not None:
-            _graph_create_relationship(
+            _graph_create_relationship_by_prop(
+                "Parameter",
                 src_param_id,
+                "Parameter",
                 dst_param_id,
                 "LINKS_TO",
                 {"kind": link.get("kind") or ""},
@@ -828,7 +1050,7 @@ def add_logics_from_text(
             dmn_table = ""
 
             dmn_match = re.search(
-                r"(?:^|\n)(?:\*{0,2}\s*)?DMN\s*:\s*\n?(.*?)(?=\n## |\Z)",
+                r"(?:^|\n)(?:\*{0,2}\s*)?DMN\s*:\s*(?:\*{0,2})?\s*\n?(.*?)(?=\n## |\Z)",
                 section,
                 re.DOTALL | re.IGNORECASE,
             )
@@ -838,6 +1060,9 @@ def add_logics_from_text(
                 dmn_body = m_code.group(1).strip() if m_code else raw_dmn
                 dmn_body = re.sub(r"`+", "", dmn_body)
                 dmn_body = re.sub(r"\*\*", "", dmn_body)
+                # Defensive cleanup: strip a single trailing quote that sometimes appears in source text
+                # (e.g., `- Field:type"`). This should not affect quoted Allowed Values lists.
+                dmn_body = re.sub(r'(?m)(^\s*[-*]\s*[^\n]*)(\")\s*$', r'\1', dmn_body)
 
                 m_hp = re.search(r"Hit\s*Policy\s*:\s*([A-Za-z_]+)", dmn_body, re.IGNORECASE)
                 if m_hp:
@@ -868,6 +1093,15 @@ def add_logics_from_text(
                             continue
                         parsed = _parse_dmn_io_decl(ln)
                         dmn_outputs.append(parsed)
+
+                # Trace log for DMN IO counts
+                logger.trace(
+                    "[trace] DMN parsed for '%s': hit_policy='%s' inputs=%d outputs=%d",
+                    name,
+                    dmn_hit_policy,
+                    len(dmn_inputs),
+                    len(dmn_outputs),
+                )
 
                 lines2 = [ln.rstrip() for ln in dmn_body.splitlines()]
                 table_lines: List[str] = []

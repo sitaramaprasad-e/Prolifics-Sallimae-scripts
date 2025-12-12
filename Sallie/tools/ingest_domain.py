@@ -421,8 +421,9 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
     domain_types: Dict[str, DomainTypeSpec] = {}
     relationships: List[Dict[str, str]] = []
 
-    class_rx = re.compile(r"^\s*class\s+(\w+)\s*<<DomainType>>\s*\{")
-    enum_rx = re.compile(r"^\s*enum\s+(\w+)\s*\{")
+    # Support both unquoted identifiers (e.g. Patient) and quoted names with spaces (e.g. "Claim Header").
+    class_rx = re.compile(r"^\s*class\s+(?:\"([^\"]+)\"|(\w+))\s*<<DomainType>>\s*\{")
+    enum_rx = re.compile(r"^\s*enum\s+(?:\"([^\"]+)\"|(\w+))\s*\{")
 
     i = 0
     n = len(lines)
@@ -435,7 +436,7 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
         m_enum = enum_rx.match(line)
 
         if m_class:
-            name = m_class.group(1)
+            name = (m_class.group(1) or m_class.group(2) or "").strip()
             attrs: List[str] = []
             i += 1
             while i < n and "}" not in lines[i]:
@@ -451,7 +452,7 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
                 logics=[],
             )
         elif m_enum:
-            name = m_enum.group(1)
+            name = (m_enum.group(1) or m_enum.group(2) or "").strip()
             values: List[str] = []
             i += 1
             while i < n and "}" not in lines[i]:
@@ -469,10 +470,13 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
             i += 1
 
     # ---- Second pass: notes (Logics) and relationships ----
-    note_inline_rx = re.compile(r"^\s*note\s+top\s+of\s+(\w+)\s*:\s*(.*)$")
-    note_block_rx = re.compile(r"^\s*note\s+(top|right|left|bottom)\s+of\s+(\w+)\s*$")
+    note_inline_rx = re.compile(r"^\s*note\s+top\s+of\s+(?:\"([^\"]+)\"|(\w+))\s*:\s*(.*)$")
+    note_block_rx = re.compile(r"^\s*note\s+(top|right|left|bottom)\s+of\s+(?:\"([^\"]+)\"|(\w+))\s*$")
+
+    # Relationships can reference quoted or unquoted names on either side.
+    # Example: Patient "1" -- "0..*" "Claim Header" : has >
     rel_rx = re.compile(
-        r"^\s*(\w+)\s+\"[^\"]*\"\s+[-o]+-\s+\"[^\"]*\"\s+(\w+)\s*:?(.*)$",
+        r"^\s*(?:\"([^\"]+)\"|(\w+))\s+\"[^\"]*\"\s+[-o.]+-\s+\"[^\"]*\"\s+(?:\"([^\"]+)\"|(\w+))\s*:?(.*)$",
     )
 
     i = 0
@@ -482,8 +486,8 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
         # Inline note style: "note top of Account : Logics:\nE8B· ...,4AF· ..."
         m_inline = note_inline_rx.match(line)
         if m_inline:
-            dt_name = m_inline.group(1)
-            rest = m_inline.group(2) or ""
+            dt_name = (m_inline.group(1) or m_inline.group(2) or "").strip()
+            rest = m_inline.group(3) or ""
             if "Logics:" in rest:
                 logics_part = rest.split("Logics:", 1)[1].strip()
                 logics_text = logics_part.replace("\\n", "\n")
@@ -520,7 +524,7 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
         #   end note
         m_block = note_block_rx.match(line)
         if m_block:
-            dt_name = m_block.group(2)
+            dt_name = (m_block.group(2) or m_block.group(3) or "").strip()
             dt = domain_types.setdefault(
                 dt_name,
                 DomainTypeSpec(name=dt_name, kind="class", attributes=[], logics=[]),
@@ -565,9 +569,9 @@ def _parse_domain_model(path: str) -> Tuple[List[DomainTypeSpec], List[Dict[str,
         # Relationships between domain types (unchanged)
         m_rel = rel_rx.match(line)
         if m_rel:
-            from_name = m_rel.group(1)
-            to_name = m_rel.group(2)
-            label = (m_rel.group(3) or "").strip()
+            from_name = (m_rel.group(1) or m_rel.group(2) or "").strip()
+            to_name = (m_rel.group(3) or m_rel.group(4) or "").strip()
+            label = (m_rel.group(5) or "").strip()
             relationships.append({"from": from_name, "to": to_name, "label": label})
 
         i += 1

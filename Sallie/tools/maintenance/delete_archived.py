@@ -438,6 +438,16 @@ def main():
 
             # 1) Delete LogicStep nodes for each archived logic id (and all their relationships)
             for rid in sorted(deleted_logic_ids):
+                # Delete any Parameter nodes linked to this LogicStep via INPUT/OUTPUT relationships
+                # (Parameters may or may not also carry a logicId property, so we clean via relationships too.)
+                graph_run_cypher(
+                    """
+                    MATCH (l:LogicStep {id: $logicId})-[:INPUT|:OUTPUT]-(p:Parameter)
+                    DETACH DELETE p
+                    """,
+                    {"logicId": rid},
+                )
+
                 # Delete any Message nodes sequenced by this LogicStep, then delete the LogicStep
                 graph_run_cypher(
                     """
@@ -448,7 +458,7 @@ def main():
                     {"logicId": rid},
                 )
 
-                # Delete any Parameter nodes belonging to this logic
+                # Delete any remaining Parameter nodes that still reference this logicId (legacy / fallback)
                 graph_run_cypher(
                     "MATCH (p:Parameter {logicId: $logicId}) DETACH DELETE p",
                     {"logicId": rid},
