@@ -37,7 +37,7 @@ os.makedirs(MODEL_HOME, exist_ok=True)
 # ----------------------------
 CATEGORIES_JSON = os.path.join(MODEL_HOME, "rule_categories.json")
 BUSINESS_RULES_JSON = os.path.join(MODEL_HOME, "business_rules.json")
-EXECUTIONS_JSON = os.path.join(MODEL_HOME, "executions.json")
+EXECUTIONS_JSON = os.path.join(MODEL_HOME, "runs.json")
 LOG_DIR = os.path.expanduser("~/.pcpt/log")
 LOG_SUBDIR = os.path.join(LOG_DIR, "categorise_logic")
 
@@ -282,6 +282,35 @@ def ensure_paths() -> None:
 # ----------------------------
 # Category filtering helpers
 # ----------------------------
+
+def _archived_group_category_names(data: Dict[str, Any]) -> set:
+    """
+    Return a set of category names that belong to archived category groups.
+    Supports common shapes used in rule_categories.json.
+    """
+    archived = set()
+
+    groups = data.get("categoryGroups")
+    if not isinstance(groups, list):
+        return archived
+
+    for grp in groups:
+        if not isinstance(grp, dict):
+            continue
+        if not grp.get("archived", False):
+            continue
+
+        # Common shapes we support:
+        # 1) { categories: ["Name", ...] }
+        # 2) { categories: [{ name: "Name" }, ...] }
+        cats = grp.get("categories", [])
+        if isinstance(cats, list):
+            for c in cats:
+                if isinstance(c, str):
+                    archived.add(c)
+                elif isinstance(c, dict) and isinstance(c.get("name"), str):
+                    archived.add(c["name"])
+    return archived
 def _norm_team(val: Optional[str]) -> str:
     return (val or "").strip().lower()
 
@@ -318,7 +347,7 @@ def _is_leaf_category(cat: Dict[str, Any]) -> bool:
 def filter_categories_for_logic(rule: Dict[str, Any]) -> str:
     """Create a filtered copy of rule_categories.json that includes only
     categories with no team OR a team matching the rule's owner (team),
-    and only leaf categories (not groups).
+    and only leaf categories (not groups), and excludes categories from archived groups.
     Returns the path to the filtered categories file under TMP_DIR.
     """
     categories_src = CATEGORIES_JSON
@@ -335,6 +364,10 @@ def filter_categories_for_logic(rule: Dict[str, Any]) -> str:
     # We preserve all other keys as-is and only filter the array.
     if isinstance(data, dict) and isinstance(data.get("categories"), list):
         filtered = []
+
+        # Build exclusion set from archived category groups
+        archived_group_cats = _archived_group_category_names(data)
+
         for cat in data["categories"]:
             if not isinstance(cat, dict):
                 continue
@@ -343,15 +376,21 @@ def filter_categories_for_logic(rule: Dict[str, Any]) -> str:
             if not _is_leaf_category(cat):
                 continue
 
+            # Exclude categories that belong to an archived group
+            cat_name = cat.get("name")
+            if isinstance(cat_name, str) and cat_name in archived_group_cats:
+                continue
+
             team_val = _norm_team(cat.get("team"))
             # keep when no team is specified or it's a match (case-insensitive)
             if team_val == "" or team_val == owner_team:
                 filtered.append(cat)
+
         # Replace with filtered list (even if empty — that's intentional)
         data["categories"] = filtered
-        # Drop categoryGroups for the filtered view passed to PCPT – it should only see leaf categories
-        if isinstance(data, dict) and "categoryGroups" in data:
-            # We intentionally remove categoryGroups so the model isn't confused by higher-level group definitions
+
+        # Drop categoryGroups for the filtered view passed to PCPT
+        if "categoryGroups" in data:
             data.pop("categoryGroups", None)
     else:
         # If structure is unexpected, do not filter to avoid masking data
