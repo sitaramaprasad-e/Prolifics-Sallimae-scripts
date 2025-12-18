@@ -169,6 +169,22 @@ class KGSummary:
     # OK-to-miss structural logics (Decision (Top-Level) / Decision (Composite)) not present in KG
     ok_missing_logic_count: int
     ok_missing_logic_ids: List[str]
+    # JSON vs KG link coverage (SUPPORTS)
+    json_supports_links_total: int
+    json_supports_links_expected_in_kg: int
+    json_supports_links_missing_in_kg: int
+    json_supports_links_missing_due_to_missing_nodes: int
+    json_supports_links_missing_in_kg_list: List[Tuple[str, str]]
+    json_supports_links_missing_due_to_missing_nodes_list: List[Tuple[str, str]]
+    # JSON vs KG link coverage (all in-graph links by kind)
+    json_in_graph_links_total: int
+    json_in_graph_links_expected_in_kg: int
+    json_in_graph_links_missing_in_kg: int
+    json_in_graph_links_missing_due_to_missing_nodes: int
+    json_in_graph_links_missing_in_kg_list: List[Tuple[str, str]]  # (fromId, toId)
+    json_in_graph_links_missing_due_to_missing_nodes_list: List[Tuple[str, str]]
+    # JSON kind (as stored in JSON, typically lower-case) -> count missing SUPPORTS in KG
+    json_in_graph_links_missing_by_kind: Dict[str, int]
 
 # Default base URL for the graph API (matches RULES_PORTAL_BASE_URL with /api/graph)
 DEFAULT_GRAPH_BASE_URL = "http://localhost:443/api/graph"
@@ -413,26 +429,136 @@ def _load_kg_summary(
 
     logic_ids = set(logics_by_id.keys())
 
-    # Base vs top-level/composite distinction:
-    # - Base logics (Decision, BKM, etc.) are REQUIRED to have a LogicStep in the KG.
-    # - Decision (Top-Level) and Decision (Composite) are allowed to be absent from the KG.
-    base_logic_ids: set[str] = set()
-    for lid, logic in logics_by_id.items():
-        if not isinstance(logic, dict):
-            continue
-        kind = (logic.get("kind") or "").strip()
-        if kind in ("Decision (Top-Level)", "Decision (Composite)"):
-            # These are "structural" decisions; it's OK if they have no LogicStep.
-            continue
-        base_logic_ids.add(lid)
+    # All logics are expected to have a LogicStep in the KG.
+    base_logic_ids: set[str] = set(logics_by_id.keys())
 
     logic_ids_with_step = len(logic_ids & step_ids)
     missing_logic_ids = sorted(list(base_logic_ids - step_ids))
 
-    # Structural (top-level / composite) logics are allowed to be absent from KG.
-    # We still count them for reporting, but they are not treated as integrity issues.
-    structural_logic_ids = logic_ids - base_logic_ids
-    ok_missing_logic_ids = sorted(list(structural_logic_ids - step_ids))
+    # No longer treat any logic kinds as "OK to miss".
+    ok_missing_logic_ids: List[str] = []
+
+    # Build expected SUPPORTS edges from business_rules.json (JSON links)
+    # A link is stored on the *target* logic, and references its source via from_logic_id.
+    json_supports_edges_all: set[tuple[str, str]] = set()
+    json_supports_edges_expected_in_kg: set[tuple[str, str]] = set()
+
+    for to_id, logic in logics_by_id.items():
+        if not isinstance(logic, dict):
+            continue
+        links = logic.get("links")
+        if not isinstance(links, list):
+            continue
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            kind_raw = link.get("kind")
+            kind = ""
+            if isinstance(kind_raw, str):
+                kind = kind_raw.strip().upper()
+            elif kind_raw is not None:
+                kind = str(kind_raw).strip().upper()
+
+            # Be tolerant of legacy / variant spellings.
+            # Canonical is "SUPPORTS".
+            if kind not in {"SUPPORTS", "SUPPORT"}:
+                continue
+
+            from_id = link.get("from_logic_id")
+            if not (isinstance(from_id, str) and from_id.strip()):
+                # tolerate camelCase legacy
+                from_id = link.get("fromLogicId")
+            if not (isinstance(from_id, str) and from_id.strip()):
+                # tolerate pre-migration links that still use step ids
+                from_id = link.get("from_step_id")
+            if not (isinstance(from_id, str) and from_id.strip()):
+                continue
+            from_id = from_id.strip()
+            to_lid = to_id
+            json_supports_edges_all.add((from_id, to_lid))
+            # All logics are expected to exist as LogicStep nodes in the KG.
+            json_supports_edges_expected_in_kg.add((from_id, to_lid))
+
+    # Build expected SUPPORTS edges for *all* JSON links that are marked in_graph=true (or missing in_graph, treated as true).
+    # IMPORTANT: The KG stores these as :SUPPORTS regardless of JSON link kind (e.g., depends_on, invokes_bkm).
+    json_in_graph_edges_all: set[tuple[str, str]] = set()  # (fromId, toId)
+    json_in_graph_edges_expected_in_kg: set[tuple[str, str]] = set()
+    json_in_graph_kind_by_edge: Dict[tuple[str, str], str] = {}
+
+    for to_id, logic in logics_by_id.items():
+        if not isinstance(logic, dict):
+            continue
+        links = logic.get("links")
+        if not isinstance(links, list):
+            continue
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+
+            # Only compare links that claim to be present in the KG.
+            in_graph_val = link.get("in_graph")
+            if in_graph_val is False:
+                continue
+
+            from_id = link.get("from_logic_id")
+            if not (isinstance(from_id, str) and from_id.strip()):
+                from_id = link.get("fromLogicId")
+            if not (isinstance(from_id, str) and from_id.strip()):
+                from_id = link.get("from_step_id")
+            if not (isinstance(from_id, str) and from_id.strip()):
+                continue
+
+            from_id = from_id.strip()
+            to_lid = to_id
+            edge = (from_id, to_lid)
+
+            json_in_graph_edges_all.add(edge)
+
+            # Capture original JSON kind for reporting (keep as-is, typically lower-case)
+            k = link.get("kind")
+            if isinstance(k, str) and k.strip():
+                json_in_graph_kind_by_edge[edge] = k.strip()
+
+            # All logics are expected to exist as LogicStep nodes in the KG.
+            json_in_graph_edges_expected_in_kg.add(edge)
+
+    json_in_graph_links_total = len(json_in_graph_edges_all)
+    json_in_graph_links_expected_in_kg = len(json_in_graph_edges_expected_in_kg)
+
+    # Diagnostic: if we found zero JSON SUPPORTS edges but there are links in JSON,
+    # capture a quick kind frequency snapshot to help debug schema/kind mismatches.
+    json_links_total_any_kind = 0
+    json_link_kind_counts: dict[str, int] = {}
+    for _to_id, _logic in logics_by_id.items():
+        if not isinstance(_logic, dict):
+            continue
+        _links = _logic.get("links")
+        if not isinstance(_links, list):
+            continue
+        for _link in _links:
+            if not isinstance(_link, dict):
+                continue
+            json_links_total_any_kind += 1
+            _kraw = _link.get("kind")
+            _k = ""
+            if isinstance(_kraw, str):
+                _k = _kraw.strip() or "(blank)"
+            elif _kraw is not None:
+                _k = str(_kraw).strip() or "(blank)"
+            else:
+                _k = "(missing)"
+            json_link_kind_counts[_k] = json_link_kind_counts.get(_k, 0) + 1
+
+    if json_links_total_any_kind and not json_supports_edges_all:
+        top_kinds = sorted(json_link_kind_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+        _eprint(
+            "WARNING: JSON contains link objects but none were detected as SUPPORTS. "
+            "Top link kinds observed: "
+            + ", ".join([f"{k}={c}" for (k, c) in top_kinds])
+        )
+
+    json_supports_links_total = len(json_supports_edges_all)
+    json_supports_links_expected_in_kg = len(json_supports_edges_expected_in_kg)
 
     extra_step_ids = sorted(list(step_ids - logic_ids))
     logic_ids_without_step = len(missing_logic_ids)
@@ -487,6 +613,9 @@ def _load_kg_summary(
     except Exception as exc:
         _eprint(f"WARNING: Failed to count SUPPORTS relationships via {run_url}: {exc}")
 
+    # For KG SUPPORTS edge presence
+    kg_supports_edges: set[tuple[str, str]] = set()
+
     # Cycle detection over SUPPORTS edges
     supports_cycles_count = 0
     mutual_support_pairs_count = 0
@@ -539,6 +668,8 @@ def _load_kg_summary(
                 edges.add((u, v))
                 adj.setdefault(u, []).append(v)
 
+        kg_supports_edges = set(edges)
+
         # Count mutually-supporting pairs A↔B
         for (u, v) in edges:
             if (v, u) in edges and u < v:
@@ -569,6 +700,47 @@ def _load_kg_summary(
     except Exception as exc:
         _eprint(f"WARNING: Failed to fetch SUPPORTS edges for cycle detection via {run_url}: {exc}")
 
+
+    # Compare JSON SUPPORTS links vs KG SUPPORTS relationships.
+    # We split into:
+    # - Missing in KG even though both endpoints exist as LogicStep nodes (relationship should be present)
+    # - Missing because one/both endpoints do not exist as LogicStep nodes (cannot exist in KG)
+    json_supports_missing_in_kg: set[tuple[str, str]] = set()
+    json_supports_missing_due_to_nodes: set[tuple[str, str]] = set()
+
+    for (u, v) in json_supports_edges_expected_in_kg:
+        u_has = u in step_ids
+        v_has = v in step_ids
+        if not (u_has and v_has):
+            json_supports_missing_due_to_nodes.add((u, v))
+            continue
+        if (u, v) not in kg_supports_edges:
+            json_supports_missing_in_kg.add((u, v))
+
+    json_supports_links_missing_in_kg = len(json_supports_missing_in_kg)
+    json_supports_links_missing_due_to_missing_nodes = len(json_supports_missing_due_to_nodes)
+
+    # Compare JSON in-graph links (all kinds) vs KG SUPPORTS relationships.
+    # IMPORTANT: The KG stores these as :SUPPORTS regardless of JSON link kind.
+    json_in_graph_missing_in_kg: set[tuple[str, str]] = set()
+    json_in_graph_missing_due_to_nodes: set[tuple[str, str]] = set()
+    json_in_graph_missing_by_kind: Dict[str, int] = {}
+
+    for (u, v) in json_in_graph_edges_expected_in_kg:
+        u_has = u in step_ids
+        v_has = v in step_ids
+        if not (u_has and v_has):
+            json_in_graph_missing_due_to_nodes.add((u, v))
+            continue
+
+        if (u, v) not in kg_supports_edges:
+            json_in_graph_missing_in_kg.add((u, v))
+            k = json_in_graph_kind_by_edge.get((u, v), "(missing kind)")
+            json_in_graph_missing_by_kind[k] = json_in_graph_missing_by_kind.get(k, 0) + 1
+
+    json_in_graph_links_missing_in_kg = len(json_in_graph_missing_in_kg)
+    json_in_graph_links_missing_due_to_missing_nodes = len(json_in_graph_missing_due_to_nodes)
+
     logic_ids_with_supports = len(set(logics_by_id.keys()) & logic_ids_with_supports_set)
 
     return KGSummary(
@@ -589,6 +761,19 @@ def _load_kg_summary(
         mutual_support_pairs=sorted(list(mutual_support_pairs)),
         ok_missing_logic_count=ok_missing_logic_count,
         ok_missing_logic_ids=ok_missing_logic_ids,
+        json_supports_links_total=json_supports_links_total,
+        json_supports_links_expected_in_kg=json_supports_links_expected_in_kg,
+        json_supports_links_missing_in_kg=json_supports_links_missing_in_kg,
+        json_supports_links_missing_due_to_missing_nodes=json_supports_links_missing_due_to_missing_nodes,
+        json_supports_links_missing_in_kg_list=sorted(list(json_supports_missing_in_kg)),
+        json_supports_links_missing_due_to_missing_nodes_list=sorted(list(json_supports_missing_due_to_nodes)),
+        json_in_graph_links_total=json_in_graph_links_total,
+        json_in_graph_links_expected_in_kg=json_in_graph_links_expected_in_kg,
+        json_in_graph_links_missing_in_kg=json_in_graph_links_missing_in_kg,
+        json_in_graph_links_missing_due_to_missing_nodes=json_in_graph_links_missing_due_to_missing_nodes,
+        json_in_graph_links_missing_in_kg_list=sorted(list(json_in_graph_missing_in_kg)),
+        json_in_graph_links_missing_due_to_missing_nodes_list=sorted(list(json_in_graph_missing_due_to_nodes)),
+        json_in_graph_links_missing_by_kind=json_in_graph_missing_by_kind,
     )
 # === Issue collection and drill-down helpers ===
 
@@ -712,6 +897,20 @@ def _collect_issues(
                     "some LogicStep nodes in the Knowledge Graph have ids that do not match any logic in business_rules.json",
                 )
             )
+        if getattr(kg_summary, "json_supports_links_missing_in_kg", 0):
+            issues.append(
+                (
+                    "kg_json_supports_missing_in_kg",
+                    "some SUPPORTS links exist in business_rules.json but the corresponding SUPPORTS relationship is missing in the Knowledge Graph (for LogicSteps that exist)",
+                )
+            )
+        if getattr(kg_summary, "json_in_graph_links_missing_in_kg", 0):
+            issues.append(
+                (
+                    "kg_json_in_graph_links_missing_in_kg",
+                    "some links marked in_graph=true exist in business_rules.json but the corresponding :SUPPORTS relationship is missing in the Knowledge Graph (for LogicSteps that exist)",
+                )
+            )
         if kg_summary.supports_cycles_count:
             issues.append(
                 (
@@ -745,6 +944,32 @@ def _print_issue_details(
     Print detail for a specific issue key. This is used by the interactive
     drill-down after the main summary.
     """
+    if issue_key == "kg_json_in_graph_links_missing_in_kg":
+        print(
+            "Links marked in_graph=true in business_rules.json but missing as KG :SUPPORTS relationships (LogicStep->LogicStep):"
+        )
+        if kg_summary is None:
+            print("  (Knowledge Graph summary not available.)")
+            return
+        missing = getattr(kg_summary, "json_in_graph_links_missing_in_kg_list", [])
+        if not missing:
+            print("  (None)")
+            return
+
+        for (u, v) in missing:
+            u_logic = logics_by_id.get(u) or {}
+            v_logic = logics_by_id.get(v) or {}
+            u_name = (u_logic.get("name") or "").strip() if isinstance(u_logic, dict) else ""
+            v_name = (v_logic.get("name") or "").strip() if isinstance(v_logic, dict) else ""
+            if u_name and v_name:
+                print(f"  - {u} ({u_name}) -> {v} ({v_name})")
+            elif u_name:
+                print(f"  - {u} ({u_name}) -> {v}")
+            elif v_name:
+                print(f"  - {u} -> {v} ({v_name})")
+            else:
+                print(f"  - {u} -> {v}")
+        return
     # Links with missing 'from' logic
     if issue_key == "links_missing_from_logic":
         print("Links whose 'from' reference does not resolve to a logic:")
@@ -1591,14 +1816,36 @@ def _print_summary(
         print(f"LogicStep nodes with id:                {kg_summary.logic_steps_with_id}")
         print(f"LogicStep nodes without id:             {kg_summary.logic_steps_without_id}")
         print(f"Logics with a LogicStep:                {kg_summary.logic_ids_with_step}")
-        print(f"Base logics missing in KG (NOT OK):     {kg_summary.logic_ids_without_step}")
-        print(f"Top/Composite missing in KG (OK):       {kg_summary.ok_missing_logic_count}")
-        print(f"Total logics missing in KG:             {kg_summary.logic_ids_without_step + kg_summary.ok_missing_logic_count}")
+        print(f"Logics missing in KG (NOT OK):          {kg_summary.logic_ids_without_step}")
+        print(f"Total logics missing in KG:             {kg_summary.logic_ids_without_step}")
         print(f"LogicSteps with no JSON logic:          {kg_summary.steps_with_missing_logic}")
         print(f"SUPPORTS relationships (LS→LS):         {kg_summary.total_supports_rels}")
         print(f"Logics with SUPPORTS links in KG:       {kg_summary.logic_ids_with_supports}")
         print(f"SUPPORTS cycles detected:               {kg_summary.supports_cycles_count}")
         print(f"Mutual SUPPORTS pairs:                  {kg_summary.mutual_support_pairs_count}")
+        print()
+        print("JSON vs KG SUPPORTS coverage")
+        print("----------------------------")
+        print(f"JSON SUPPORTS links (total):            {kg_summary.json_supports_links_total}")
+        print(f"JSON SUPPORTS links (expected in KG):   {kg_summary.json_supports_links_expected_in_kg}")
+        print(f"JSON SUPPORTS links missing in KG:      {kg_summary.json_supports_links_missing_in_kg}")
+        print(f"JSON SUPPORTS missing due to nodes:     {kg_summary.json_supports_links_missing_due_to_missing_nodes}")
+        print()
+        print("JSON vs KG in-graph link coverage (all kinds)")
+        print("-----------------------------------------")
+        print(f"JSON in-graph links (total):             {kg_summary.json_in_graph_links_total}")
+        print(f"JSON in-graph links (expected in KG):    {kg_summary.json_in_graph_links_expected_in_kg}")
+        print(f"JSON in-graph links missing in KG:       {kg_summary.json_in_graph_links_missing_in_kg}")
+        print(f"JSON in-graph missing due to nodes:      {kg_summary.json_in_graph_links_missing_due_to_missing_nodes}")
+        # Show a small sample of KG relationship types to help debug kind mapping.
+        # (We don't persist the full set on KGSummary; instead we infer from missing_by_kind + supports stats.)
+        print("Note: KG stores all in-graph JSON links as :SUPPORTS (JSON kind may be depends_on / invokes_bkm, etc.).")
+        print("This check expects a SUPPORTS edge for every JSON link where in_graph=true (and both endpoints exist as LogicSteps).")
+        if kg_summary.json_in_graph_links_missing_by_kind:
+            top = sorted(kg_summary.json_in_graph_links_missing_by_kind.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+            print("Top missing kinds:")
+            for k, c in top:
+                print(f"  {k}: {c}")
         print()
 
     issues = _collect_issues(logic_summary, model_summary, kg_summary)
@@ -1642,6 +1889,10 @@ def _print_summary(
                 count = kg_summary.logic_ids_without_step
             elif key == "kg_steps_with_missing_logic" and kg_summary:
                 count = kg_summary.steps_with_missing_logic
+            elif key == "kg_json_supports_missing_in_kg" and kg_summary:
+                count = getattr(kg_summary, "json_supports_links_missing_in_kg", 0)
+            elif key == "kg_json_in_graph_links_missing_in_kg" and kg_summary:
+                count = getattr(kg_summary, "json_in_graph_links_missing_in_kg", 0)
             elif key == "kg_supports_cycles" and kg_summary:
                 count = kg_summary.supports_cycles_count
             elif key == "kg_mutual_support_pairs" and kg_summary:
