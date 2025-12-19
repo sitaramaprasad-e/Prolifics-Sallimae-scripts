@@ -525,8 +525,10 @@ def _load_kg_summary(
     json_in_graph_links_total = len(json_in_graph_edges_all)
     json_in_graph_links_expected_in_kg = len(json_in_graph_edges_expected_in_kg)
 
-    # Diagnostic: if we found zero JSON SUPPORTS edges but there are links in JSON,
-    # capture a quick kind frequency snapshot to help debug schema/kind mismatches.
+    # Diagnostic: JSON link kinds are expected to be business semantics (e.g., depends_on, invokes_bkm).
+    # The KG stores all in-graph JSON links as :SUPPORTS regardless of JSON kind.
+    # Therefore, absence of kind=SUPPORTS in JSON is expected and should not be warned about.
+    # We keep a lightweight kind-frequency snapshot only for debugging/visibility.
     json_links_total_any_kind = 0
     json_link_kind_counts: dict[str, int] = {}
     for _to_id, _logic in logics_by_id.items():
@@ -549,13 +551,8 @@ def _load_kg_summary(
                 _k = "(missing)"
             json_link_kind_counts[_k] = json_link_kind_counts.get(_k, 0) + 1
 
-    if json_links_total_any_kind and not json_supports_edges_all:
-        top_kinds = sorted(json_link_kind_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
-        _eprint(
-            "WARNING: JSON contains link objects but none were detected as SUPPORTS. "
-            "Top link kinds observed: "
-            + ", ".join([f"{k}={c}" for (k, c) in top_kinds])
-        )
+    # Optional: print top kinds at high verbosity only (avoid noisy warnings).
+    # NOTE: This function currently has no verbosity parameter, so we do not print by default.
 
     json_supports_links_total = len(json_supports_edges_all)
     json_supports_links_expected_in_kg = len(json_supports_edges_expected_in_kg)

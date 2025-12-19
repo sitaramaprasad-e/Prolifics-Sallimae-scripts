@@ -4,12 +4,15 @@ import difflib
 import json
 import os
 import sys
+import io
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 from types import ModuleType
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from urllib.parse import urlparse, urlunparse
 
 
 @dataclass
@@ -81,6 +84,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Base URL for Rules Portal graph API. Can be a host (e.g. http://localhost:443) or already include /api/graph. "
             "If omitted, uses RULES_PORTAL_BASE_URL or falls back to http://localhost:443." 
+        ),
+    )
+    parser.add_argument(
+        "--spec",
+        default=None,
+        help=(
+            "Optional path to a spec JSON file (same selection mechanism as check_integrity). "
+            "When --prune-missing-kg-links is enabled and neither --graph-url nor RULES_PORTAL_BASE_URL is provided, "
+            "the tool can use the spec to determine the Rules Portal base URL. If omitted, you will be prompted to select a spec (or skip)."
         ),
     )
     parser.add_argument(
@@ -177,6 +189,201 @@ def _load_check_integrity_module() -> ModuleType:
     loader = SourceFileLoader(mod_name, str(ci_path))
     mod = loader.load_module(mod_name)  # type: ignore[attr-defined]
     return mod
+
+# --- Helper to match check_integrity's default graph base logic ---
+def _default_graph_url_from_check_integrity(ci: ModuleType) -> str:
+    """Return the default graph URL, matching check_integrity behavior."""
+    # check_integrity defines DEFAULT_GRAPH_BASE_URL (already includes /api/graph)
+    v = getattr(ci, "DEFAULT_GRAPH_BASE_URL", None)
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    # Fallback to the historic local default
+    return "http://localhost:443/api/graph"
+
+
+# --- Spec helpers for KG base selection (from check_integrity UX) ---
+def _extract_graph_url_from_spec(spec: Any) -> Optional[str]:
+    """Best-effort extraction of a Rules Portal / graph base URL from a spec dict.
+
+    We intentionally keep this flexible because spec formats vary across repos.
+    check_integrity will normalize whether /api/graph is appended.
+    """
+    if not isinstance(spec, dict):
+        return None
+
+    # Fast path: common explicit keys
+    for k in (
+        "RULES_PORTAL_BASE_URL",
+        "rules_portal_base_url",
+        "rulesPortalBaseUrl",
+        "rules_portal_url",
+        "rulesPortalUrl",
+        "graph_base_url",
+        "graphBaseUrl",
+        "graph_url",
+        "graphUrl",
+        "base_url",
+        "baseUrl",
+        "url",
+    ):
+        v = spec.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+    # Nested containers commonly used in specs
+    for container_key in (
+        "endpoints",
+        "endpoint",
+        "config",
+        "settings",
+        "rules_portal",
+        "rulesPortal",
+        "graph",
+        "kg",
+    ):
+        c = spec.get(container_key)
+        if isinstance(c, dict):
+            for k in (
+                "RULES_PORTAL_BASE_URL",
+                "rules_portal_base_url",
+                "rulesPortalBaseUrl",
+                "graph_base_url",
+                "graphBaseUrl",
+                "graph_url",
+                "graphUrl",
+                "url",
+                "base_url",
+                "baseUrl",
+            ):
+                v = c.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+    # Sources list heuristic
+    sources = spec.get("sources")
+    if isinstance(sources, list):
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            name = str(src.get("name") or src.get("type") or "").strip().lower()
+            if name and any(tok in name for tok in ("graph", "kg", "neo4j", "rules", "portal")):
+                for k in (
+                    "rules_portal_base_url",
+                    "rulesPortalBaseUrl",
+                    "graph_base_url",
+                    "graphBaseUrl",
+                    "graph_url",
+                    "graphUrl",
+                    "base_url",
+                    "baseUrl",
+                    "url",
+                ):
+                    v = src.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+
+    # Last resort: recursively scan for any URL-looking string under URL-ish keys.
+    want_keys = {
+        "rules_portal_base_url",
+        "rulesportalbaseurl",
+        "rules_portal_url",
+        "rulesportalurl",
+        "graph_base_url",
+        "graphbaseurl",
+        "graph_url",
+        "graphurl",
+        "base_url",
+        "baseurl",
+        "url",
+    }
+
+    def _scan(obj: Any) -> Optional[str]:
+        if isinstance(obj, dict):
+            for kk, vv in obj.items():
+                kkl = str(kk).strip().lower()
+                if kkl in want_keys and isinstance(vv, str) and vv.strip():
+                    return vv.strip()
+            # also accept any http(s) URL-looking string anywhere (fallback)
+            for vv in obj.values():
+                if isinstance(vv, str) and vv.strip().startswith(("http://", "https://")):
+                    return vv.strip()
+            for vv in obj.values():
+                found = _scan(vv)
+                if found:
+                    return found
+        elif isinstance(obj, list):
+            for it in obj:
+                found = _scan(it)
+                if found:
+                    return found
+        return None
+
+    return _scan(spec)
+
+
+def _maybe_get_graph_url_from_spec(ci: ModuleType, spec_path: Optional[str]) -> Optional[str]:
+    """Use check_integrity’s spec selection UX to obtain a Rules Portal base URL."""
+    # Non-interactive: explicit --spec path
+    if spec_path:
+        p = str(spec_path).strip()
+        if not p:
+            return None
+        try:
+            if hasattr(ci, "_load_spec"):
+                spec = ci._load_spec(p)  # type: ignore[attr-defined]
+            else:
+                spec = None
+        except Exception:
+            spec = None
+        v = _extract_graph_url_from_spec(spec)
+        if v:
+            return v
+        # Fallback: if check_integrity exposes any direct extraction helper, try it.
+        for fn_name in (
+            "_extract_rules_portal_base_url_from_spec",
+            "_get_rules_portal_base_url_from_spec",
+            "_rules_portal_base_url_from_spec",
+        ):
+            if hasattr(ci, fn_name):
+                try:
+                    fn = getattr(ci, fn_name)
+                    vv = fn(spec)
+                    if isinstance(vv, str) and vv.strip():
+                        return vv.strip()
+                except Exception:
+                    pass
+        return None
+
+    # Interactive selection using check_integrity helpers (same prompt behavior)
+    if hasattr(ci, "_find_spec_files") and hasattr(ci, "_choose_spec") and hasattr(ci, "_load_spec"):
+        try:
+            specs = ci._find_spec_files()  # type: ignore[attr-defined]
+            chosen = ci._choose_spec(specs)  # type: ignore[attr-defined]
+            if not chosen:
+                return None
+            spec = ci._load_spec(chosen)  # type: ignore[attr-defined]
+            v = _extract_graph_url_from_spec(spec)
+            if v:
+                return v
+            # Fallback: if check_integrity exposes any direct extraction helper, try it.
+            for fn_name in (
+                "_extract_rules_portal_base_url_from_spec",
+                "_get_rules_portal_base_url_from_spec",
+                "_rules_portal_base_url_from_spec",
+            ):
+                if hasattr(ci, fn_name):
+                    try:
+                        fn = getattr(ci, fn_name)
+                        vv = fn(spec)
+                        if isinstance(vv, str) and vv.strip():
+                            return vv.strip()
+                    except Exception:
+                        pass
+            return None
+        except Exception:
+            return None
+
+    return None
 
 
 def _effective_from_id(link: Dict[str, Any]) -> Optional[str]:
@@ -280,11 +487,55 @@ def _prune_links_for_missing_edges(
     return removed, affected
 
 
+
+# --- Helper for KG base normalization, matching check_integrity.py logic ---
+def _normalize_graph_base_candidates(graph_url: str) -> List[str]:
+    """Return candidate base URLs to try for KG access.
+
+    We want to behave like check_integrity in production:
+    - accept bare host:port (e.g. localhost:443)
+    - accept base without /api/graph (check_integrity appends it)
+    - if scheme is missing, assume https for :443, otherwise http
+    - if user provided http://...:443, also try https://...:443
+
+    NOTE: check_integrity._load_kg_summary() itself appends /api/graph when needed.
+    """
+    raw = (graph_url or "").strip()
+    if not raw:
+        return []
+
+    candidates: List[str] = []
+
+    # If no scheme provided, assume https for :443, otherwise http.
+    if "://" not in raw:
+        scheme = "https" if ":443" in raw else "http"
+        raw = f"{scheme}://{raw}"
+
+    parsed = urlparse(raw)
+
+    # If parse fails to produce netloc, just try the raw.
+    if not parsed.netloc:
+        candidates.append(raw.rstrip("/"))
+        return candidates
+
+    base = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", "")).rstrip("/")
+    candidates.append(base)
+
+    # If user gave http on port 443, also try https.
+    if parsed.scheme == "http" and parsed.netloc.endswith(":443"):
+        https_base = urlunparse(("https", parsed.netloc, parsed.path, "", "", "")).rstrip("/")
+        if https_base not in candidates:
+            candidates.append(https_base)
+
+    return candidates
+
+
 def prune_business_rules_links_missing_in_kg_in_memory(
     business_rules_doc: Any,
     graph_url: str,
     prune_only_supports: bool,
     verbose: int = 0,
+    ci: Optional[ModuleType] = None,
 ) -> Tuple[Any, bool, str]:
     """Prune business_rules doc in-memory based on KG missing link list.
 
@@ -293,14 +544,71 @@ def prune_business_rules_links_missing_in_kg_in_memory(
 
     Returns: (new_doc, changed, summary)
     """
-    ci = _load_check_integrity_module()
+    ci = ci or _load_check_integrity_module()
 
     # Build logics_by_id from the doc we are migrating (do not re-read from disk).
     logics, logics_by_id = _extract_logics_from_business_rules_doc(business_rules_doc)
 
-    kg_summary = ci._load_kg_summary(graph_url, logics_by_id)  # type: ignore[attr-defined]
+    # Try to derive the same base URL that check_integrity would use, if available.
+    base_in = (graph_url or "").strip()
+    derived_base: Optional[str] = None
+    try:
+        if hasattr(ci, "_get_graph_base_url"):
+            # check_integrity normalizes RULES_PORTAL_BASE_URL and appends /api/graph
+            # NOTE: it expects a base like http(s)://host:port or host:port
+            derived_base = ci._get_graph_base_url(base_in)  # type: ignore[attr-defined]
+    except Exception:
+        derived_base = None
+
+    candidates: List[str] = []
+    if derived_base:
+        # Prefer the derived base first
+        candidates.append(str(derived_base).rstrip("/"))
+
+    # Also try normalized variants of what we were given
+    for cand in _normalize_graph_base_candidates(base_in):
+        if cand not in candidates:
+            candidates.append(cand)
+
+    # If nothing produced candidates, we can't proceed
+    if not candidates:
+        return business_rules_doc, False, "KG summary unavailable; no pruning performed (no graph_url candidates)"
+
+    captured_msgs: List[str] = []
+    kg_summary = None
+    tried: List[str] = []
+    for cand in candidates:
+        tried.append(cand)
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                kg_summary = ci._load_kg_summary(cand, logics_by_id)  # type: ignore[attr-defined]
+        finally:
+            out = buf.getvalue() or ""
+            if out.strip():
+                captured_msgs.append(out)
+        if kg_summary is not None:
+            graph_url = cand
+            break
+
+    # If check_integrity printed the old SUPPORTS-kind warning, only surface it when prune_only_supports is enabled.
+    if prune_only_supports and captured_msgs:
+        joined = "\n".join(captured_msgs)
+        if "none were detected as SUPPORTS" in joined or "no links were detected as SUPPORTS" in joined:
+            # Print a clearer warning aligned with this tool's semantics.
+            print(
+                "WARNING: --prune-only-supports is enabled but no SUPPORTS-kind links were found in JSON; "
+                "pruning may remove nothing. (Note: in default mode we prune all in_graph links regardless of kind.)"
+            )
+
+    if verbose >= 2 and captured_msgs:
+        # Re-emit any captured check_integrity output for debugging.
+        for msg in captured_msgs:
+            for line in (msg or "").splitlines():
+                print(f"[CI] {line}")
+
     if kg_summary is None:
-        return business_rules_doc, False, "KG summary unavailable; no pruning performed"
+        return business_rules_doc, False, f"KG summary unavailable; no pruning performed (tried: {', '.join(tried)})"
 
     # Prefer the broader list: all in-graph links regardless of JSON kind.
     missing_edges = getattr(kg_summary, "json_in_graph_links_missing_in_kg_list", [])
@@ -736,14 +1044,16 @@ def migrate_file(
     changed = False
     # Optional KG-driven pruning for business_rules.json before running schema migrations.
     if prune_missing_kg_links and path.name == "business_rules.json" and len(docs) == 1:
-        base = graph_url or os.getenv("RULES_PORTAL_BASE_URL") or "http://localhost:443"
-        # check_integrity normalizes host-only vs /api/graph, but it expects graph_base_url.
+        # Match check_integrity precedence: CLI arg > RULES_PORTAL_BASE_URL env > DEFAULT_GRAPH_BASE_URL
+        ci = _load_check_integrity_module()
+        base = graph_url or os.getenv("RULES_PORTAL_BASE_URL") or _default_graph_url_from_check_integrity(ci)
         try:
             pruned_doc, pruned_changed, prune_summary = prune_business_rules_links_missing_in_kg_in_memory(
                 business_rules_doc=copy.deepcopy(docs[0]),
                 graph_url=base,
                 prune_only_supports=prune_only_supports,
                 verbose=verbose,
+                ci=ci,
             )
         except Exception as exc:  # noqa: BLE001
             return MigrationResult(file_path=path, changed=False, backed_up_to=None, error=f"KG prune failed: {exc}")
@@ -938,13 +1248,67 @@ def main() -> int:
         f"Scanning {root} for pattern '{pattern}' (recursive={recursive}) - "
         f"found {len(json_files)} file(s)"
     )
+    resolved_graph_url: Optional[str] = None
     if args.prune_missing_kg_links:
         mode = "SUPPORTS-only" if args.prune_only_supports else "in_graph"
-        graph = args.graph_url or os.getenv("RULES_PORTAL_BASE_URL") or "http://localhost:443"
-        print(f"KG pruning enabled for business_rules.json (mode={mode}, graph_url={graph})")
+        ci = _load_check_integrity_module()
+
+        env_graph = os.getenv("RULES_PORTAL_BASE_URL")
+        spec_graph: Optional[str] = None
+        if not args.graph_url and not env_graph:
+            spec_graph = _maybe_get_graph_url_from_spec(ci, args.spec)
+
+        graph = args.graph_url or env_graph or spec_graph or _default_graph_url_from_check_integrity(ci)
+        resolved_graph_url = graph
+
+        cands = _normalize_graph_base_candidates(graph)
+        shown = cands[0] if cands else graph
+        extra = f" (will try: {', '.join(cands)})" if len(cands) > 1 else ""
+        src = "cli" if args.graph_url else ("env" if env_graph else ("spec" if spec_graph else "default"))
+        print(f"KG pruning enabled for business_rules.json (mode={mode}, graph_url={shown}, source={src}){extra}")
 
     changed_count = 0
     error_count = 0
+
+    # Only scan for SUPPORTS links warning if prune_only_supports is set
+    if args.prune_only_supports:
+        # For each business_rules.json, check if any SUPPORTS-kind links exist
+        for path in json_files:
+            if path.name == "business_rules.json":
+                try:
+                    docs = decode_multi_json(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                supports_count = 0
+                kind_counts = {}
+                for doc in docs:
+                    # Support both list and dict roots
+                    logics = []
+                    if isinstance(doc, list):
+                        logics = doc
+                    elif isinstance(doc, dict) and isinstance(doc.get("logics"), list):
+                        logics = doc["logics"]
+                    for logic in logics:
+                        if not isinstance(logic, dict):
+                            continue
+                        links = logic.get("links")
+                        if not isinstance(links, list):
+                            continue
+                        for link in links:
+                            if not isinstance(link, dict):
+                                continue
+                            kind = link.get("kind")
+                            kind_str = str(kind).upper() if kind is not None else ""
+                            kind_counts[kind_str] = kind_counts.get(kind_str, 0) + 1
+                            if kind_str in {"SUPPORTS", "SUPPORT"}:
+                                supports_count += 1
+                if supports_count == 0:
+                    # Show top link kinds
+                    top_kinds = sorted(kind_counts.items(), key=lambda x: -x[1])
+                    top_kinds_str = ", ".join(f"{k or '(missing)'}={v}" for k, v in top_kinds[:3])
+                    print(
+                        f"WARNING: --prune-only-supports is enabled but no SUPPORTS-kind links were found in JSON. Top link kinds observed: {top_kinds_str}"
+                    )
 
     for path in json_files:
         result = migrate_file(
@@ -954,7 +1318,7 @@ def main() -> int:
             preview=preview,
             verbose=verbose,
             prune_missing_kg_links=args.prune_missing_kg_links,
-            graph_url=args.graph_url,
+            graph_url=resolved_graph_url,
             prune_only_supports=args.prune_only_supports,
         )
 
