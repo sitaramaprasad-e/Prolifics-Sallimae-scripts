@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "For business_rules.json only: query the KG and remove JSON links that are marked "
-            "in_graph=true (or missing in_graph, treated as true) but whose corresponding :SUPPORTS "
+            "in_graph=true (missing or false in_graph is treated as out-of-graph) but whose corresponding :SUPPORTS "
             "relationship is missing in the KG."
         ),
     )
@@ -100,7 +100,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "When pruning, only consider JSON links whose kind is SUPPORTS/SUPPORT. By default, prunes any link with in_graph=true, "
-            "because the KG stores all in-graph links as :SUPPORTS regardless of JSON kind (depends_on/invokes_bkm/etc.)."
+            "because the KG stores all in-graph links as :SUPPORTS regardless of JSON kind."
         ),
     )
     return parser.parse_args()
@@ -396,8 +396,11 @@ def _effective_from_id(link: Dict[str, Any]) -> Optional[str]:
 
 
 def _is_in_graph_trueish(link: Dict[str, Any]) -> bool:
-    """Treat missing in_graph as True; only explicit False disables KG expectations."""
-    return link.get("in_graph") is not False
+    """Only explicit in_graph=true means the link is expected in the KG.
+
+    Missing in_graph is treated as False (do NOT expect a KG edge).
+    """
+    return link.get("in_graph") is True
 
 
 def _kind_is_supports(link: Dict[str, Any]) -> bool:
@@ -439,6 +442,7 @@ def _prune_links_for_missing_edges(
 ) -> Tuple[int, int]:
     """Remove JSON link objects from target logic when (fromId,toId) is missing in KG.
 
+    Only prune links that explicitly claim to be present in the KG (in_graph=true).
     Returns: (removed_links_count, affected_logics_count)
     """
     missing_set: Set[Tuple[str, str]] = set((u, v) for (u, v) in missing_edges if u and v)
