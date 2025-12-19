@@ -2,11 +2,14 @@ import argparse
 import copy
 import difflib
 import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from importlib.machinery import SourceFileLoader
+from types import ModuleType
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -62,6 +65,31 @@ def parse_args() -> argparse.Namespace:
         action="count",
         default=0,
         help="Increase verbosity (can be specified multiple times)",
+    )
+    parser.add_argument(
+        "--prune-missing-kg-links",
+        action="store_true",
+        help=(
+            "For business_rules.json only: query the KG and remove JSON links that are marked "
+            "in_graph=true (or missing in_graph, treated as true) but whose corresponding :SUPPORTS "
+            "relationship is missing in the KG."
+        ),
+    )
+    parser.add_argument(
+        "--graph-url",
+        default=None,
+        help=(
+            "Base URL for Rules Portal graph API. Can be a host (e.g. http://localhost:443) or already include /api/graph. "
+            "If omitted, uses RULES_PORTAL_BASE_URL or falls back to http://localhost:443." 
+        ),
+    )
+    parser.add_argument(
+        "--prune-only-supports",
+        action="store_true",
+        help=(
+            "When pruning, only consider JSON links whose kind is SUPPORTS/SUPPORT. By default, prunes any link with in_graph=true, "
+            "because the KG stores all in-graph links as :SUPPORTS regardless of JSON kind (depends_on/invokes_bkm/etc.)."
+        ),
     )
     return parser.parse_args()
 
@@ -133,6 +161,167 @@ def decode_multi_json(text: str) -> list[Any]:
     return docs
 
 
+# ---- KG-driven prune helpers ----
+def _load_check_integrity_module() -> ModuleType:
+    """Load tools/maintenance/check_integrity.py as a module at runtime.
+
+    We reuse its KG querying and link coverage logic to avoid duplicating it.
+    """
+    here = Path(__file__).resolve()
+    tools_dir = here.parents[1]  # <repo>/tools
+    ci_path = tools_dir / "maintenance" / "check_integrity.py"
+    if not ci_path.exists():
+        raise FileNotFoundError(f"check_integrity.py not found at {ci_path}")
+
+    mod_name = "_rules_portal_check_integrity"
+    loader = SourceFileLoader(mod_name, str(ci_path))
+    mod = loader.load_module(mod_name)  # type: ignore[attr-defined]
+    return mod
+
+
+def _effective_from_id(link: Dict[str, Any]) -> Optional[str]:
+    """Best-effort extraction of a link's source logic id across legacy shapes."""
+    for k in ("from_logic_id", "fromLogicId", "from_step_id"):
+        v = link.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def _is_in_graph_trueish(link: Dict[str, Any]) -> bool:
+    """Treat missing in_graph as True; only explicit False disables KG expectations."""
+    return link.get("in_graph") is not False
+
+
+def _kind_is_supports(link: Dict[str, Any]) -> bool:
+    k = link.get("kind")
+    if isinstance(k, str):
+        k2 = k.strip().upper()
+        return k2 in {"SUPPORTS", "SUPPORT"}
+    if k is None:
+        return False
+    return str(k).strip().upper() in {"SUPPORTS", "SUPPORT"}
+
+
+def _extract_logics_from_business_rules_doc(doc: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Return (logics_list, logics_by_id) from a business_rules doc supporting both shapes."""
+    if isinstance(doc, list):
+        logics = doc
+    elif isinstance(doc, dict) and isinstance(doc.get("logics"), list):
+        logics = doc["logics"]
+    else:
+        raise ValueError(
+            f"business_rules.json is not in a supported format: expected list or {{version, logics}} object, got {type(doc).__name__}"
+        )
+
+    logics_by_id: Dict[str, Dict[str, Any]] = {}
+    for logic in logics:
+        if not isinstance(logic, dict):
+            continue
+        lid = logic.get("id")
+        if isinstance(lid, str) and lid:
+            logics_by_id[lid] = logic
+
+    return logics, logics_by_id
+
+
+def _prune_links_for_missing_edges(
+    logics_by_id: Dict[str, Dict[str, Any]],
+    missing_edges: List[Tuple[str, str]],
+    prune_only_supports: bool,
+) -> Tuple[int, int]:
+    """Remove JSON link objects from target logic when (fromId,toId) is missing in KG.
+
+    Returns: (removed_links_count, affected_logics_count)
+    """
+    missing_set: Set[Tuple[str, str]] = set((u, v) for (u, v) in missing_edges if u and v)
+    removed = 0
+    affected = 0
+
+    for to_id, logic in list(logics_by_id.items()):
+        if not isinstance(logic, dict):
+            continue
+        links = logic.get("links")
+        if not isinstance(links, list) or not links:
+            continue
+
+        before = len(links)
+        new_links: List[Any] = []
+
+        for link in links:
+            if not isinstance(link, dict):
+                new_links.append(link)
+                continue
+
+            # Only prune links that claim to be present in the KG.
+            if not _is_in_graph_trueish(link):
+                new_links.append(link)
+                continue
+
+            if prune_only_supports and not _kind_is_supports(link):
+                new_links.append(link)
+                continue
+
+            from_id = _effective_from_id(link)
+            if not from_id:
+                new_links.append(link)
+                continue
+
+            if (from_id, to_id) in missing_set:
+                removed += 1
+                continue
+
+            new_links.append(link)
+
+        if len(new_links) != before:
+            logic["links"] = new_links
+            affected += 1
+
+    return removed, affected
+
+
+def prune_business_rules_links_missing_in_kg_in_memory(
+    business_rules_doc: Any,
+    graph_url: str,
+    prune_only_supports: bool,
+    verbose: int = 0,
+) -> Tuple[Any, bool, str]:
+    """Prune business_rules doc in-memory based on KG missing link list.
+
+    Reuses check_integrity._load_kg_summary() to compute which in-graph JSON links
+    are missing as KG :SUPPORTS relationships.
+
+    Returns: (new_doc, changed, summary)
+    """
+    ci = _load_check_integrity_module()
+
+    # Build logics_by_id from the doc we are migrating (do not re-read from disk).
+    logics, logics_by_id = _extract_logics_from_business_rules_doc(business_rules_doc)
+
+    kg_summary = ci._load_kg_summary(graph_url, logics_by_id)  # type: ignore[attr-defined]
+    if kg_summary is None:
+        return business_rules_doc, False, "KG summary unavailable; no pruning performed"
+
+    # Prefer the broader list: all in-graph links regardless of JSON kind.
+    missing_edges = getattr(kg_summary, "json_in_graph_links_missing_in_kg_list", [])
+    if prune_only_supports:
+        missing_edges = getattr(kg_summary, "json_supports_links_missing_in_kg_list", [])
+
+    if not missing_edges:
+        return business_rules_doc, False, "no missing KG links to prune"
+
+    removed, affected = _prune_links_for_missing_edges(logics_by_id, missing_edges, prune_only_supports)
+    if removed == 0:
+        return business_rules_doc, False, "missing edges were found but no matching JSON links were removed"
+
+    summary = f"KG prune: removed {removed} link(s) across {affected} logic(s)"
+    if verbose >= 1:
+        mode = "SUPPORTS-only" if prune_only_supports else "in_graph"
+        print(f"[KG-PRUNE] {summary} (mode={mode})")
+
+    return business_rules_doc, True, summary
+
+
 def migrate_document(data: Any) -> Tuple[Any, bool, Optional[str]]:
     """Apply schema migration to the JSON document.
 
@@ -152,6 +341,8 @@ def migrate_document(data: Any) -> Tuple[Any, bool, Optional[str]]:
     * topDecisionId      -> topId (models.json hierarchies)
     * rule_ids          -> logic_ids (runs.json)
     * models.json and business_rules.json are now wrapped under a versioned root object (version=1, models/logics array)
+    * Optional: prune JSON links missing from KG (:SUPPORTS) in business_rules.json (when --prune-missing-kg-links is used)
+    * Always remove derived link fields from_logic_name/to_logic_name from business_rules.json link objects
     """
 
     changed = False
@@ -314,19 +505,29 @@ def migrate_document(data: Any) -> Tuple[Any, bool, Optional[str]]:
                 for link in links:
                     if not isinstance(link, dict):
                         continue
-                    if "from_step_id" not in link:
-                        continue
 
-                    value = link.get("from_step_id")
-                    # Only overwrite from_logic_id if it is missing or empty-like
-                    if "from_logic_id" not in link or link["from_logic_id"] in (None, "", []):
-                        link["from_logic_id"] = value
+                    link_changed = False
 
-                    # Remove the legacy key from the link
-                    link.pop("from_step_id", None)
+                    # from_step_id -> from_logic_id
+                    if "from_step_id" in link:
+                        value = link.get("from_step_id")
+                        # Only overwrite from_logic_id if it is missing or empty-like
+                        if "from_logic_id" not in link or link["from_logic_id"] in (None, "", []):
+                            link["from_logic_id"] = value
+                        link.pop("from_step_id", None)
+                        link_changed = True
 
-                    rule_changed = True
-                    changed = True
+                    # Always strip derived/enriched name fields from links
+                    if "from_logic_name" in link:
+                        link.pop("from_logic_name", None)
+                        link_changed = True
+                    if "to_logic_name" in link:
+                        link.pop("to_logic_name", None)
+                        link_changed = True
+
+                    if link_changed:
+                        rule_changed = True
+                        changed = True
 
             # --- Cleanup: drop transient document-scoring and expression fields ---
             for obsolete_key in ("doc_match_score", "doc_logic_id", "dmn_expression", "__modeloverlay"):
@@ -366,19 +567,29 @@ def migrate_document(data: Any) -> Tuple[Any, bool, Optional[str]]:
                 for link in links:
                     if not isinstance(link, dict):
                         continue
-                    if "from_step_id" not in link:
-                        continue
 
-                    value = link.get("from_step_id")
-                    # Only overwrite from_logic_id if it is missing or empty-like
-                    if "from_logic_id" not in link or link["from_logic_id"] in (None, "", []):
-                        link["from_logic_id"] = value
+                    link_changed = False
 
-                    # Remove the legacy key from the link
-                    link.pop("from_step_id", None)
+                    # from_step_id -> from_logic_id
+                    if "from_step_id" in link:
+                        value = link.get("from_step_id")
+                        # Only overwrite from_logic_id if it is missing or empty-like
+                        if "from_logic_id" not in link or link["from_logic_id"] in (None, "", []):
+                            link["from_logic_id"] = value
+                        link.pop("from_step_id", None)
+                        link_changed = True
 
-                    rule_changed = True
-                    changed = True
+                    # Always strip derived/enriched name fields from links
+                    if "from_logic_name" in link:
+                        link.pop("from_logic_name", None)
+                        link_changed = True
+                    if "to_logic_name" in link:
+                        link.pop("to_logic_name", None)
+                        link_changed = True
+
+                    if link_changed:
+                        rule_changed = True
+                        changed = True
 
             # --- runs.json: rule_ids -> logic_ids ---
             if "rule_ids" in rule:
@@ -510,6 +721,9 @@ def migrate_file(
     timestamp: str,
     preview: bool = False,
     verbose: int = 0,
+    prune_missing_kg_links: bool = False,
+    graph_url: Optional[str] = None,
+    prune_only_supports: bool = False,
 ) -> MigrationResult:
     try:
         original_text = path.read_text(encoding="utf-8")
@@ -519,6 +733,33 @@ def migrate_file(
     except Exception as exc:  # noqa: BLE001
         return MigrationResult(file_path=path, changed=False, backed_up_to=None, error=str(exc))
 
+    changed = False
+    # Optional KG-driven pruning for business_rules.json before running schema migrations.
+    if prune_missing_kg_links and path.name == "business_rules.json" and len(docs) == 1:
+        base = graph_url or os.getenv("RULES_PORTAL_BASE_URL") or "http://localhost:443"
+        # check_integrity normalizes host-only vs /api/graph, but it expects graph_base_url.
+        try:
+            pruned_doc, pruned_changed, prune_summary = prune_business_rules_links_missing_in_kg_in_memory(
+                business_rules_doc=copy.deepcopy(docs[0]),
+                graph_url=base,
+                prune_only_supports=prune_only_supports,
+                verbose=verbose,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return MigrationResult(file_path=path, changed=False, backed_up_to=None, error=f"KG prune failed: {exc}")
+
+        if pruned_changed:
+            docs = [pruned_doc]
+            changed = True
+            # We treat this as a real change so it will be written (or diffed) alongside schema migrations.
+            if verbose >= 1:
+                print(f"[KG-PRUNE] {path}: {prune_summary}")
+            summaries = [prune_summary]
+        else:
+            summaries = []
+    else:
+        summaries: list[str] = []
+
     # Track the original version for versioned, single-doc files
     original_version: Optional[int] = None
     if path.name in ("models.json", "business_rules.json") and len(docs) == 1 and isinstance(docs[0], dict):
@@ -527,8 +768,6 @@ def migrate_file(
         if isinstance(v, int):
             original_version = v
 
-    changed = False
-    summaries: list[str] = []
     new_docs: list[Any] = []
 
     for doc in docs:
@@ -699,6 +938,10 @@ def main() -> int:
         f"Scanning {root} for pattern '{pattern}' (recursive={recursive}) - "
         f"found {len(json_files)} file(s)"
     )
+    if args.prune_missing_kg_links:
+        mode = "SUPPORTS-only" if args.prune_only_supports else "in_graph"
+        graph = args.graph_url or os.getenv("RULES_PORTAL_BASE_URL") or "http://localhost:443"
+        print(f"KG pruning enabled for business_rules.json (mode={mode}, graph_url={graph})")
 
     changed_count = 0
     error_count = 0
@@ -710,6 +953,9 @@ def main() -> int:
             timestamp=timestamp,
             preview=preview,
             verbose=verbose,
+            prune_missing_kg_links=args.prune_missing_kg_links,
+            graph_url=args.graph_url,
+            prune_only_supports=args.prune_only_supports,
         )
 
         if result.error:
