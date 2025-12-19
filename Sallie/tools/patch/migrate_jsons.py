@@ -666,7 +666,12 @@ def prune_business_rules_links_missing_in_kg_in_memory(
     if not candidates:
         return business_rules_doc, False, "missing edges were found but no matching JSON links were eligible for pruning"
 
+    unique_pairs: Set[Tuple[str, str]] = set((from_id, to_id) for (from_id, _from_name, to_id, _to_name) in candidates)
+
     print("\nThe following links will be pruned:")
+    print(f"  Total JSON link objects to prune: {len(candidates)}")
+    print(f"  Unique rule-to-rule pairs:        {len(unique_pairs)}\n")
+
     for from_id, from_name, to_id, to_name in candidates:
         print(f"  {from_id} · {from_name}  -->  {to_id} · {to_name}")
 
@@ -678,7 +683,10 @@ def prune_business_rules_links_missing_in_kg_in_memory(
     if removed == 0:
         return business_rules_doc, False, "missing edges were found but no matching JSON links were removed"
 
-    summary = f"KG prune: removed {removed} link(s) across {affected} logic(s)"
+    summary = (
+        f"KG prune: removed {removed} JSON link object(s) across {affected} logic(s) "
+        f"({len(unique_pairs)} unique rule-to-rule pair(s))"
+    )
     if verbose >= 1:
         mode = "SUPPORTS-only" if prune_only_supports else "in_graph"
         print(f"[KG-PRUNE] {summary} (mode={mode})")
