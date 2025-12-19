@@ -435,6 +435,46 @@ def _extract_logics_from_business_rules_doc(doc: Any) -> Tuple[List[Dict[str, An
     return logics, logics_by_id
 
 
+
+# --- Helper: Preview prunable links before pruning ---
+def _describe_prunable_links(
+    logics_by_id: Dict[str, Dict[str, Any]],
+    missing_edges: List[Tuple[str, str]],
+    prune_only_supports: bool,
+) -> List[Tuple[str, str, str, str]]:
+    """
+    Return a list of (from_id, from_name, to_id, to_name) tuples
+    describing links that would be pruned.
+    """
+    missing_set: Set[Tuple[str, str]] = set((u, v) for (u, v) in missing_edges if u and v)
+    rows: List[Tuple[str, str, str, str]] = []
+
+    for to_id, logic in logics_by_id.items():
+        links = logic.get("links")
+        if not isinstance(links, list):
+            continue
+
+        to_name = logic.get("name") or ""
+
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            if not _is_in_graph_trueish(link):
+                continue
+            if prune_only_supports and not _kind_is_supports(link):
+                continue
+
+            from_id = _effective_from_id(link)
+            if not from_id:
+                continue
+
+            if (from_id, to_id) in missing_set:
+                src = logics_by_id.get(from_id, {})
+                from_name = src.get("name") or ""
+                rows.append((from_id, from_name, to_id, to_name))
+
+    return rows
+
 def _prune_links_for_missing_edges(
     logics_by_id: Dict[str, Dict[str, Any]],
     missing_edges: List[Tuple[str, str]],
@@ -621,6 +661,18 @@ def prune_business_rules_links_missing_in_kg_in_memory(
 
     if not missing_edges:
         return business_rules_doc, False, "no missing KG links to prune"
+
+    candidates = _describe_prunable_links(logics_by_id, missing_edges, prune_only_supports)
+    if not candidates:
+        return business_rules_doc, False, "missing edges were found but no matching JSON links were eligible for pruning"
+
+    print("\nThe following links will be pruned:")
+    for from_id, from_name, to_id, to_name in candidates:
+        print(f"  {from_id} · {from_name}  -->  {to_id} · {to_name}")
+
+    resp = input("\nProceed with pruning these links? [y/N]: ").strip().lower()
+    if resp not in ("y", "yes"):
+        return business_rules_doc, False, "KG prune aborted by user"
 
     removed, affected = _prune_links_for_missing_edges(logics_by_id, missing_edges, prune_only_supports)
     if removed == 0:
