@@ -49,18 +49,18 @@ map_path_to_volume() {
         #echo "settg to current because -z"
     fi
 
-    local volume_mapping="-v ${absolute_path}:${container_path}"
-    
+    local volume_arg="${absolute_path}:${container_path}"
+
     # Check if the volume mapping already exists in VOLUMES
     for existing_volume in "${VOLUMES[@]}"; do
-        if [[ "$existing_volume" == "$volume_mapping" ]]; then
+        if [[ "$existing_volume" == "$volume_arg" ]]; then
             # Volume already exists, so return without adding it
             return
         fi
     done
 
     # Add the volume mapping if it does not already exist
-    VOLUMES+=("$volume_mapping")
+    VOLUMES+=("-v" "$volume_arg")
 }
 
 replace_folder_in_path() {
@@ -114,10 +114,10 @@ POS_PATH_RULES=$(set_positional_path_rules "$COMMAND")
 PATH_TYPE=""
 
 # List of switches that expect paths as the next argument
-SWITCHES_EXPECT_PATH=("-o" "--output" "--domain-hints" "--spa-domain-hints" "--microservice-domain-hints" "--input-file" "--input-file2" "--domain" "--filter")
+SWITCHES_EXPECT_PATH=("-o" "--output" "--domain-hints" "--spa-domain-hints" "--microservice-domain-hints" "--input-file" "--input-file2" "--domain" "--use-cases" "--filter")
 
 # List of switches that expect a non-path value (not a filesystem path)
-SWITCHES_EXPECT_VALUE=("--mode" "-m" "--index" "--total" "--plantuml-server" "--plantuml-timeout" "--plantuml-retries")
+SWITCHES_EXPECT_VALUE=("--mode" "-m" "--index" "--total" "--plantuml-server" "--plantuml-timeout" "--plantuml-retries" "--output-ext")
 
 # Process the remaining arguments and handle path mapping
 POS_ARGS=()  # Collect positional arguments separately
@@ -292,6 +292,7 @@ while [[ "$#" -gt 0 ]]; do
 
         case "$PATH_TYPE" in
             "-o" | "--output")
+                mkdir -p "$1"
                 map_path_to_volume "$FOLDER_PATH" "/output"
                 # Pass only the leaf name into the container as /output/<leaf>
                 ARGS+=("$(replace_folder_in_path "$1" "/output")")
@@ -357,6 +358,10 @@ while [[ "$#" -gt 0 ]]; do
                 ARGS+=("$(replace_folder_in_path "$1" "/input")")
                 ;;
             "--domain")
+                map_path_to_volume "$FOLDER_PATH" "/input"
+                ARGS+=("$(replace_folder_in_path "$1" "/input")")
+                ;;
+            "--use-cases")
                 map_path_to_volume "$FOLDER_PATH" "/input"
                 ARGS+=("$(replace_folder_in_path "$1" "/input")")
                 ;;
@@ -493,8 +498,8 @@ fi
 # If no command is given, run the container image with -h
 if [[ -z "$COMMAND" ]]; then
     podman run --rm -i -t \
-    ${VOLUMES[@]} \
-    ${ENV_VARS[@]} \
+    "${VOLUMES[@]}" \
+    "${ENV_VARS[@]}" \
     -e PCPT_CONFIG_PATH="$CONFIG_PATH_OVERRIDE" \
     greghodgkinson/pcpt:edge -h
     exit 0
@@ -549,13 +554,13 @@ PODMAN_CMD="podman run --privileged --rm -i -t \
 
 # Run the Docker container with all necessary volume mappings
 podman run --privileged --rm -i -t \
-  ${VOLUMES[@]} \
+  "${VOLUMES[@]}" \
   -v "$HOME/.aws:/root/.aws:rw" \
   -e AWS_PROFILE="$CONTAINER_AWS_PROFILE" \
   -e AWS_REGION="$CONTAINER_AWS_REGION" \
   -e AWS_SDK_LOAD_CONFIG=1 \
   -e AWS_EC2_METADATA_DISABLED=true \
-  ${ENV_VARS[@]} \
+  "${ENV_VARS[@]}" \
   -e PCPT_PROGRAM_PATH="${PROGRAM_PATH_OVERRIDE}" \
   -e PCPT_CONFIG_PATH="$CONFIG_PATH_OVERRIDE" \
   -e PCPT_PROMPTS_PATH="$PROMPTS_PATH_OVERRIDE" \
